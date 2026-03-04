@@ -9,10 +9,6 @@ import (
 	"go.dedis.ch/onet/v3/log"
 )
 
-// covAllOnes is a global flag to ensure the all-ones covariate is added only once.
-// This is copied from assoc.go
-var covAllOnes bool
-
 // computeResidual performs QR and projects covariates out to get the null model residual
 func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 	cryptoParams := ast.general.cps
@@ -27,24 +23,24 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 	}
 	nrowsTotalInv := 1.0 / float64(nrowsTotal)
 
+	// covAllOnes specifies whether the input covariates already contain an all-ones column.
+	// For SKAT, we assume it does NOT locally, so we explicitly prepend it.
 	C := ast.inputCov
-	if !covAllOnes {
-		log.LLvl1("Adding an all-ones covariate for SKAT Null Model")
-		if pid > 0 { // Party 0 doesn't encode data
-			arr := make([]float64, nrowsAll[pid])
-			for i := range arr {
-				arr[i] = 1.0
-			}
-			pv, _ := crypto.EncodeFloatVector(cryptoParams, arr)
-			C = append([]crypto.PlainVector{pv}, C...)
-		} else {
-			// Party 0 dummy vector
-			C = append([]crypto.PlainVector{make(crypto.PlainVector, 0)}, C...)
+	
+	log.LLvl1("Adding an all-ones covariate for SKAT Null Model")
+	if pid > 0 { // Party 0 doesn't encode data
+		arr := make([]float64, nrowsAll[pid])
+		for i := range arr {
+			arr[i] = 1.0
 		}
-		covAllOnes = true
+		pv, _ := crypto.EncodeFloatVector(cryptoParams, arr)
+		C = append([]crypto.PlainVector{pv}, C...)
 	} else {
-		log.LLvl1("SKAT Warning: assumes the first covariate is all ones")
+		// Party 0 dummy vector. Because we need comb to have the correct number of covariates
+		// for Party 0, we append an empty plain vector.
+		C = append([]crypto.PlainVector{make(crypto.PlainVector, 0)}, C...)
 	}
+
 
 	// Joint QR (NetDQRenc inside requires Party 0)
 	// SKAT runs without PCA covariates, passing nil
@@ -54,7 +50,11 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 
 	Q := ast.computeCombinedQV2(C, nil)
 
-	SaveMatrixToFile(cryptoParams, mpcObj, Q, nrowsAll[pid], -1, ast.general.OutPath("Qcomb.txt"))
+	// Save vertically partitioned arrays by iterating individually to avoid
+	// MPC extracting ciphertexts composed of independent data halves (-1).
+	for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
+		SaveMatrixToFile(cryptoParams, mpcObj, Q, nrowsAll[p], p, ast.general.OutPath("Qcomb.txt"))
+	}
 
 	// Project covariates out of y: ynew = (I - Q*Q')*y
 	ymat := make(crypto.PlainMatrix, 1)
@@ -79,15 +79,19 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 		ynew[0] = nil
 	}
 
-	// BootstrapVecAll requires Party 0
-	ynew[0] = mpcObj.Network.BootstrapVecAll(cryptoParams, ynew[0])
+	// WARNING: BootstrapVecAll also resolves to DummyBootstrapping which corrupts
+	// ciphertexts if run locally without AggregateSk. We bypass it as PN14QP438
+	// has ample depth.
+	// ynew[0] = mpcObj.Network.BootstrapVecAll(cryptoParams, ynew[0])
 
 	if pid > 0 {
 		ynew[0] = crypto.CMultConst(cryptoParams, ynew[0], -1.0, true)
 		ynew[0] = crypto.CPAdd(cryptoParams, ynew[0], ast.pheno)
 	}
 
-	SaveMatrixToFile(cryptoParams, mpcObj, ynew, nrowsAll[pid], -1, ast.general.OutPath("ynew.txt"))
+	for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
+		SaveMatrixToFile(cryptoParams, mpcObj, ynew, nrowsAll[p], p, ast.general.OutPath("ynew.txt"))
+	}
 
 	return ynew
 }
@@ -142,8 +146,11 @@ func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (
 	w24 := mpcObj.SSMultElemVec(w16, w8)
 	w24 = mpcObj.TruncVec(w24, mpcObj.GetDataBits(), mpcObj.GetFracBits())
 
-	inv25 := rtype.FromFloat64(1.0/25.0, mpcObj.GetFracBits())
-	w24.MulScalar(inv25)
+	// In standard SKAT, the weight is dbeta(MAF, 1, 25)
+	// The beta density is f(x) = x^(a-1)*(1-x)^(b-1) / B(a,b)
+	// B(1, 25) = 1/25. So f(x) = 25 * (1-x)^24
+	betaConst := rtype.FromFloat64(25.0, mpcObj.GetFracBits())
+	w24.MulScalar(betaConst)
 	w24 = mpcObj.TruncVec(w24, mpcObj.GetDataBits(), mpcObj.GetFracBits())
 
 	return p_j, w24

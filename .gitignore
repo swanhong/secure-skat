@@ -7,3 +7,8 @@ cache/*
 output/*
 out/*
 *.test
+# Testing outputs and caches
+out/
+cache/
+test_stdout_*.txt
+*.skat.bin

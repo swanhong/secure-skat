@@ -2,12 +2,13 @@ package gwas
 
 import (
 	"fmt"
-	"github.com/hhcho/sfgwas/mpc"
 	"math"
 	"runtime"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/hhcho/sfgwas/mpc"
 
 	mpc_core "github.com/hhcho/mpc-core"
 	"github.com/ldsec/lattigo/v2/ckks"
@@ -41,9 +42,16 @@ func (g *ProtocolInfo) InitAssociationTests(Qpc crypto.CipherMatrix) *AssocTest 
 
 	if pid > 0 {
 		phenoEnc = crypto.EncodeDense(cps, mat.DenseCopyOf(g.pheno))[0]
-		covEnc = crypto.EncodeDense(cps, mat.DenseCopyOf(g.cov))
-		r, c := g.cov.Dims()
-		log.LLvl1(time.Now().Format(time.RFC3339), "Cov dims:", r, c)
+
+		numCov := gwasParams.NumCov()
+		r, _ := g.cov.Dims()
+
+		// Slice the loaded covariate matrix to exactly the requested number of columns
+		// to prevent appending singular/all-zero auxiliary covariates from raw data files.
+		covSliced := g.cov.Slice(0, r, 0, numCov)
+		covEnc = crypto.EncodeDense(cps, mat.DenseCopyOf(covSliced))
+
+		log.LLvl1(time.Now().Format(time.RFC3339), "Cov dims:", r, numCov)
 	} else {
 		phenoEnc = make(crypto.PlainVector, 0)
 		covEnc = make(crypto.PlainMatrix, gwasParams.NumCov())
@@ -70,8 +78,6 @@ func (ast *AssocTest) computeCombinedQV2(C crypto.PlainMatrix, Qpc crypto.Cipher
 	cryptoParams := ast.general.cps
 	mpcPar := ast.general.mpcObj
 	mpcObj := mpcPar[0]
-	pid := mpcPar[0].GetPid()
-	slots := cryptoParams.GetSlots()
 
 	gwasParams := ast.general.gwasParams
 	nrowsAll := gwasParams.FiltNumInds()
@@ -98,26 +104,6 @@ func (ast *AssocTest) computeCombinedQV2(C crypto.PlainMatrix, Qpc crypto.Cipher
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "Covariate joint QR time: ", time.Since(start))
 	log.LLvl1(time.Now().Format(time.RFC3339), "Qcomb dimensions: r,c :", len(Qcomb[0]), len(Qcomb))
-
-	Qcomb = mpcObj.Network.BootstrapMatAll(cryptoParams, Qcomb)
-
-	log.LLvl1(time.Now().Format(time.RFC3339), "Qcomb replacing first vector with an all-ones vector (normalized)")
-	if pid > 0 {
-		ct := crypto.CZeros(cryptoParams, 1)[0]
-		ct = crypto.AddConst(cryptoParams, ct, 1.0)
-
-		QFirst := make(crypto.CipherVector, ((nrowsAll[pid]-1)/slots)+1)
-		for i := range QFirst {
-			nElem := slots
-			if i == len(QFirst)-1 {
-				nElem = nrowsAll[pid] - (len(QFirst)-1)*slots
-			}
-			QFirst[i] = crypto.MaskTrunc(cryptoParams, ct, nElem)
-		}
-
-		Qcomb[0] = QFirst
-		Qcomb, _ = crypto.FlattenLevels(cryptoParams, Qcomb)
-	}
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "AssertSync")
 	mpcObj.AssertSync()
@@ -314,10 +300,10 @@ func (ast *AssocTest) GenoBlockMult(b int, mat crypto.CipherMatrix, square bool)
 		numCtx = 1 + (nsnps-1)/slots
 	}
 
-	multFile := ast.general.CachePath(fmt.Sprintf("assoc_cache_mult.%d.bin", b))
-	dosFile := ast.general.CachePath(fmt.Sprintf("assoc_cache_dos_sum.%d.txt", b))
-	dos2File := ast.general.CachePath(fmt.Sprintf("assoc_cache_dos_sqsum.%d.txt", b))
-	filtFile := ast.general.CachePath(fmt.Sprintf("assoc_cache_filt.%d.txt", b))
+	multFile := ast.general.CachePath(fmt.Sprintf("assoc_cache_mult.skat.%d.bin", b))
+	dosFile := ast.general.CachePath(fmt.Sprintf("assoc_cache_dos_sum.skat.%d.txt", b))
+	dos2File := ast.general.CachePath(fmt.Sprintf("assoc_cache_dos_sqsum.skat.%d.txt", b))
+	filtFile := ast.general.CachePath(fmt.Sprintf("assoc_cache_filt.skat.%d.txt", b))
 
 	// for logistic this method is used in multiple multiplications
 	if !ast.general.config.UseLogistic && fileExists(multFile) && fileExists(dosFile) && fileExists(dos2File) && fileExists(filtFile) {
@@ -397,7 +383,7 @@ func (ast *AssocTest) GenoBlockMult(b int, mat crypto.CipherMatrix, square bool)
 
 						var mult crypto.CipherMatrix
 						var sum, sqSum []float64
-						mult, sum, sqSum = MatMult4Stream(cryptoParams, mat, X, 5, false, square, nprocsPerBlock)
+						mult, sum, sqSum = MatMult4Stream(cryptoParams, mat, X, 5, true, square, nprocsPerBlock)
 						outMult[batchIndex] = mult
 						copy(dosageSum[outShift:outShift+len(sum)], sum)
 						copy(dosageSqSum[outShift:outShift+len(sqSum)], sqSum)

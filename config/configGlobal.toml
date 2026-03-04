@@ -18,7 +18,7 @@ mpc_boolean_shares = true
 ## Data dimensions
 num_inds = [0, 1000, 1000]
 num_snps = 100000
-num_covs = 5
+num_covs = 4
 cov_all_ones = false
 
 ## Input file options (supports "blocks" or "pgen")

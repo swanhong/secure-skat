@@ -494,20 +494,6 @@ func TestSecureSKATEndToEnd(t *testing.T) {
 	copy(numFiltInds, prot.GetConfig().NumInds)
 	prot.GetGwasParams().SetFiltCounts(numFiltInds, numSnps)
 
-	// Inject deterministic mock covariates and phenotypes cleanly right before
-	// pipeline execution to override Setup() disk File I/O constraints natively.
-	phenoMat := mat.NewDense(1000, 1, nil)
-	covMat := mat.NewDense(1000, 5, nil)
-	for i := 0; i < 1000; i++ {
-		covMat.Set(i, 0, 1.0)
-		phenoMat.Set(i, 0, 1.0)
-		for j := 1; j < 5; j++ {
-			variance := float64((i*j)%13) * 0.1
-			covMat.Set(i, j, float64(j)*0.1+variance)
-		}
-	}
-	prot.SetPhenoAndCov(phenoMat, covMat)
-
 	// Enable caching to `out/partyX` so user can inspect intermediate testing files
 	prot.GetConfig().CacheDir = filepath.Join("out", "party"+strconv.Itoa(pid))
 	os.MkdirAll(prot.GetConfig().CacheDir, 0755)

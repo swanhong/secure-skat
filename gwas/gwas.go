@@ -434,6 +434,12 @@ func (g *ProtocolInfo) SKAT() {
 	log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Output collectively decrypted and saved to: %s", g.OutPath("skat_out.txt")))
 }
 
+// SetPhenoAndCov allows deterministic testing scripts to override File I/O datasets in memory
+func (g *ProtocolInfo) SetPhenoAndCov(pheno, cov *mat.Dense) {
+	g.pheno = pheno
+	g.cov = cov
+}
+
 func (g *ProtocolInfo) ComputeSKATStatistics() (crypto.CipherVector, crypto.CipherMatrix, []bool) {
 	assocTest := g.InitAssociationTests(nil) // SKAT does not use PCA
 	return assocTest.ComputeSKATStatistics()
@@ -731,7 +737,4 @@ func (g *ProtocolInfo) ComputeAssocStatistics(Qpca crypto.CipherMatrix) (crypto.
 	return assocTest.GetAssociationStats()
 }
 
-func (g *ProtocolInfo) SetPhenoAndCov(pheno, cov *mat.Dense) {
-	g.pheno = pheno
-	g.cov = cov
-}
+
