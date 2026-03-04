@@ -31,6 +31,13 @@ type AssocTest struct {
 	MafUpperBound float64
 }
 
+type genoBlockCacheFiles struct {
+	mult string
+	dos  string
+	dos2 string
+	filt string
+}
+
 func (g *ProtocolInfo) InitAssociationTests(Qpc crypto.CipherMatrix) *AssocTest {
 
 	pid := g.mpcObj[0].GetPid()
@@ -63,6 +70,20 @@ func (g *ProtocolInfo) InitAssociationTests(Qpc crypto.CipherMatrix) *AssocTest 
 		pheno:    phenoEnc,
 		inputCov: covEnc,
 		Qpc:      Qpc,
+	}
+}
+
+func (ast *AssocTest) genoBlockCachePaths(block int, namespace string) genoBlockCacheFiles {
+	suffix := ""
+	if namespace != "" {
+		suffix = "." + namespace
+	}
+
+	return genoBlockCacheFiles{
+		mult: ast.general.CachePath(fmt.Sprintf("assoc_cache_mult%s.%d.bin", suffix, block)),
+		dos:  ast.general.CachePath(fmt.Sprintf("assoc_cache_dos_sum%s.%d.txt", suffix, block)),
+		dos2: ast.general.CachePath(fmt.Sprintf("assoc_cache_dos_sqsum%s.%d.txt", suffix, block)),
+		filt: ast.general.CachePath(fmt.Sprintf("assoc_cache_filt%s.%d.txt", suffix, block)),
 	}
 }
 
@@ -251,7 +272,7 @@ func (ast *AssocTest) computeCombinedQ(C crypto.PlainMatrix, Qpc crypto.CipherMa
 }
 
 // Multiplies an encrypted matrix with a block of genotypes, optionally squares the result (square = true)
-func (ast *AssocTest) GenoBlockMult(b int, mat crypto.CipherMatrix, square bool) (matOut crypto.CipherMatrix, dosageSum, dosageSqSum []float64, filtOut []bool) {
+func (ast *AssocTest) genoBlockMult(b int, mat crypto.CipherMatrix, square bool, cacheNamespace string, allowCacheRead bool) (matOut crypto.CipherMatrix, dosageSum, dosageSqSum []float64, filtOut []bool) {
 	cryptoParams := ast.general.cps
 
 	pid := ast.general.mpcObj[0].GetPid()
@@ -300,20 +321,22 @@ func (ast *AssocTest) GenoBlockMult(b int, mat crypto.CipherMatrix, square bool)
 		numCtx = 1 + (nsnps-1)/slots
 	}
 
-	multFile := ast.general.CachePath(fmt.Sprintf("assoc_cache_mult.skat.%d.bin", b))
-	dosFile := ast.general.CachePath(fmt.Sprintf("assoc_cache_dos_sum.skat.%d.txt", b))
-	dos2File := ast.general.CachePath(fmt.Sprintf("assoc_cache_dos_sqsum.skat.%d.txt", b))
-	filtFile := ast.general.CachePath(fmt.Sprintf("assoc_cache_filt.skat.%d.txt", b))
+	cacheFiles := ast.genoBlockCachePaths(b, cacheNamespace)
 
 	// for logistic this method is used in multiple multiplications
-	if !ast.general.config.UseLogistic && fileExists(multFile) && fileExists(dosFile) && fileExists(dos2File) && fileExists(filtFile) {
+	if allowCacheRead &&
+		!ast.general.config.UseLogistic &&
+		fileExists(cacheFiles.mult) &&
+		fileExists(cacheFiles.dos) &&
+		fileExists(cacheFiles.dos2) &&
+		fileExists(cacheFiles.filt) {
 
 		log.LLvl1(time.Now().Format(time.RFC3339), "MatMult: block", b+1, "/", numBlocks, "cache found")
 
-		matOut = crypto.LoadCipherMatrixFromFile(cryptoParams, multFile)
-		dosageSum = LoadFloatVectorFromFile(dosFile, numCtx*slots)
-		dosageSqSum = LoadFloatVectorFromFile(dos2File, numCtx*slots)
-		filtOut = readFilterFromFile(filtFile, numCtx*slots, true)
+		matOut = crypto.LoadCipherMatrixFromFile(cryptoParams, cacheFiles.mult)
+		dosageSum = LoadFloatVectorFromFile(cacheFiles.dos, numCtx*slots)
+		dosageSqSum = LoadFloatVectorFromFile(cacheFiles.dos2, numCtx*slots)
+		filtOut = readFilterFromFile(cacheFiles.filt, numCtx*slots, true)
 
 		log.LLvl1("Dosage Sum:", dosageSum[:5])
 		log.LLvl1("Dosage SqSum:", dosageSqSum[:5])
@@ -422,13 +445,21 @@ func (ast *AssocTest) GenoBlockMult(b int, mat crypto.CipherMatrix, square bool)
 		log.LLvl1(time.Now().Format(time.RFC3339), "MatMult: block", b+1, "/", numBlocks, "elapsed time", time.Since(start))
 
 		// Save cache
-		crypto.SaveCipherMatrixToFile(cryptoParams, matOut, multFile)
-		SaveFloatVectorToFile(dosFile, dosageSum)
-		SaveFloatVectorToFile(dos2File, dosageSqSum)
-		writeFilterToFile(filtFile, filtOut, true)
+		crypto.SaveCipherMatrixToFile(cryptoParams, matOut, cacheFiles.mult)
+		SaveFloatVectorToFile(cacheFiles.dos, dosageSum)
+		SaveFloatVectorToFile(cacheFiles.dos2, dosageSqSum)
+		writeFilterToFile(cacheFiles.filt, filtOut, true)
 	}
 
 	return
+}
+
+func (ast *AssocTest) GenoBlockMult(b int, mat crypto.CipherMatrix, square bool) (crypto.CipherMatrix, []float64, []float64, []bool) {
+	return ast.genoBlockMult(b, mat, square, "", true)
+}
+
+func (ast *AssocTest) GenoBlockMultSKAT(b int, mat crypto.CipherMatrix, square bool) (crypto.CipherMatrix, []float64, []float64, []bool) {
+	return ast.genoBlockMult(b, mat, square, "skat", false)
 }
 
 func (ast *AssocTest) GetAssociationStats() (crypto.CipherVector, []bool) {

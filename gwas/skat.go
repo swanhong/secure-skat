@@ -9,16 +9,38 @@ import (
 	"go.dedis.ch/onet/v3/log"
 )
 
+func (ast *AssocTest) skatNumInds() []int {
+	filtNumInds := ast.general.gwasParams.FiltNumInds()
+	if len(filtNumInds) == ast.general.config.NumMainParties+1 {
+		return filtNumInds
+	}
+
+	return ast.general.config.NumInds
+}
+
+func (ast *AssocTest) skatTotalNumInds() int {
+	total := 0
+	for p := 1; p <= ast.general.config.NumMainParties; p++ {
+		total += ast.skatNumInds()[p]
+	}
+	return total
+}
+
+func (ast *AssocTest) zeroPlainVectorForNonDataParty() crypto.PlainVector {
+	zeros := make([]float64, ast.general.cps.GetSlots())
+	pv, _ := crypto.EncodeFloatVector(ast.general.cps, zeros)
+	return pv
+}
+
 // computeResidual performs QR and projects covariates out to get the null model residual
 func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 	cryptoParams := ast.general.cps
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
 
-	nrowsAll := make([]int, ast.general.config.NumMainParties+1)
+	nrowsAll := ast.skatNumInds()
 	nrowsTotal := 0
 	for p := 1; p <= ast.general.config.NumMainParties; p++ {
-		nrowsAll[p] = ast.general.config.NumInds[p]
 		nrowsTotal += nrowsAll[p]
 	}
 	nrowsTotalInv := 1.0 / float64(nrowsTotal)
@@ -26,7 +48,7 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 	// covAllOnes specifies whether the input covariates already contain an all-ones column.
 	// For SKAT, we assume it does NOT locally, so we explicitly prepend it.
 	C := ast.inputCov
-	
+
 	log.LLvl1("Adding an all-ones covariate for SKAT Null Model")
 	if pid > 0 { // Party 0 doesn't encode data
 		arr := make([]float64, nrowsAll[pid])
@@ -36,11 +58,9 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 		pv, _ := crypto.EncodeFloatVector(cryptoParams, arr)
 		C = append([]crypto.PlainVector{pv}, C...)
 	} else {
-		// Party 0 dummy vector. Because we need comb to have the correct number of covariates
-		// for Party 0, we append an empty plain vector.
-		C = append([]crypto.PlainVector{make(crypto.PlainVector, 0)}, C...)
+		// Keep one zero-filled ciphertext so distributed QR sees aligned local shapes.
+		C = append([]crypto.PlainVector{ast.zeroPlainVectorForNonDataParty()}, C...)
 	}
-
 
 	// Joint QR (NetDQRenc inside requires Party 0)
 	// SKAT runs without PCA covariates, passing nil
@@ -96,7 +116,7 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 	return ynew
 }
 
-// weightsCalculation computes SKAT weights (1/25)*(1-MAF)^24 via MPC
+// weightsCalculation computes the shared beta-density term used by the SKAT score.
 func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (mpc_core.RVec, mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
@@ -113,7 +133,7 @@ func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (
 	// Calculate MAF securely
 	// Total number of individuals N is perfectly public across all parties, so 2N is public.
 	// We can compute p_j = xSum / (2N) securely by multiplying the secret-shared xSumRVec by the plaintext scalar 1/(2N).
-	totalIndivs := ast.general.config.NumInds[1] + ast.general.config.NumInds[2]
+	totalIndivs := ast.skatTotalNumInds()
 	inv2N := rtype.FromFloat64(1.0/float64(2*totalIndivs), mpcObj.GetFracBits())
 
 	p_j := xSumRVec.Copy()
@@ -122,7 +142,7 @@ func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (
 
 	one := rtype.FromFloat64(1.0, mpcObj.GetFracBits())
 	var onesRVec mpc_core.RVec
-	if pid == 1 {
+	if pid == mpcObj.GetHubPid() {
 		onesRVec = mpc_core.InitRVec(one, len(p_j))
 	} else {
 		onesRVec = mpc_core.InitRVec(rtype.Zero(), len(p_j))
@@ -184,7 +204,6 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, S_all 
 	// Step 1: Null Model Residuals
 	ynew := ast.computeResidual()
 
-
 	Y := crypto.CipherMatrix{ynew[0]}
 	if pid == 0 {
 		Y = crypto.CipherMatrix{nil}
@@ -192,6 +211,7 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, S_all 
 
 	var finalQStat crypto.CipherVector
 	numBlocks := ast.general.config.GenoNumBlocks
+	hubPid := mpcObj.GetHubPid()
 
 	for block := 0; block < numBlocks; block++ {
 		// Determine number of SNPs in this block
@@ -215,10 +235,10 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, S_all 
 			}
 		}
 
-		if pid == 1 {
+		if pid == hubPid {
 			mpcObj.Network.SendInt(nsnps_block, 0)
 		} else if pid == 0 {
-			nsnps_block = mpcObj.Network.ReceiveInt(1)
+			nsnps_block = mpcObj.Network.ReceiveInt(hubPid)
 		}
 
 		log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Processing block %d/%d: Loading %d SNPs", block, numBlocks, nsnps_block))
@@ -229,7 +249,7 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, S_all 
 		var filterBlock []bool
 
 		if pid > 0 {
-			S_block, dosageSum, _, filterBlock = ast.GenoBlockMult(block, Y, false)
+			S_block, dosageSum, _, filterBlock = ast.GenoBlockMultSKAT(block, Y, false)
 			outFilter = append(outFilter, filterBlock...)
 		} else {
 			S_block = nil

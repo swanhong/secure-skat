@@ -478,11 +478,7 @@ func TestSecureSKATEndToEnd(t *testing.T) {
 	fmt.Printf("Output Directory:   %s\n", config.OutDir)
 	fmt.Printf("======================================================\n\n")
 
-	// Disable QC and PCA to accelerate testing
-	prot.GetConfig().SkipQC = true
-	prot.GetConfig().SkipPCA = true
-
-	// Manually initialize filters since QC is entirely bypassed
+	// Manually initialize filters (QC is entirely bypassed)
 	nParties := prot.GetConfig().NumMainParties
 	numSnps := prot.GetGwasParams().NumSNP()
 	snpFilt := make([]bool, numSnps)
@@ -498,7 +494,6 @@ func TestSecureSKATEndToEnd(t *testing.T) {
 	prot.GetConfig().CacheDir = filepath.Join("out", "party"+strconv.Itoa(pid))
 	os.MkdirAll(prot.GetConfig().CacheDir, 0755)
 
-	// Run full standalone Phase1->Phase2->Phase3 SKAT pipeline
 	prot.SKAT()
 
 	// Print final confirmation
