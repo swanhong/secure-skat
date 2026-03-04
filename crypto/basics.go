@@ -75,7 +75,7 @@ func GlobalToPartyIndex(cryptoParams *CryptoParams, Arowdims []int, col, nparty 
 	ctid := 0
 	slotid := col
 	for i := 0; i < nparty; i++ {
-		if slotid < Arowdims[i] {
+		if Arowdims[i] > 0 && slotid < Arowdims[i] {
 			pid = i
 			ctid = int(slotid / (cryptoParams.GetSlots()))
 			slotid = slotid % (cryptoParams.GetSlots())
@@ -814,7 +814,7 @@ func DropLevel(cryptoParams *CryptoParams, A CipherMatrix, outLevel int) CipherM
 				} else if A[i][j].Level() == outLevel {
 					out[i][j] = A[i][j].CopyNew().Ciphertext()
 				} else {
-					log.Fatalf("DropLevel: requested level", outLevel, "when input is", A[i][j].Level())
+					log.Fatalf("DropLevel: requested level %v when input is %v", outLevel, A[i][j].Level())
 				}
 				return nil
 			})

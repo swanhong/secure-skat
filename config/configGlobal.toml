@@ -23,6 +23,7 @@ cov_all_ones = false
 
 ## Input file options (supports "blocks" or "pgen")
 geno_file_format = "pgen" 
+geno_num_blocks = 22
 use_precomputed_geno_count = true
 
 ## Quality control parameters

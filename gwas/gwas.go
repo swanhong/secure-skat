@@ -227,24 +227,24 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 		file, err := os.Open(config.GenoBlockSizeFile)
 
 		if err != nil {
-			log.Fatalf("failed to open:", config.GenoBlockSizeFile)
+			log.Fatalf("failed to open: %v", config.GenoBlockSizeFile)
 		}
 		scanner := bufio.NewScanner(file)
 		scanner.Split(bufio.ScanLines)
 
 		for i := 0; i < config.GenoNumBlocks; i++ {
 			if !scanner.Scan() {
-				log.Fatalf("not enough lines in", config.GenoBlockSizeFile)
+				log.Fatalf("not enough lines in %v", config.GenoBlockSizeFile)
 			}
 
 			genoBlockSizes[i], err = strconv.Atoi(scanner.Text())
 			if err != nil {
-				log.Fatalf("parse error:", config.GenoBlockSizeFile)
+				log.Fatalf("parse error: %v", config.GenoBlockSizeFile)
 			}
 		}
 
 		if scanner.Scan() {
-			log.Fatalf("too many lines in", config.GenoBlockSizeFile)
+			log.Fatalf("too many lines in %v", config.GenoBlockSizeFile)
 		}
 
 		file.Close()
@@ -406,6 +406,37 @@ func (g *ProtocolInfo) GWAS() {
 	g.Phase1()
 	Qpca := g.Phase2()
 	g.Phase3(Qpca)
+}
+
+// SKAT is the main entry point to run the Secure SKAT protocol independently of single-variant GWAS
+func (g *ProtocolInfo) SKAT() {
+	mpcObj := g.mpcObj[0]
+	pid := mpcObj.GetPid()
+
+	log.LLvl1(time.Now().Format(time.RFC3339), "Running SKAT Phase 1 & 2")
+
+	assoc, _, _ := g.ComputeSKATStatistics()
+
+	log.LLvl1(time.Now().Format(time.RFC3339), "Finished SKAT tests")
+
+	net := g.mpcObj.GetNetworks()
+	net.PrintNetworkLog()
+
+	// Collective decrypt and save to file
+	if pid > 0 {
+		assocDec := mpcObj.Network.CollectiveDecryptVec(g.cps, assoc, -1)
+		out := crypto.DecodeFloatVector(g.cps, assocDec)
+
+		outFinal := []float64{out[0]}
+
+		SaveFloatVectorToFile(g.OutPath("skat_out.txt"), outFinal)
+	}
+	log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Output collectively decrypted and saved to: %s", g.OutPath("skat_out.txt")))
+}
+
+func (g *ProtocolInfo) ComputeSKATStatistics() (crypto.CipherVector, crypto.CipherMatrix, []bool) {
+	assocTest := g.InitAssociationTests(nil) // SKAT does not use PCA
+	return assocTest.ComputeSKATStatistics()
 }
 
 func (g *ProtocolInfo) CZeroTest() {
@@ -698,4 +729,9 @@ func (g *ProtocolInfo) PopulationStratification() crypto.CipherMatrix {
 func (g *ProtocolInfo) ComputeAssocStatistics(Qpca crypto.CipherMatrix) (crypto.CipherVector, []bool) {
 	assocTest := g.InitAssociationTests(Qpca)
 	return assocTest.GetAssociationStats()
+}
+
+func (g *ProtocolInfo) SetPhenoAndCov(pheno, cov *mat.Dense) {
+	g.pheno = pheno
+	g.cov = cov
 }

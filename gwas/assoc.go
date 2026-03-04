@@ -342,7 +342,12 @@ func (ast *AssocTest) GenoBlockMult(b int, mat crypto.CipherMatrix, square bool)
 		if isPgen {
 
 			numInd := gwasParams.numFiltInds[pid]
-			snpFilt := gwasParams.snpFilt[shift : shift+uint64(blockSize)]
+			var snpFilt []bool
+			if gwasParams.snpFilt == nil {
+				snpFilt = OnesBool(blockSize)
+			} else {
+				snpFilt = gwasParams.snpFilt[shift : shift+uint64(blockSize)]
+			}
 
 			pgenFile := fmt.Sprintf(ast.general.config.GenoFilePrefix, b+1) // Geno file for chromosome b+1
 
@@ -392,7 +397,7 @@ func (ast *AssocTest) GenoBlockMult(b int, mat crypto.CipherMatrix, square bool)
 
 						var mult crypto.CipherMatrix
 						var sum, sqSum []float64
-						mult, _, _ = MatMult4Stream(cryptoParams, mat, X, 5, false, square, nprocsPerBlock)
+						mult, sum, sqSum = MatMult4Stream(cryptoParams, mat, X, 5, false, square, nprocsPerBlock)
 						outMult[batchIndex] = mult
 						copy(dosageSum[outShift:outShift+len(sum)], sum)
 						copy(dosageSqSum[outShift:outShift+len(sqSum)], sqSum)

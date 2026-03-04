@@ -52,12 +52,15 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 	slots := cryptoParams.GetSlots()
 
 	pid := mpcObj.GetPid()
-	nparty := mpcObj.GetNParty()
 	rtype := mpcObj.GetRType()
 	fracBits := mpcObj.GetFracBits()
 	dataBits := mpcObj.GetDataBits()
+	nparty := len(nrowsAll)
 
-	nrows := nrowsAll[pid]
+	nrows := 0
+	if pid < len(nrowsAll) {
+		nrows = nrowsAll[pid]
+	}
 	ncols := len(A)
 	totN := 0
 	for i := 1; i < len(nrowsAll); i++ {
@@ -71,6 +74,14 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 	vList := make(crypto.CipherMatrix, ncols)
 
 	/* Forward pass: Compute a list of Householder vectors */
+	for rTest := range A {
+		for cTest := range A[rTest] {
+			if A[rTest][cTest] == nil {
+				log.LLvl1("EXTREME CRITICAL ERROR: NetDQRenc receives A[", rTest, "][", cTest, "] as NULL inside PID", pid)
+			}
+		}
+	}
+
 	for col := 0; col < ncols; col++ {
 		log.LLvl1(time.Now().Format(time.RFC3339), "DistriubtedQR, forward, column", col+1, "/", ncols)
 
@@ -79,7 +90,7 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 		// Determine who has the current first row of A and their local indices
 		upid, ctid, slotid := crypto.GlobalToPartyIndex(cryptoParams, nrowsAll, col, nparty)
 
-		if debug {
+		if true {
 			log.LLvl1(time.Now().Format(time.RFC3339), "check location: upid, ctid, slotid", upid, ctid, slotid)
 		}
 
@@ -106,7 +117,7 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 		zSqrtSS, _ := mpcObj.SqrtAndSqrtInverse(zSS, useBoolean)
 
 		var ssIn *ckks.Ciphertext
-		if upid == pid {
+		if pid > 0 && upid == pid {
 			ssIn = uvec[ctid]
 		}
 
@@ -143,7 +154,7 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 		zNewSqrtInv := mpcObj.SStoCiphertext(cryptoParams, mpc_core.RVec{zNewSqrtInvSS[0]})
 		zNewSqrtInv = crypto.Rebalance(cryptoParams, zNewSqrtInv)
 
-		if debug {
+		if debug || col <= 2 {
 			log.LLvl1(time.Now().Format(time.RFC3339), "col", col,
 				"zSS", mpcObj.RevealSym(zSS[0]).Float64(fracBits),
 				"zSqrtSS", mpcObj.RevealSym(zSqrtSS[0]).Float64(fracBits),
@@ -165,10 +176,12 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 				alphaScaled = crypto.Mask(cryptoParams, alphaScaled, slotid, false)
 				uvec[ctid] = crypto.Add(cryptoParams, uvec[ctid], alphaScaled)
 			}
+		}
 
-			// Save to list of all Householder vectors
-			vList[col] = uvec
+		// Save to list of all Householder vectors (all parties, including pid=0)
+		vList[col] = uvec
 
+		if pid > 0 {
 			if debug {
 				uvecDec := mpcObj.Network.CollectiveDecrypt(cryptoParams, uvec[0], 1)
 				log.LLvl1(time.Now().Format(time.RFC3339), "col", col, "householder vector: ", crypto.DecodeFloatVector(cryptoParams, crypto.PlainVector{uvecDec})[:5])
@@ -188,7 +201,6 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 			vvTA := DCMatMulAAtB(cryptoParams, mpcObj, vMat, A, nrowsAll, ncolCurr, fn)
 
 			// fmt.Println("Finished matrix multiplication")
-			// Compute (I - 2 * v * v^T) * A
 			cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
 				for c := range A {
 					for ci := range A[c] {
@@ -232,6 +244,19 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 			}
 			Q[c], _ = crypto.EncryptFloatVector(cryptoParams, col)
 		}
+	} else {
+		// Party 0 needs valid (empty) CipherVectors so that CAdd in the backward pass doesn't panic
+		for c := range Q {
+			Q[c] = crypto.CZeros(cryptoParams, 1)
+		}
+	}
+
+	// SYNCHRONIZE Q across parties so that they represent the same polynomial!
+	// Because each party has only their locally valid values in the vector, we can just aggregate them
+	// and bootstrap them to synchronize the polynomial.
+	if pid > 0 {
+		Q = mpcObj.Network.AggregateCMat(cryptoParams, Q)
+		Q = mpcObj.Network.CollectiveBootstrapMat(cryptoParams, Q, -1)
 
 		// Iterate backwards through the list of Householder vectors to update Q
 		for j := ncols - 1; j >= 0; j-- {
@@ -268,19 +293,21 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 			vvTQ := DCMatMulAAtB(cryptoParams, mpcObj, vMat, QSlice, nrowsAll, ncolCurr, fn)
 
 			// Compute (I - 2 * v * v^T) * Q
-			for c := 0; c < ncolCurr; c++ {
-				var scalar float64
-				if c == 0 {
-					scalar = invSqrtN
-				} else {
-					scalar = invN
-				}
-				cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-					for ci := range vvTQ[c] {
-						eval.MultByConstAndAdd(vvTQ[c][ci], -2*scalar, Q[j+c][ci])
+			if pid > 0 {
+				for c := 0; c < ncolCurr; c++ {
+					var scalar float64
+					if c == 0 {
+						scalar = invSqrtN
+					} else {
+						scalar = invN
 					}
-					return nil
-				})
+					cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+						for ci := range vvTQ[c] {
+							eval.MultByConstAndAdd(vvTQ[c][ci], -2*scalar, Q[j+c][ci])
+						}
+						return nil
+					})
+				}
 			}
 
 			tmp := mpcObj.Network.BootstrapMatAll(cryptoParams, Q[j:j+ncolCurr])
@@ -320,7 +347,10 @@ func NetDQRplain(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Pl
 	pid := mpcObj.GetPid()
 	ncols := len(A) //column encrypted
 	slots := cryptoParams.GetSlots()
-	nrows := nrowsAll[pid]
+	nrows := 0
+	if pid < len(nrowsAll) {
+		nrows = nrowsAll[pid]
+	}
 	nrowsTotal := 0
 	for i := 1; i < len(nrowsAll); i++ {
 		nrowsTotal += nrowsAll[i]

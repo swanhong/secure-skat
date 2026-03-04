@@ -1,0 +1,9 @@
+.local/*
+*.txt
+go.sum
+*.log
+*.bin
+cache/*
+output/*
+out/*
+*.test
