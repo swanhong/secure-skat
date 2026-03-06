@@ -70,6 +70,25 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 
 	Q := ast.computeCombinedQV2(C, nil)
 
+	// In SKAT, the first covariate is ALWAYS the identically precise intercept.
+	// Override Q[0] with 1.0 to eliminate NetDQRenc Goldschmidt approximation noise.
+	if pid > 0 {
+		slots := cryptoParams.GetSlots()
+		ct := crypto.CZeros(cryptoParams, 1)[0]
+		ct = crypto.AddConst(cryptoParams, ct, 1.0)
+
+		QFirst := make(crypto.CipherVector, ((nrowsAll[pid]-1)/slots)+1)
+		for i := range QFirst {
+			nElem := slots
+			if i == len(QFirst)-1 {
+				nElem = nrowsAll[pid] - (len(QFirst)-1)*slots
+			}
+			QFirst[i] = crypto.MaskTrunc(cryptoParams, ct, nElem)
+		}
+		Q[0] = QFirst
+		Q, _ = crypto.FlattenLevels(cryptoParams, Q)
+	}
+
 	// Save vertically partitioned arrays by iterating individually to avoid
 	// MPC extracting ciphertexts composed of independent data halves (-1).
 	for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
