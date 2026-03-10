@@ -407,7 +407,7 @@ func TestSKATBasicOperations(t *testing.T) {
 
 		// Call ComputeSKATStatistics directly to get the score vector
 		// This tests the full integrated path in skat.go
-		_, S_out, _ := prot.ComputeSKATStatistics()
+		_, _, S_out, _ := prot.ComputeSKATStatistics()
 
 		if pid == 1 {
 			// Decrypt and compare score vector for the first block
@@ -506,6 +506,58 @@ func TestSecureSKATEndToEnd(t *testing.T) {
 	} else {
 		fmt.Printf("\n======================================================\n")
 		fmt.Printf("Secure SKAT End-to-End verified for Hub (PID=0)\n")
+		fmt.Printf("======================================================\n\n")
+	}
+}
+
+func TestSecureBurdenEndToEnd(t *testing.T) {
+
+	rand.Seed(time.Now().UnixNano())
+	prot := InitProtocolForTest(t)
+	if prot == nil {
+		return
+	}
+	defer prot.SyncAndTerminate(true)
+
+	// Print metaparameters for all parties
+	pid := prot.mpcObj[0].GetPid()
+	config := prot.GetConfig()
+	fmt.Printf("\n======================================================\n")
+	fmt.Printf("SECURE BURDEN METAPARAMETERS (PID=%d)\n", pid)
+	fmt.Printf("======================================================\n")
+	fmt.Printf("CKKS Parameters:    %s\n", config.CkksParams)
+	fmt.Printf("MPC Field Size:     %d bits\n", config.MpcFieldSize)
+	fmt.Printf("Output Directory:   %s\n", config.OutDir)
+	fmt.Printf("======================================================\n\n")
+
+	// Manually initialize filters (QC is entirely bypassed)
+	nParties := prot.GetConfig().NumMainParties
+	numSnps := prot.GetGwasParams().NumSNP()
+	snpFilt := make([]bool, numSnps)
+	for i := range snpFilt {
+		snpFilt[i] = true
+	}
+	prot.GetGwasParams().SetSnpFilt(snpFilt)
+	numFiltInds := make([]int, nParties+1)
+	copy(numFiltInds, prot.GetConfig().NumInds)
+	prot.GetGwasParams().SetFiltCounts(numFiltInds, numSnps)
+
+	// Enable caching to `out/partyX` so user can inspect intermediate testing files
+	prot.GetConfig().CacheDir = filepath.Join("out", "party"+strconv.Itoa(pid))
+	os.MkdirAll(prot.GetConfig().CacheDir, 0755)
+
+	prot.SKAT()
+
+	// Print final confirmation
+	if prot.GetConfig().NumMainParties > 0 {
+		outPath := prot.OutPath("burden_out.txt")
+		fmt.Printf("\n======================================================\n")
+		fmt.Printf("Secure Burden End-to-End verified!\n")
+		fmt.Printf("Final output is saved in: %s\n", outPath)
+		fmt.Printf("======================================================\n\n")
+	} else {
+		fmt.Printf("\n======================================================\n")
+		fmt.Printf("Secure Burden End-to-End verified for Hub (PID=0)\n")
 		fmt.Printf("======================================================\n\n")
 	}
 }

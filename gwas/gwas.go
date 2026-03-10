@@ -415,7 +415,7 @@ func (g *ProtocolInfo) SKAT() {
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "Running SKAT Phase 1 & 2")
 
-	assoc, _, _ := g.ComputeSKATStatistics()
+	assoc, burden, _, _ := g.ComputeSKATStatistics()
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "Finished SKAT tests")
 
@@ -430,8 +430,15 @@ func (g *ProtocolInfo) SKAT() {
 		outFinal := []float64{out[0]}
 
 		SaveFloatVectorToFile(g.OutPath("skat_out.txt"), outFinal)
+
+		burdenDec := mpcObj.Network.CollectiveDecryptVec(g.cps, burden, -1)
+		outBurden := crypto.DecodeFloatVector(g.cps, burdenDec)
+
+		outBurdenFinal := []float64{outBurden[0]}
+
+		SaveFloatVectorToFile(g.OutPath("burden_out.txt"), outBurdenFinal)
 	}
-	log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Output collectively decrypted and saved to: %s", g.OutPath("skat_out.txt")))
+	log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Output collectively decrypted and saved to: %s and burden_out.txt", g.OutPath("skat_out.txt")))
 }
 
 // SetPhenoAndCov allows deterministic testing scripts to override File I/O datasets in memory
@@ -440,7 +447,7 @@ func (g *ProtocolInfo) SetPhenoAndCov(pheno, cov *mat.Dense) {
 	g.cov = cov
 }
 
-func (g *ProtocolInfo) ComputeSKATStatistics() (crypto.CipherVector, crypto.CipherMatrix, []bool) {
+func (g *ProtocolInfo) ComputeSKATStatistics() (crypto.CipherVector, crypto.CipherVector, crypto.CipherMatrix, []bool) {
 	assocTest := g.InitAssociationTests(nil) // SKAT does not use PCA
 	return assocTest.ComputeSKATStatistics()
 }
@@ -736,5 +743,3 @@ func (g *ProtocolInfo) ComputeAssocStatistics(Qpca crypto.CipherMatrix) (crypto.
 	assocTest := g.InitAssociationTests(Qpca)
 	return assocTest.GetAssociationStats()
 }
-
-

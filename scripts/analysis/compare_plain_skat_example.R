@@ -91,6 +91,7 @@ if (any(is.na(y_resid))) {
 n_total <- length(y_resid)
 q_total_secure_style <- 0.0
 q_total_standard_weight <- 0.0
+burden_total_secure_style <- 0.0
 variant_total <- 0L
 
 for (chr_index in seq_len(22)) {
@@ -116,11 +117,15 @@ for (chr_index in seq_len(22)) {
   beta_weight <- 25.0 * (1.0 - maf)^24
 
   q_block <- sum((beta_weight^2) * (score^2))
+  burden_block <- sum(beta_weight * score)
 
   q_total_secure_style <- q_total_secure_style + q_block
   q_total_standard_weight <- q_total_standard_weight + sum(beta_weight * (score^2))
+  burden_total_secure_style <- burden_total_secure_style + burden_block
   variant_total <- variant_total + ncol(geno)
 }
+
+burden_q_total_secure_style <- burden_total_secure_style^2
 
 secure_q_path <- file.path(repo_root, "out", "party1", "skat_out.txt")
 secure_q <- if (file.exists(secure_q_path)) {
@@ -129,13 +134,29 @@ secure_q <- if (file.exists(secure_q_path)) {
   NA_real_
 }
 
+secure_burden_path <- file.path(repo_root, "out", "party1", "burden_out.txt")
+secure_burden <- if (file.exists(secure_burden_path)) {
+  as.numeric(scan(secure_burden_path, quiet = TRUE, nmax = 1))
+} else {
+  NA_real_
+}
+
 cat(sprintf("Samples: %d\n", n_total))
 cat(sprintf("Variants: %d\n", variant_total))
 cat(sprintf("Plain Q (secure-style weights^2): %.10e\n", q_total_secure_style))
 cat(sprintf("Plain Q (single beta weight): %.10e\n", q_total_standard_weight))
+cat(sprintf("Plain Burden (secure-style): %.10e\n", burden_q_total_secure_style))
 
 if (!is.na(secure_q)) {
+  cat(sprintf("\n--- SKAT Results ---\n"))
   cat(sprintf("Secure Q (out/party1/skat_out.txt): %.10e\n", secure_q))
   cat(sprintf("Absolute difference (secure-style): %.10e\n", abs(q_total_secure_style - secure_q)))
   cat(sprintf("Relative difference (secure-style): %.10e\n", abs(q_total_secure_style - secure_q) / max(abs(secure_q), 1e-12)))
+}
+
+if (!is.na(secure_burden)) {
+  cat(sprintf("\n--- Burden Results ---\n"))
+  cat(sprintf("Secure Burden (out/party1/burden_out.txt): %.10e\n", secure_burden))
+  cat(sprintf("Absolute difference (Burden): %.10e\n", abs(burden_q_total_secure_style - secure_burden)))
+  cat(sprintf("Relative difference (Burden): %.10e\n", abs(burden_q_total_secure_style - secure_burden) / max(abs(secure_burden), 1e-12)))
 }

@@ -196,7 +196,7 @@ func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (
 }
 
 // ScoreCalculation calculates the final SKAT Score statistic iteratively
-func (ast *AssocTest) ScoreCalculation(S_vec crypto.CipherVector, w_enc crypto.CipherVector) crypto.CipherVector {
+func (ast *AssocTest) ScoreCalculation(S_vec crypto.CipherVector, w_enc crypto.CipherVector) (crypto.CipherVector, crypto.CipherVector) {
 	cryptoParams := ast.general.cps
 
 	// Compute [s_j^2]
@@ -207,13 +207,17 @@ func (ast *AssocTest) ScoreCalculation(S_vec crypto.CipherVector, w_enc crypto.C
 	w2S2 := crypto.CMult(cryptoParams, w2, S2)
 
 	// Sum across all SNPs in this block
-	qBlock := crypto.InnerSumAll(cryptoParams, w2S2)
+	qSkatBlock := crypto.InnerSumAll(cryptoParams, w2S2)
 
-	return crypto.CipherVector{qBlock}
+	// Compute [w_j * s_j] for Burden
+	wS := crypto.CMult(cryptoParams, w_enc, S_vec)
+	qBurdenBlock := crypto.InnerSumAll(cryptoParams, wS)
+
+	return crypto.CipherVector{qSkatBlock}, crypto.CipherVector{qBurdenBlock}
 }
 
 // Main SKAT computation function calling separated steps
-func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, S_all crypto.CipherMatrix, outFilter []bool) {
+func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurden crypto.CipherVector, S_all crypto.CipherMatrix, outFilter []bool) {
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
 	cryptoParams := ast.general.cps
@@ -229,6 +233,7 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, S_all 
 	}
 
 	var finalQStat crypto.CipherVector
+	var finalBurdenStat crypto.CipherVector
 	numBlocks := ast.general.config.GenoNumBlocks
 	hubPid := mpcObj.GetHubPid()
 
@@ -293,17 +298,25 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, S_all 
 			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{w_enc}, nsnps_block, -1, ast.general.OutPath(fmt.Sprintf("w_enc_block%d.txt", block)))
 
 			// Step 4: ScoreCalculation
-			qBlockRes := ast.ScoreCalculation(S_vec, w_enc)
+			qBlockRes, qBurdenBlockRes := ast.ScoreCalculation(S_vec, w_enc)
 
 			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qBlock_block%d.txt", block)))
+			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBurdenBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qBurdenBlock_block%d.txt", block)))
 
 			if finalQStat == nil {
 				finalQStat = qBlockRes
+				finalBurdenStat = qBurdenBlockRes
 			} else {
 				finalQStat = crypto.CAdd(cryptoParams, finalQStat, qBlockRes)
+				finalBurdenStat = crypto.CAdd(cryptoParams, finalBurdenStat, qBurdenBlockRes)
 			}
 		}
 	}
 
-	return finalQStat, S_all, outFilter
+	if pid > 0 && finalBurdenStat != nil {
+		// Secure SKAT computes Burden as the square of the sum of block scores
+		finalBurdenStat = crypto.CMult(cryptoParams, finalBurdenStat, finalBurdenStat)
+	}
+
+	return finalQStat, finalBurdenStat, S_all, outFilter
 }
