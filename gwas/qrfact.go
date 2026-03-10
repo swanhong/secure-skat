@@ -254,9 +254,11 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 	// SYNCHRONIZE Q across parties so that they represent the same polynomial!
 	// Because each party has only their locally valid values in the vector, we can just aggregate them
 	// and bootstrap them to synchronize the polynomial.
+	// WAIT: If Party 1 and Party 2 both use slots 0-999, aggregating them adds them maliciously!
+	// We MUST NOT aggregate them because `vvTQ` aggregation will handle the distributed sum correctly!
 	if pid > 0 {
-		Q = mpcObj.Network.AggregateCMat(cryptoParams, Q)
-		Q = mpcObj.Network.CollectiveBootstrapMat(cryptoParams, Q, -1)
+		// Q = mpcObj.Network.AggregateCMat(cryptoParams, Q)
+		Q = mpcObj.Network.BootstrapMatAll(cryptoParams, Q)
 
 		// Iterate backwards through the list of Householder vectors to update Q
 		for j := ncols - 1; j >= 0; j-- {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/hhcho/sfgwas/crypto"
 	"github.com/hhcho/sfgwas/mpc"
+	"github.com/ldsec/lattigo/v2/ckks"
 	"gonum.org/v1/gonum/mat"
 )
 
@@ -416,6 +417,60 @@ func SaveMatrixToFile(cps *crypto.CryptoParams, mpcObj *mpc.MPC, cm crypto.Ciphe
 
 	}
 
+}
+
+func SaveMatrixComplexPartsToFile(cps *crypto.CryptoParams, mpcObj *mpc.MPC, cm crypto.CipherMatrix, nElemCol int, sourcePid int, realFilename, imagFilename string) {
+	pid := mpcObj.GetPid()
+	if pid == 0 {
+		return
+	}
+
+	pm := mpcObj.Network.CollectiveDecryptMat(cps, cm, sourcePid)
+
+	realM := mat.NewDense(len(cm), nElemCol, nil)
+	imagM := mat.NewDense(len(cm), nElemCol, nil)
+	for i := range pm {
+		var vals []complex128
+		cps.WithEncoder(func(encoder ckks.Encoder) error {
+			for _, plaintext := range pm[i] {
+				vals = append(vals, encoder.Decode(plaintext, cps.Params.LogSlots())...)
+			}
+			return nil
+		})
+
+		realRow := make([]float64, nElemCol)
+		imagRow := make([]float64, nElemCol)
+		for j := 0; j < nElemCol; j++ {
+			realRow[j] = real(vals[j])
+			imagRow[j] = imag(vals[j])
+		}
+		realM.SetRow(i, realRow)
+		imagM.SetRow(i, imagRow)
+	}
+
+	if pid == sourcePid || sourcePid < 0 {
+		writeDenseMatrix := func(filename string, M *mat.Dense) {
+			f, err := os.Create(filename)
+			if err != nil {
+				panic(err)
+			}
+			defer f.Close()
+
+			rows, cols := M.Dims()
+			for row := 0; row < rows; row++ {
+				line := make([]string, cols)
+				for col := 0; col < cols; col++ {
+					line[col] = fmt.Sprintf("%.6e", M.At(row, col))
+				}
+				f.WriteString(strings.Join(line, ",") + "\n")
+			}
+			f.Sync()
+			fmt.Println("Saved data to", filename)
+		}
+
+		writeDenseMatrix(realFilename, realM)
+		writeDenseMatrix(imagFilename, imagM)
+	}
 }
 
 func SaveFloatMatrixToFile(filename string, x [][]float64) {

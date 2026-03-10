@@ -234,6 +234,99 @@ func DCMatMulAAtBPlain(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A cry
 	return out
 }
 
+func DCMatMulAAtBPlainWithIntmd(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.CipherMatrix, B crypto.PlainMatrix,
+	nrows []int, ncol_out int, innerFn matmulPlainInnerFn) (crypto.CipherMatrix, crypto.CipherMatrix, error) {
+
+	slots := cryptoParams.GetSlots()
+	pid := mpcObj.GetPid()
+
+	// Align levels of A and B (if possible)
+	A, _ = crypto.FlattenLevels(cryptoParams, A)
+
+	out := crypto.CZeroMat(cryptoParams, int((nrows[pid]-1)/slots)+1, ncol_out)
+	// Initialize out with correct scale for subsequent additions
+	for i := range out {
+		for j := range out[i] {
+			out[i][j].SetScale(cryptoParams.Params.Scale())
+		}
+	}
+
+	var QTY crypto.CipherMatrix
+	if pid > 0 {
+		QTY = make(crypto.CipherMatrix, 1)
+		QTY[0] = make(crypto.CipherVector, len(A))
+	} else {
+		QTY = make(crypto.CipherMatrix, 1)
+		QTY[0] = nil
+	}
+
+	var wg sync.WaitGroup
+	for c := range A {
+		cTQloc := make(crypto.CipherVector, ncol_out)
+
+		for j := range cTQloc {
+			wg.Add(1)
+			go func(j int) {
+				defer wg.Done()
+				innerProd := innerFn(cryptoParams, A[c], B, j)
+				cTQloc[j] = crypto.InnerSumAll(cryptoParams, innerProd)
+			}(j)
+		}
+		wg.Wait()
+
+		cTQ := mpcObj.Network.AggregateCVec(cryptoParams, cTQloc)
+
+		if pid > 0 {
+			QTY[0][c] = cTQ[0]
+		}
+
+		// Align the aggregated cTQ to the same level as A[c]
+		for col := range cTQ {
+			if cTQ[col] == nil {
+				continue
+			}
+			levelA := A[c][0].Level()
+			if cTQ[col].Level() > levelA {
+				cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+					eval.DropLevel(cTQ[col], cTQ[col].Level()-levelA)
+					return nil
+				})
+			}
+		}
+
+		for j := 0; j < ncol_out; j++ {
+			wg.Add(1)
+			go func(j int) {
+				defer wg.Done()
+				ctq := cTQ[j]
+				// Drop A[c]'s level to match ctq if needed (per ciphertext)
+				ac := make(crypto.CipherVector, len(A[c]))
+				for k, ct := range A[c] {
+					if ct == nil {
+						continue
+					}
+					if ct.Level() > ctq.Level() {
+						ctCopy := ct.CopyNew().Ciphertext()
+						cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+							eval.DropLevel(ctCopy, ctCopy.Level()-ctq.Level())
+							return nil
+						})
+						ac[k] = ctCopy
+					} else {
+						ac[k] = ct
+					}
+				}
+
+				ccTQ := crypto.CMult(cryptoParams, ac, crypto.CipherVector{ctq})
+				out[j] = crypto.CAdd(cryptoParams, out[j], ccTQ)
+			}(j)
+		}
+		wg.Wait()
+	}
+
+	return out, QTY, nil
+}
+
 type uint128 struct {
 	hi uint64
 	lo uint64

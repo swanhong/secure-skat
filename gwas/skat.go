@@ -2,6 +2,8 @@ package gwas
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	mpc_core "github.com/hhcho/mpc-core"
@@ -108,10 +110,46 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 	}
 
 	var ynew crypto.CipherMatrix
+	var QTY crypto.CipherMatrix
 	// DCMatMulAAtBPlain only aggregates across data parties. Party 0 can skip it or just get nil
 	if pid > 0 {
-		ynew = DCMatMulAAtBPlain(cryptoParams, mpcObj, Q, ymat, nrowsAll, 1, mmplainfn) // Level -2
+		var err error
+		ynew, QTY, err = DCMatMulAAtBPlainWithIntmd(cryptoParams, mpcObj, Q, ymat, nrowsAll, 1, mmplainfn) // Level -2
+		if err != nil {
+			log.Lvl1("Error in DCMatMulAAtBPlainWithIntmd: ", err)
+		}
+
+		for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
+			if QTY != nil {
+				// Manually decrypt the 0-th slot of each ciphertext in QTY[0]
+				ptList := mpcObj.Network.CollectiveDecryptVec(cryptoParams, QTY[0], p)
+
+				if pid == p {
+					f, err := os.Create(ast.general.OutPath("qty.txt"))
+					if err == nil {
+						var vals []string
+						for _, pt := range ptList {
+							v := crypto.DecodeFloatVector(cryptoParams, crypto.PlainVector{pt})[0]
+							vals = append(vals, fmt.Sprintf("%.6e", v))
+						}
+						f.WriteString(strings.Join(vals, ",") + "\n")
+						f.Close()
+					}
+				}
+			}
+		}
+
+		// Save y_proj before rescaling/subtraction
+		for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
+			SaveMatrixToFile(cryptoParams, mpcObj, ynew, nrowsAll[p], p, ast.general.OutPath("y_proj_raw.txt"))
+		}
+
 		ynew[0] = crypto.CMultConstRescale(cryptoParams, ynew[0], nrowsTotalInv, true)
+
+		// Save y_proj AFTER rescaling but before subtracting from pheno
+		for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
+			SaveMatrixToFile(cryptoParams, mpcObj, ynew, nrowsAll[p], p, ast.general.OutPath("y_proj_rescaled.txt"))
+		}
 
 	} else {
 		ynew = make(crypto.CipherMatrix, 1)
@@ -135,42 +173,42 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 	return ynew
 }
 
-// weightsCalculation computes the shared beta-density term used by the SKAT score.
-func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (mpc_core.RVec, mpc_core.RVec) {
+// weightsCalculation computes per-variant p_bar = dosageSum/(2N), p = 1-p_bar,
+// and the beta weights 25 * p_bar^24.
+func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (mpc_core.RVec, mpc_core.RVec, mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
 	rtype := mpcObj.GetRType()
 
-	xSumRVec := mpc_core.InitRVec(rtype.Zero(), nsnps_block)
+	dosageSumRVec := mpc_core.InitRVec(rtype.Zero(), nsnps_block)
 
 	if pid > 0 {
 		for j := 0; j < nsnps_block; j++ {
-			xSumRVec[j] = rtype.FromFloat64(dosageSum[j], 0) // exact integer sums
+			dosageSumRVec[j] = rtype.FromFloat64(dosageSum[j], 0) // exact integer sums
 		}
 	}
 
-	// Calculate MAF securely
-	// Total number of individuals N is perfectly public across all parties, so 2N is public.
-	// We can compute p_j = xSum / (2N) securely by multiplying the secret-shared xSumRVec by the plaintext scalar 1/(2N).
+	// The secure genotype orientation already yields dosage_bar = 2N - dosage.
+	// Therefore dosageSum/(2N) is p_bar relative to the plain reference, and
+	// p = 1-p_bar must be derived explicitly in the shared domain.
 	totalIndivs := ast.skatTotalNumInds()
 	inv2N := rtype.FromFloat64(1.0/float64(2*totalIndivs), mpcObj.GetFracBits())
 
-	p_j := xSumRVec.Copy()
-	p_j.MulScalar(inv2N)
-	// p_j inherently possesses mpcObj.GetFracBits() precision now (0 bits * frac bits = frac bits)
+	pBarVec := dosageSumRVec.Copy()
+	pBarVec.MulScalar(inv2N)
 
-	one := rtype.FromFloat64(1.0, mpcObj.GetFracBits())
-	var onesRVec mpc_core.RVec
+	oneFrac := rtype.FromFloat64(1.0, mpcObj.GetFracBits())
+	var oneShared mpc_core.RVec
 	if pid == mpcObj.GetHubPid() {
-		onesRVec = mpc_core.InitRVec(one, len(p_j))
+		oneShared = mpc_core.InitRVec(oneFrac, nsnps_block)
 	} else {
-		onesRVec = mpc_core.InitRVec(rtype.Zero(), len(p_j))
+		oneShared = mpc_core.InitRVec(rtype.Zero(), nsnps_block)
 	}
-	onesRVec.Sub(p_j)
-	w_term := onesRVec
+	oneShared.Sub(pBarVec)
+	pVec := oneShared
 
-	// Compute (1 - p_j)^24 via squaring
-	w2 := mpcObj.SSMultElemVec(w_term, w_term)
+	weightBase := pBarVec.Copy()
+	w2 := mpcObj.SSMultElemVec(weightBase, weightBase)
 	w2 = mpcObj.TruncVec(w2, mpcObj.GetDataBits(), mpcObj.GetFracBits())
 
 	w4 := mpcObj.SSMultElemVec(w2, w2)
@@ -185,35 +223,42 @@ func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (
 	w24 := mpcObj.SSMultElemVec(w16, w8)
 	w24 = mpcObj.TruncVec(w24, mpcObj.GetDataBits(), mpcObj.GetFracBits())
 
-	// In standard SKAT, the weight is dbeta(MAF, 1, 25)
-	// The beta density is f(x) = x^(a-1)*(1-x)^(b-1) / B(a,b)
-	// B(1, 25) = 1/25. So f(x) = 25 * (1-x)^24
+	// In standard SKAT, beta(MAF; 1, 25) = 25 * (1-MAF)^24.
+	// Under the current secure dosage orientation, that weight base is p_bar.
 	betaConst := rtype.FromFloat64(25.0, mpcObj.GetFracBits())
 	w24.MulScalar(betaConst)
 	w24 = mpcObj.TruncVec(w24, mpcObj.GetDataBits(), mpcObj.GetFracBits())
 
-	return p_j, w24
+	return pVec, pBarVec, w24
 }
 
-// ScoreCalculation calculates the final SKAT Score statistic iteratively
-func (ast *AssocTest) ScoreCalculation(S_vec crypto.CipherVector, w_enc crypto.CipherVector) (crypto.CipherVector, crypto.CipherVector) {
+// ScoreCalculation calculates the final SKAT Score statistic iteratively.
+// It also returns key intermediate vectors to simplify debugging of score aggregation.
+func (ast *AssocTest) ScoreCalculation(scoreVec crypto.CipherVector, weightEnc crypto.CipherVector) (
+	crypto.CipherVector,
+	crypto.CipherVector,
+	crypto.CipherVector,
+	crypto.CipherVector,
+	crypto.CipherVector,
+	crypto.CipherVector,
+) {
 	cryptoParams := ast.general.cps
 
 	// Compute [s_j^2]
-	S2 := crypto.CMult(cryptoParams, S_vec, S_vec)
+	S2 := crypto.CMult(cryptoParams, scoreVec, scoreVec)
 
 	// Compute [w_j^2] and then [w_j^2 * s_j^2]
-	w2 := crypto.CMult(cryptoParams, w_enc, w_enc)
+	w2 := crypto.CMult(cryptoParams, weightEnc, weightEnc)
 	w2S2 := crypto.CMult(cryptoParams, w2, S2)
 
 	// Sum across all SNPs in this block
 	qSkatBlock := crypto.InnerSumAll(cryptoParams, w2S2)
 
 	// Compute [w_j * s_j] for Burden
-	wS := crypto.CMult(cryptoParams, w_enc, S_vec)
+	wS := crypto.CMult(cryptoParams, weightEnc, scoreVec)
 	qBurdenBlock := crypto.InnerSumAll(cryptoParams, wS)
 
-	return crypto.CipherVector{qSkatBlock}, crypto.CipherVector{qBurdenBlock}
+	return crypto.CipherVector{qSkatBlock}, crypto.CipherVector{qBurdenBlock}, S2, w2, w2S2, wS
 }
 
 // Main SKAT computation function calling separated steps
@@ -281,27 +326,80 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 			outFilter = append(outFilter, make([]bool, nsnps_block)...)
 		}
 
-		// Step 3: weightsCalculation
-		_, w_block_RVec := ast.weightsCalculation(dosageSum, nsnps_block)
+		// Step 3: compute p, p_bar, and beta weights
+		pBlockRVec, pBarBlockRVec, weightBlockRVec := ast.weightsCalculation(dosageSum, nsnps_block)
 
 		// Aggregate across parties
 		S_block_aggr := mpcObj.Network.AggregateCMat(cryptoParams, S_block)
 		S_block_aggr = mpcObj.Network.CollectiveBootstrapMat(cryptoParams, S_block_aggr, -1)
 
 		if pid > 0 {
-			S_vec := S_block_aggr[0]
-			S_all = append(S_all, S_vec)
+			scoreVec := S_block_aggr[0]
+			S_all = append(S_all, scoreVec)
 
-			w_enc := mpcObj.SSToCVec(cryptoParams, w_block_RVec)
+			pEnc := mpcObj.SSToCVec(cryptoParams, pBlockRVec)
+			pBarEnc := mpcObj.SSToCVec(cryptoParams, pBarBlockRVec)
+			weightEnc := mpcObj.SSToCVec(cryptoParams, weightBlockRVec)
 
-			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{S_vec}, nsnps_block, -1, ast.general.OutPath(fmt.Sprintf("S_vec_block%d.txt", block)))
-			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{w_enc}, nsnps_block, -1, ast.general.OutPath(fmt.Sprintf("w_enc_block%d.txt", block)))
+			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{pEnc}, nsnps_block, -1, ast.general.OutPath(fmt.Sprintf("p_block%d.txt", block)))
+			SaveMatrixComplexPartsToFile(
+				cryptoParams,
+				mpcObj,
+				crypto.CipherMatrix{pEnc},
+				nsnps_block,
+				-1,
+				ast.general.OutPath(fmt.Sprintf("p_block%d_real.txt", block)),
+				ast.general.OutPath(fmt.Sprintf("p_block%d_imag.txt", block)),
+			)
+			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{pBarEnc}, nsnps_block, -1, ast.general.OutPath(fmt.Sprintf("p_bar_block%d.txt", block)))
+			SaveMatrixComplexPartsToFile(
+				cryptoParams,
+				mpcObj,
+				crypto.CipherMatrix{pBarEnc},
+				nsnps_block,
+				-1,
+				ast.general.OutPath(fmt.Sprintf("p_bar_block%d_real.txt", block)),
+				ast.general.OutPath(fmt.Sprintf("p_bar_block%d_imag.txt", block)),
+			)
+			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{scoreVec}, nsnps_block, -1, ast.general.OutPath(fmt.Sprintf("S_vec_block%d.txt", block)))
+			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{weightEnc}, nsnps_block, -1, ast.general.OutPath(fmt.Sprintf("w_enc_block%d.txt", block)))
+			SaveMatrixComplexPartsToFile(
+				cryptoParams,
+				mpcObj,
+				crypto.CipherMatrix{weightEnc},
+				nsnps_block,
+				-1,
+				ast.general.OutPath(fmt.Sprintf("w_enc_block%d_real.txt", block)),
+				ast.general.OutPath(fmt.Sprintf("w_enc_block%d_imag.txt", block)),
+			)
 
 			// Step 4: ScoreCalculation
-			qBlockRes, qBurdenBlockRes := ast.ScoreCalculation(S_vec, w_enc)
+			qBlockRes, qBurdenBlockRes, S2, w2, w2S2, wS := ast.ScoreCalculation(scoreVec, weightEnc)
 
 			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qBlock_block%d.txt", block)))
 			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBurdenBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qBurdenBlock_block%d.txt", block)))
+			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{S2}, nsnps_block, -1, ast.general.OutPath(fmt.Sprintf("S2_block%d.txt", block)))
+			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{w2}, nsnps_block, -1, ast.general.OutPath(fmt.Sprintf("w2_block%d.txt", block)))
+			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{w2S2}, nsnps_block, -1, ast.general.OutPath(fmt.Sprintf("w2S2_block%d.txt", block)))
+			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{wS}, nsnps_block, -1, ast.general.OutPath(fmt.Sprintf("wS_block%d.txt", block)))
+			SaveMatrixComplexPartsToFile(
+				cryptoParams,
+				mpcObj,
+				crypto.CipherMatrix{w2},
+				nsnps_block,
+				-1,
+				ast.general.OutPath(fmt.Sprintf("w2_block%d_real.txt", block)),
+				ast.general.OutPath(fmt.Sprintf("w2_block%d_imag.txt", block)),
+			)
+			SaveMatrixComplexPartsToFile(
+				cryptoParams,
+				mpcObj,
+				crypto.CipherMatrix{w2S2},
+				nsnps_block,
+				-1,
+				ast.general.OutPath(fmt.Sprintf("w2S2_block%d_real.txt", block)),
+				ast.general.OutPath(fmt.Sprintf("w2S2_block%d_imag.txt", block)),
+			)
 
 			if finalQStat == nil {
 				finalQStat = qBlockRes
