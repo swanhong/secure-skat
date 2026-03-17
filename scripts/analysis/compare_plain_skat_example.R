@@ -2,8 +2,10 @@ args <- commandArgs(trailingOnly = TRUE)
 
 repo_root <- if (length(args) >= 1) args[[1]] else "."
 repo_root <- normalizePath(repo_root, winslash = "/", mustWork = TRUE)
-blocks_to_print <- if (length(args) >= 2) {
-  as.integer(strsplit(args[[2]], ",", fixed = TRUE)[[1]])
+run_suffix <- if (length(args) >= 2) args[[2]] else ""
+blocks_arg_index <- if (length(args) >= 3) 3 else NA_integer_
+blocks_to_print <- if (!is.na(blocks_arg_index)) {
+  as.integer(strsplit(args[[blocks_arg_index]], ",", fixed = TRUE)[[1]])
 } else {
   c(1L, 22L)
 }
@@ -32,6 +34,11 @@ cache_dir <- file.path(repo_root, ".local", "tmp", "plain_skat_compare")
 dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
 csv_dir <- file.path(cache_dir, "variant_debug_csv")
 dir.create(csv_dir, recursive = TRUE, showWarnings = FALSE)
+
+secure_party_dir <- function(party_idx) {
+  suffix <- if (nzchar(run_suffix)) paste0("_", run_suffix) else ""
+  file.path(repo_root, "out", sprintf("party%d%s", party_idx, suffix))
+}
 
 read_pheno <- function(party_dir) {
   as.numeric(read.table(file.path(party_dir, "pheno.txt"), header = FALSE)[, 1])
@@ -134,10 +141,11 @@ for (chr_index in seq_len(22)) {
   dosage_sum <- colSums(geno)
   p <- dosage_sum / (2.0 * n_total)
   p_bar <- 1.0 - p
+  maf <- pmin(p, p_bar)
 
   # Keep p and p_bar explicit throughout the script.
-  # The SKAT beta weight used here is 25 * p_bar^24.
-  beta_weight <- 25.0 * (p_bar^24)
+  # The SKAT beta weight uses maf = min(p, 1-p).
+  beta_weight <- 25.0 * (maf^24)
 
   q_block <- sum((beta_weight^2) * (score^2))
   burden_block <- sum(beta_weight * score)
@@ -156,6 +164,7 @@ for (chr_index in seq_len(22)) {
     dosage_sum_bar = 2.0 * n_total - dosage_sum,
     p = p,
     p_bar = p_bar,
+    maf = maf,
     score = score,
     score_negated = -score,
     weight = beta_weight,
@@ -170,14 +179,14 @@ for (chr_index in seq_len(22)) {
 
 burden_q_total_secure_style <- burden_total_secure_style^2
 
-secure_q_path <- file.path(repo_root, "out", "party1", "skat_out.txt")
+secure_q_path <- file.path(secure_party_dir(1), "skat_out.txt")
 secure_q <- if (file.exists(secure_q_path)) {
   as.numeric(scan(secure_q_path, quiet = TRUE, nmax = 1))
 } else {
   NA_real_
 }
 
-secure_burden_path <- file.path(repo_root, "out", "party1", "burden_out.txt")
+secure_burden_path <- file.path(secure_party_dir(1), "burden_out.txt")
 secure_burden <- if (file.exists(secure_burden_path)) {
   as.numeric(scan(secure_burden_path, quiet = TRUE, nmax = 1))
 } else {
@@ -586,8 +595,8 @@ for (block_idx in seq_along(plain_blocks)) {
 
   secure_p <- trim_or_null(
     read_secure_vector_any(c(
-      file.path(repo_root, "out", "party1", sprintf("p_block%d.txt", secure_block_idx)),
-      file.path(repo_root, "out", "party1", sprintf("p_enc_block%d.txt", secure_block_idx))
+      file.path(secure_party_dir(1), sprintf("p_block%d.txt", secure_block_idx)),
+      file.path(secure_party_dir(1), sprintf("p_enc_block%d.txt", secure_block_idx))
     )),
     n_variants
   )
@@ -607,7 +616,7 @@ for (block_idx in seq_along(plain_blocks)) {
 
   secure_p_bar <- trim_or_null(
     read_secure_vector_any(c(
-      file.path(repo_root, "out", "party1", sprintf("p_bar_block%d.txt", secure_block_idx))
+      file.path(secure_party_dir(1), sprintf("p_bar_block%d.txt", secure_block_idx))
     )),
     n_variants
   )
@@ -626,7 +635,7 @@ for (block_idx in seq_along(plain_blocks)) {
   }
 
   secure_score <- trim_or_null(
-    read_secure_vector(file.path(repo_root, "out", "party1", sprintf("S_vec_block%d.txt", secure_block_idx))),
+    read_secure_vector(file.path(secure_party_dir(1), sprintf("S_vec_block%d.txt", secure_block_idx))),
     n_variants
   )
   if (print_block) {
@@ -661,39 +670,39 @@ for (block_idx in seq_along(plain_blocks)) {
   }
 
   secure_weight <- trim_or_null(
-    read_secure_vector(file.path(repo_root, "out", "party1", sprintf("w_enc_block%d.txt", secure_block_idx))),
+    read_secure_vector(file.path(secure_party_dir(1), sprintf("w_enc_block%d.txt", secure_block_idx))),
     n_variants
   )
 
   secure_p_csv <- trim_or_null(
     read_secure_vector_any(c(
-      file.path(repo_root, "out", "party1", sprintf("p_block%d.txt", secure_block_idx)),
-      file.path(repo_root, "out", "party1", sprintf("p_enc_block%d.txt", secure_block_idx))
+      file.path(secure_party_dir(1), sprintf("p_block%d.txt", secure_block_idx)),
+      file.path(secure_party_dir(1), sprintf("p_enc_block%d.txt", secure_block_idx))
     )),
     n_variants
   )
   secure_p_imag_csv <- trim_or_null(
     read_secure_vector_any(c(
-      file.path(repo_root, "out", "party1", sprintf("p_block%d_imag.txt", secure_block_idx)),
-      file.path(repo_root, "out", "party1", sprintf("p_enc_block%d_imag.txt", secure_block_idx))
+      file.path(secure_party_dir(1), sprintf("p_block%d_imag.txt", secure_block_idx)),
+      file.path(secure_party_dir(1), sprintf("p_enc_block%d_imag.txt", secure_block_idx))
     )),
     n_variants
   )
   secure_p_bar_csv <- trim_or_null(
     read_secure_vector_any(c(
-      file.path(repo_root, "out", "party1", sprintf("p_bar_block%d.txt", secure_block_idx))
+      file.path(secure_party_dir(1), sprintf("p_bar_block%d.txt", secure_block_idx))
     )),
     n_variants
   )
   secure_p_bar_imag_csv <- trim_or_null(
     read_secure_vector_any(c(
-      file.path(repo_root, "out", "party1", sprintf("p_bar_block%d_imag.txt", secure_block_idx))
+      file.path(secure_party_dir(1), sprintf("p_bar_block%d_imag.txt", secure_block_idx))
     )),
     n_variants
   )
   secure_weight_csv <- secure_weight
   secure_weight_imag_csv <- trim_or_null(
-    read_secure_vector(file.path(repo_root, "out", "party1", sprintf("w_enc_block%d_imag.txt", secure_block_idx))),
+    read_secure_vector(file.path(secure_party_dir(1), sprintf("w_enc_block%d_imag.txt", secure_block_idx))),
     n_variants
   )
   secure_global_dosage_csv <- if (!any(sapply(secure_local_dosage, is.null))) {
@@ -750,7 +759,7 @@ for (block_idx in seq_along(plain_blocks)) {
   )
 
   secure_score_sq <- trim_or_null(
-    read_secure_vector(file.path(repo_root, "out", "party1", sprintf("S2_block%d.txt", secure_block_idx))),
+    read_secure_vector(file.path(secure_party_dir(1), sprintf("S2_block%d.txt", secure_block_idx))),
     n_variants
   )
   print_vector_comparison(
@@ -760,7 +769,7 @@ for (block_idx in seq_along(plain_blocks)) {
   )
 
   secure_weight_sq <- trim_or_null(
-    read_secure_vector(file.path(repo_root, "out", "party1", sprintf("w2_block%d.txt", secure_block_idx))),
+    read_secure_vector(file.path(secure_party_dir(1), sprintf("w2_block%d.txt", secure_block_idx))),
     n_variants
   )
   print_vector_comparison(
@@ -770,7 +779,7 @@ for (block_idx in seq_along(plain_blocks)) {
   )
 
   secure_weighted_score_sq <- trim_or_null(
-    read_secure_vector(file.path(repo_root, "out", "party1", sprintf("w2S2_block%d.txt", secure_block_idx))),
+    read_secure_vector(file.path(secure_party_dir(1), sprintf("w2S2_block%d.txt", secure_block_idx))),
     n_variants
   )
   print_vector_comparison(
@@ -780,7 +789,7 @@ for (block_idx in seq_along(plain_blocks)) {
   )
 
   secure_weighted_score <- trim_or_null(
-    read_secure_vector(file.path(repo_root, "out", "party1", sprintf("wS_block%d.txt", secure_block_idx))),
+    read_secure_vector(file.path(secure_party_dir(1), sprintf("wS_block%d.txt", secure_block_idx))),
     n_variants
   )
   print_vector_comparison(
@@ -789,7 +798,7 @@ for (block_idx in seq_along(plain_blocks)) {
     vector_diff_stats(secure_weighted_score, plain_block$weighted_score)
   )
 
-  secure_q_block <- read_secure_vector(file.path(repo_root, "out", "party1", sprintf("qBlock_block%d.txt", secure_block_idx)))
+  secure_q_block <- read_secure_vector(file.path(secure_party_dir(1), sprintf("qBlock_block%d.txt", secure_block_idx)))
   secure_q_block <- trim_or_null(secure_q_block, 1)
   if (!is.null(secure_q_block)) {
     print_scalar_comparison(
@@ -801,7 +810,7 @@ for (block_idx in seq_along(plain_blocks)) {
     cat(sprintf("Block %02d %-18s missing secure output\n", block_idx, "qBlock"))
   }
 
-  secure_burden_block <- read_secure_vector(file.path(repo_root, "out", "party1", sprintf("qBurdenBlock_block%d.txt", secure_block_idx)))
+  secure_burden_block <- read_secure_vector(file.path(secure_party_dir(1), sprintf("qBurdenBlock_block%d.txt", secure_block_idx)))
   secure_burden_block <- trim_or_null(secure_burden_block, 1)
   if (!is.null(secure_burden_block)) {
     print_scalar_comparison(
@@ -818,7 +827,7 @@ for (block_idx in seq_along(plain_blocks)) {
     "weight",
     secure_weight,
     trim_or_null(
-      read_secure_vector(file.path(repo_root, "out", "party1", sprintf("w_enc_block%d_imag.txt", secure_block_idx))),
+      read_secure_vector(file.path(secure_party_dir(1), sprintf("w_enc_block%d_imag.txt", secure_block_idx))),
       n_variants
     )
   )
@@ -827,7 +836,7 @@ for (block_idx in seq_along(plain_blocks)) {
     "weight_sq",
     secure_weight_sq,
     trim_or_null(
-      read_secure_vector(file.path(repo_root, "out", "party1", sprintf("w2_block%d_imag.txt", secure_block_idx))),
+      read_secure_vector(file.path(secure_party_dir(1), sprintf("w2_block%d_imag.txt", secure_block_idx))),
       n_variants
     )
   )
@@ -836,7 +845,7 @@ for (block_idx in seq_along(plain_blocks)) {
     "w2S2",
     secure_weighted_score_sq,
     trim_or_null(
-      read_secure_vector(file.path(repo_root, "out", "party1", sprintf("w2S2_block%d_imag.txt", secure_block_idx))),
+      read_secure_vector(file.path(secure_party_dir(1), sprintf("w2S2_block%d_imag.txt", secure_block_idx))),
       n_variants
     )
   )

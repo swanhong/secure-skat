@@ -42,6 +42,11 @@ func InitProtocolForTest(t *testing.T) *ProtocolInfo {
 		t.Fatalf("Failed to read local config for PID=%d: %s", pid, err)
 	}
 
+	if suffix := os.Getenv("TEST_RUN_SUFFIX"); suffix != "" {
+		config.OutDir = filepath.Join(config.OutDir + "_" + suffix)
+		config.CacheDir = filepath.Join(config.CacheDir + "_" + suffix)
+	}
+
 	// Create cache/output directories
 	if err := os.MkdirAll(config.CacheDir, 0755); err != nil {
 		t.Fatalf("Failed to create cache dir: %s", err)

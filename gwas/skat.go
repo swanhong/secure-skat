@@ -174,11 +174,12 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 }
 
 // weightsCalculation computes per-variant p_bar = dosageSum/(2N), p = 1-p_bar,
-// and the beta weights 25 * p_bar^24.
+// then uses maf = min(p, p_bar) to form beta weights 25 * maf^24.
 func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (mpc_core.RVec, mpc_core.RVec, mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
 	rtype := mpcObj.GetRType()
+	useBoolean := mpcObj.GetBooleanShareFlag()
 
 	dosageSumRVec := mpc_core.InitRVec(rtype.Zero(), nsnps_block)
 
@@ -207,7 +208,17 @@ func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (
 	oneShared.Sub(pBarVec)
 	pVec := oneShared
 
+	// Use MAF = min(p, 1-p) so the weighting is invariant to allele orientation.
+	mafSelect := mpcObj.LessThan(pVec, pBarVec, useBoolean)
+	mafSelect.MulScalar(oneFrac)
+
 	weightBase := pBarVec.Copy()
+	mafDelta := pVec.Copy()
+	mafDelta.Sub(pBarVec)
+	mafDelta = mpcObj.SSMultElemVec(mafDelta, mafSelect)
+	mafDelta = mpcObj.TruncVec(mafDelta, mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	weightBase.Add(mafDelta)
+
 	w2 := mpcObj.SSMultElemVec(weightBase, weightBase)
 	w2 = mpcObj.TruncVec(w2, mpcObj.GetDataBits(), mpcObj.GetFracBits())
 
@@ -223,8 +234,8 @@ func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (
 	w24 := mpcObj.SSMultElemVec(w16, w8)
 	w24 = mpcObj.TruncVec(w24, mpcObj.GetDataBits(), mpcObj.GetFracBits())
 
-	// In standard SKAT, beta(MAF; 1, 25) = 25 * (1-MAF)^24.
-	// Under the current secure dosage orientation, that weight base is p_bar.
+	// In SKAT/SKAT-O, beta(MAF; 1, 25) = 25 * (1-MAF)^24.
+	// Since maf = min(p, 1-p), the smaller allele frequency is exactly weightBase.
 	betaConst := rtype.FromFloat64(25.0, mpcObj.GetFracBits())
 	w24.MulScalar(betaConst)
 	w24 = mpcObj.TruncVec(w24, mpcObj.GetDataBits(), mpcObj.GetFracBits())
