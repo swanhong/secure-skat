@@ -355,12 +355,13 @@ func (ast *AssocTest) ComputeSKATStep2LoadBlockScore(block int, Y crypto.CipherM
 
 func (ast *AssocTest) ComputeSKATStep3BlockWeights(blockData *SKATBlockData) {
 	mpcObj := ast.general.mpcObj[0]
+	log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("SKAT Step 3/4: block weight calculation (%d SNPs)", blockData.NumSnps))
+	pBlockRVec, pBarBlockRVec, weightBlockRVec := ast.weightsCalculation(blockData.DosageSum, blockData.NumSnps)
+
 	if mpcObj.GetPid() == 0 {
 		return
 	}
 
-	log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("SKAT Step 3/4: block weight calculation (%d SNPs)", blockData.NumSnps))
-	pBlockRVec, pBarBlockRVec, weightBlockRVec := ast.weightsCalculation(blockData.DosageSum, blockData.NumSnps)
 	blockData.PEnc = mpcObj.SSToCVec(ast.general.cps, pBlockRVec)
 	blockData.PBarEnc = mpcObj.SSToCVec(ast.general.cps, pBarBlockRVec)
 	blockData.WeightEnc = mpcObj.SSToCVec(ast.general.cps, weightBlockRVec)
@@ -467,6 +468,8 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 		if pid > 0 {
 			SAll = append(SAll, blockData.ScoreVec)
 		}
+
+		log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("SKAT Progress: block %d/%d (%.1f%%)", block+1, numBlocks, 100.0*float64(block+1)/float64(numBlocks)))
 
 		ast.ComputeSKATStep3BlockWeights(&blockData)
 		ast.saveSKATStep3Outputs(block, blockData)

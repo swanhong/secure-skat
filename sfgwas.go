@@ -39,7 +39,10 @@ func InitProtocol(configPath string) *gwas.ProtocolInfo {
 		return nil
 	}
 
-	if suffix := strings.TrimSpace(os.Getenv("SFGWAS_OUTPUT_SUFFIX")); suffix != "" {
+	if runRoot := strings.TrimSpace(os.Getenv("SFGWAS_RUN_ROOT")); runRoot != "" {
+		config.OutDir = filepath.Join(runRoot, filepath.Base(config.OutDir))
+		config.CacheDir = filepath.Join(runRoot, "cache", filepath.Base(config.CacheDir))
+	} else if suffix := strings.TrimSpace(os.Getenv("SFGWAS_OUTPUT_SUFFIX")); suffix != "" {
 		config.OutDir = config.OutDir + "_" + suffix
 		config.CacheDir = config.CacheDir + "_" + suffix
 	}

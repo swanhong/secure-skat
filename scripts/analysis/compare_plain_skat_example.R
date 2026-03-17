@@ -4,7 +4,7 @@ args <- args[args != "--debug"]
 
 repo_root <- if (length(args) >= 1) args[[1]] else "."
 repo_root <- normalizePath(repo_root, winslash = "/", mustWork = TRUE)
-run_suffix <- if (length(args) >= 2) args[[2]] else ""
+run_id <- if (length(args) >= 2) args[[2]] else ""
 blocks_arg_index <- if (length(args) >= 3) 3 else NA_integer_
 blocks_to_print <- if (!is.na(blocks_arg_index)) {
   as.integer(strsplit(args[[blocks_arg_index]], ",", fixed = TRUE)[[1]])
@@ -40,9 +40,30 @@ if (debug_mode) {
 }
 
 secure_party_dir <- function(party_idx) {
-  suffix <- if (nzchar(run_suffix)) paste0("_", run_suffix) else ""
-  file.path(repo_root, "out", sprintf("party%d%s", party_idx, suffix))
+  file.path(secure_run_root, sprintf("party%d", party_idx))
 }
+
+resolve_secure_run_root <- function() {
+  if (!nzchar(run_id)) {
+    return(file.path(repo_root, "out"))
+  }
+
+  candidates <- Sys.glob(file.path(repo_root, "out", sprintf("output_*_%s", run_id)))
+  candidates <- candidates[dir.exists(candidates)]
+
+  if (length(candidates) == 0) {
+    stop(sprintf("No secure output directory found for run id: %s", run_id))
+  }
+
+  if (length(candidates) > 1) {
+    info <- file.info(candidates)
+    candidates <- candidates[order(info$mtime, decreasing = TRUE)]
+  }
+
+  normalizePath(candidates[[1]], winslash = "/", mustWork = TRUE)
+}
+
+secure_run_root <- resolve_secure_run_root()
 
 read_pheno <- function(party_dir) {
   as.numeric(read.table(file.path(party_dir, "pheno.txt"), header = FALSE)[, 1])
@@ -460,7 +481,9 @@ cat(sprintf("Selected blocks for detailed output: %s\n", paste(blocks_to_print, 
 plain_qty <- as.vector(crossprod(Q_matrix, y))
 
 # Q^T y check
-qty_files <- file.path(repo_root, "out", basename(party_dirs), "qty.txt")
+qty_files <- vapply(seq_along(party_dirs), function(party_idx) {
+  file.path(secure_party_dir(party_idx), "qty.txt")
+}, character(1))
 sys_qty_list <- lapply(qty_files, function(f) {
   if (file.exists(f)) {
     vals <- as.numeric(strsplit(readLines(f)[1], ",\\s*")[[1]])
@@ -478,7 +501,9 @@ if (length(sys_qty_list) > 0) {
 }
 
 # y_proj_rescaled check (before subtracting from y)
-yproj_files <- file.path(repo_root, "out", basename(party_dirs), "y_proj_rescaled.txt")
+yproj_files <- vapply(seq_along(party_dirs), function(party_idx) {
+  file.path(secure_party_dir(party_idx), "y_proj_rescaled.txt")
+}, character(1))
 sys_yproj_list <- lapply(yproj_files, function(f) {
   if (file.exists(f)) {
     vals <- as.numeric(strsplit(readLines(f)[1], ",\\s*")[[1]])
@@ -503,7 +528,8 @@ if (length(sys_yproj_list) == 2) {
 
 # Compare residuals (ynew.txt)
 read_secure_ynew <- function(party_dir) {
-  ynew_path <- file.path(repo_root, "out", basename(party_dir), "ynew.txt")
+  party_idx <- match(basename(party_dir), basename(party_dirs))
+  ynew_path <- file.path(secure_party_dir(party_idx), "ynew.txt")
   if (file.exists(ynew_path)) {
     lines <- readLines(ynew_path, warn = FALSE)
     if (length(lines) > 0) {
@@ -543,8 +569,8 @@ if (!any(sapply(secure_ynew_list, is.null))) {
 }
 
 secure_qcomb_list <- lapply(
-  party_dirs,
-  function(party_dir) read_secure_matrix(file.path(repo_root, "out", basename(party_dir), "Qcomb.txt"))
+  seq_along(party_dirs),
+  function(party_idx) read_secure_matrix(file.path(secure_party_dir(party_idx), "Qcomb.txt"))
 )
 if (!any(sapply(secure_qcomb_list, is.null))) {
   secure_qcomb <- do.call(cbind, secure_qcomb_list)
@@ -569,9 +595,7 @@ for (block_idx in seq_along(plain_blocks)) {
     function(party_idx) {
       trim_or_null(
         read_secure_vector(file.path(
-          repo_root,
-          "out",
-          basename(party_dirs[[party_idx]]),
+          secure_party_dir(party_idx),
           sprintf("assoc_cache_dos_sum.skat.%d.txt", secure_block_idx)
         )),
         n_variants
@@ -867,7 +891,7 @@ if (debug_mode) {
 
 if (!is.na(secure_q)) {
   cat(sprintf("\n--- SKAT Results ---\n"))
-  cat(sprintf("Secure Q (out/party1/skat_out.txt): %.10e\n", secure_q))
+  cat(sprintf("Secure Q (%s): %.10e\n", secure_q_path, secure_q))
   cat(sprintf("Plain Q (secure-style weights^2): %.10e\n", q_total_secure_style))
   cat(sprintf("Absolute difference (secure-style): %.10e\n", abs(q_total_secure_style - secure_q)))
   cat(sprintf("Relative difference (|secure - plain| / secure): %.10e\n", abs(q_total_secure_style - secure_q) / max(abs(secure_q), 1e-12)))
@@ -875,7 +899,7 @@ if (!is.na(secure_q)) {
 
 if (!is.na(secure_burden)) {
   cat(sprintf("\n--- Burden Results ---\n"))
-  cat(sprintf("Secure Burden (out/party1/burden_out.txt): %.10e\n", secure_burden))
+  cat(sprintf("Secure Burden (%s): %.10e\n", secure_burden_path, secure_burden))
   cat(sprintf("Plain Burden (secure-style): %.10e\n", burden_q_total_secure_style))
   cat(sprintf("Absolute difference (Burden): %.10e\n", abs(burden_q_total_secure_style - secure_burden)))
   cat(sprintf("Relative difference (|secure - plain| / secure): %.10e\n", abs(burden_q_total_secure_style - secure_burden) / max(abs(secure_burden), 1e-12)))

@@ -4,9 +4,11 @@ set -euo pipefail
 
 NUM_MAIN_PARTY=2
 MODE="gwas"
-OUTPUT_SUFFIX=""
 SKATO_RHO="0.5"
-LOG_PREFIX="stdout"
+RUN_ROOT=""
+RUN_NAME=""
+RUN_ID=""
+ORIGINAL_ARGS=("$@")
 
 usage() {
   cat <<'EOF'
@@ -14,7 +16,6 @@ Usage: bash run_example.sh [options]
 
 Options:
   --mode <gwas|skat|burden|skato>
-  --output-suffix <suffix>
   --skato-rho <0..1>
   --help
 EOF
@@ -24,10 +25,6 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --mode)
       MODE="${2:?missing value for --mode}"
-      shift 2
-      ;;
-    --output-suffix)
-      OUTPUT_SUFFIX="${2:?missing value for --output-suffix}"
       shift 2
       ;;
     --skato-rho)
@@ -46,17 +43,67 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -n "$OUTPUT_SUFFIX" ]]; then
-  LOG_PREFIX="${LOG_PREFIX}_${OUTPUT_SUFFIX}"
-fi
+timestamp="$(date '+%y%m%d_%H%M%S')"
+RUN_ID="$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n' | cut -c1-4)"
+RUN_NAME="output_${timestamp}_${RUN_ID}"
+RUN_ROOT="out/${RUN_NAME}"
+mkdir -p "$RUN_ROOT"
+mkdir -p "$RUN_ROOT/cache"
 
+metadata_file="${RUN_ROOT}/run_metadata.txt"
+{
+  echo "run_name=${RUN_NAME}"
+  echo "run_id=${RUN_ID}"
+  echo "started_at=$(date '+%Y-%m-%d %H:%M:%S %Z')"
+  echo "cwd=$(pwd)"
+  echo "command=bash run_example.sh ${ORIGINAL_ARGS[*]}"
+  echo "mode=${MODE}"
+  echo "skato_rho=${SKATO_RHO}"
+  echo "run_root=${RUN_ROOT}"
+  echo "pid_count=$((NUM_MAIN_PARTY + 1))"
+  echo "git_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+  echo "git_commit=$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+} > "$metadata_file"
+
+echo "Run output directory: ${RUN_ROOT}"
+echo "Run ID: ${RUN_ID}"
+echo "Metadata written to: ${metadata_file}"
+
+run_party() {
+  local pid="$1"
+  local log_file="${RUN_ROOT}/stdout_party${pid}.txt"
+
+  echo "Running PID=${pid} mode=${MODE}"
+  (
+    PID="$pid" \
+    SFGWAS_MODE="$MODE" \
+    SFGWAS_RUN_ROOT="$RUN_ROOT" \
+    SKATO_RHO="$SKATO_RHO" \
+    go run sfgwas.go 2>&1
+  ) | awk -v pid="$pid" '{ print "[PID=" pid "] " $0; fflush() }' | tee "$log_file"
+}
+
+status=0
+pids=()
 for (( i = 0; i <= NUM_MAIN_PARTY; i++ ))
 do
-  echo "Running PID=$i mode=$MODE"
-  CMD="PID=$i SFGWAS_MODE=$MODE SFGWAS_OUTPUT_SUFFIX=$OUTPUT_SUFFIX SKATO_RHO=$SKATO_RHO go run sfgwas.go > ${LOG_PREFIX}_party${i}.txt 2>&1"
-  if [[ $i -eq $NUM_MAIN_PARTY ]]; then
-    eval "$CMD"
-  else
-    eval "$CMD" &
+  run_party "$i" &
+  pids+=("$!")
+done
+
+for pid in "${pids[@]}"; do
+  if ! wait "$pid"; then
+    status=1
   fi
 done
+
+{
+  echo "finished_at=$(date '+%Y-%m-%d %H:%M:%S %Z')"
+  echo "exit_status=${status}"
+} >> "$metadata_file"
+
+echo "Run finished with status ${status}"
+echo "Run ID: ${RUN_ID}"
+echo "Outputs are under: ${RUN_ROOT}"
+
+exit "$status"

@@ -453,6 +453,10 @@ func (g *ProtocolInfo) combineSKATOStatistic(stats RareVariantCipherStats, rho f
 func (g *ProtocolInfo) RunRareVariantTest(mode RareVariantMode, skatoRho float64) {
 	log.LLvl1(time.Now().Format(time.RFC3339), "Running rare-variant protocol in mode:", string(mode))
 
+	// Rare-variant tests still rely on QC-filtered sample/SNP counts and filters.
+	// Reuse the standard QC phase to populate gwasParams before SKAT/Burden/SKAT-O.
+	g.Phase1()
+
 	stats := g.ComputeRareVariantStatistics()
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "Finished rare-variant statistic computation")
