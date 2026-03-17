@@ -37,6 +37,22 @@ type ProtocolInfo struct {
 	config *Config
 }
 
+type RareVariantMode string
+
+const (
+	RareVariantModeGWAS   RareVariantMode = "gwas"
+	RareVariantModeSKAT   RareVariantMode = "skat"
+	RareVariantModeBurden RareVariantMode = "burden"
+	RareVariantModeSKATO  RareVariantMode = "skato"
+)
+
+type RareVariantCipherStats struct {
+	SKAT      crypto.CipherVector
+	Burden    crypto.CipherVector
+	Scores    crypto.CipherMatrix
+	OutFilter []bool
+}
+
 type Config struct {
 	NumMainParties int `toml:"num_main_parties"`
 	HubPartyId     int `toml:"hub_party_id"`
@@ -408,37 +424,72 @@ func (g *ProtocolInfo) GWAS() {
 	g.Phase3(Qpca)
 }
 
-// SKAT is the main entry point to run the Secure SKAT protocol independently of single-variant GWAS
-func (g *ProtocolInfo) SKAT() {
+func (g *ProtocolInfo) decryptRareVariantScalar(stat crypto.CipherVector) []float64 {
 	mpcObj := g.mpcObj[0]
 	pid := mpcObj.GetPid()
+	if pid == 0 {
+		return nil
+	}
 
-	log.LLvl1(time.Now().Format(time.RFC3339), "Running SKAT Phase 1 & 2")
+	statDec := mpcObj.Network.CollectiveDecryptVec(g.cps, stat, -1)
+	out := crypto.DecodeFloatVector(g.cps, statDec)
+	return []float64{out[0]}
+}
 
-	assoc, burden, _, _ := g.ComputeSKATStatistics()
+func (g *ProtocolInfo) saveRareVariantScalar(filename string, stat crypto.CipherVector) {
+	if out := g.decryptRareVariantScalar(stat); out != nil {
+		SaveFloatVectorToFile(g.OutPath(filename), out)
+	}
+}
 
-	log.LLvl1(time.Now().Format(time.RFC3339), "Finished SKAT tests")
+func (g *ProtocolInfo) combineSKATOStatistic(stats RareVariantCipherStats, rho float64) crypto.CipherVector {
+	cryptoParams := g.cps
+
+	skatPart := crypto.CMultConstRescale(cryptoParams, stats.SKAT, 1.0-rho, false)
+	burdenPart := crypto.CMultConstRescale(cryptoParams, stats.Burden, rho, false)
+	return crypto.CAdd(cryptoParams, skatPart, burdenPart)
+}
+
+func (g *ProtocolInfo) RunRareVariantTest(mode RareVariantMode, skatoRho float64) {
+	log.LLvl1(time.Now().Format(time.RFC3339), "Running rare-variant protocol in mode:", string(mode))
+
+	stats := g.ComputeRareVariantStatistics()
+
+	log.LLvl1(time.Now().Format(time.RFC3339), "Finished rare-variant statistic computation")
 
 	net := g.mpcObj.GetNetworks()
 	net.PrintNetworkLog()
 
-	// Collective decrypt and save to file
-	if pid > 0 {
-		assocDec := mpcObj.Network.CollectiveDecryptVec(g.cps, assoc, -1)
-		out := crypto.DecodeFloatVector(g.cps, assocDec)
-
-		outFinal := []float64{out[0]}
-
-		SaveFloatVectorToFile(g.OutPath("skat_out.txt"), outFinal)
-
-		burdenDec := mpcObj.Network.CollectiveDecryptVec(g.cps, burden, -1)
-		outBurden := crypto.DecodeFloatVector(g.cps, burdenDec)
-
-		outBurdenFinal := []float64{outBurden[0]}
-
-		SaveFloatVectorToFile(g.OutPath("burden_out.txt"), outBurdenFinal)
+	switch mode {
+	case RareVariantModeSKAT:
+		g.saveRareVariantScalar("skat_out.txt", stats.SKAT)
+		g.saveRareVariantScalar("burden_out.txt", stats.Burden)
+		log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Output collectively decrypted and saved to: %s and %s", g.OutPath("skat_out.txt"), g.OutPath("burden_out.txt")))
+	case RareVariantModeBurden:
+		g.saveRareVariantScalar("burden_out.txt", stats.Burden)
+		log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Output collectively decrypted and saved to: %s", g.OutPath("burden_out.txt")))
+	case RareVariantModeSKATO:
+		skato := g.combineSKATOStatistic(stats, skatoRho)
+		g.saveRareVariantScalar("skat_out.txt", stats.SKAT)
+		g.saveRareVariantScalar("burden_out.txt", stats.Burden)
+		g.saveRareVariantScalar("skato_out.txt", skato)
+		log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Output collectively decrypted and saved to: %s, %s, and %s", g.OutPath("skat_out.txt"), g.OutPath("burden_out.txt"), g.OutPath("skato_out.txt")))
+	default:
+		panic(fmt.Sprintf("unsupported rare-variant mode: %s", mode))
 	}
-	log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Output collectively decrypted and saved to: %s and burden_out.txt", g.OutPath("skat_out.txt")))
+}
+
+// SKAT is the main entry point to run the Secure SKAT protocol independently of single-variant GWAS.
+func (g *ProtocolInfo) SKAT() {
+	g.RunRareVariantTest(RareVariantModeSKAT, 0.0)
+}
+
+func (g *ProtocolInfo) Burden() {
+	g.RunRareVariantTest(RareVariantModeBurden, 0.0)
+}
+
+func (g *ProtocolInfo) SKATO(rho float64) {
+	g.RunRareVariantTest(RareVariantModeSKATO, rho)
 }
 
 // SetPhenoAndCov allows deterministic testing scripts to override File I/O datasets in memory
@@ -450,6 +501,16 @@ func (g *ProtocolInfo) SetPhenoAndCov(pheno, cov *mat.Dense) {
 func (g *ProtocolInfo) ComputeSKATStatistics() (crypto.CipherVector, crypto.CipherVector, crypto.CipherMatrix, []bool) {
 	assocTest := g.InitAssociationTests(nil) // SKAT does not use PCA
 	return assocTest.ComputeSKATStatistics()
+}
+
+func (g *ProtocolInfo) ComputeRareVariantStatistics() RareVariantCipherStats {
+	skat, burden, scores, outFilter := g.ComputeSKATStatistics()
+	return RareVariantCipherStats{
+		SKAT:      skat,
+		Burden:    burden,
+		Scores:    scores,
+		OutFilter: outFilter,
+	}
 }
 
 func (g *ProtocolInfo) CZeroTest() {

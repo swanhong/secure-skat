@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 	"github.com/hhcho/sfgwas/gwas"
@@ -20,7 +21,7 @@ var PID, PID_ERR = strconv.Atoi(os.Getenv("PID"))
 var CONFIG_PATH = "config/"
 
 func main() {
-	RunGWAS()
+	RunProtocol()
 }
 
 func InitProtocol(configPath string) *gwas.ProtocolInfo {
@@ -38,6 +39,11 @@ func InitProtocol(configPath string) *gwas.ProtocolInfo {
 		return nil
 	}
 
+	if suffix := strings.TrimSpace(os.Getenv("SFGWAS_OUTPUT_SUFFIX")); suffix != "" {
+		config.OutDir = config.OutDir + "_" + suffix
+		config.CacheDir = config.CacheDir + "_" + suffix
+	}
+
 	// Create cache/output directories
 	if err := os.MkdirAll(config.CacheDir, 0755); err != nil {
 		panic(err)
@@ -52,7 +58,39 @@ func InitProtocol(configPath string) *gwas.ProtocolInfo {
 	return gwas.InitializeGWASProtocol(config, PID, false)
 }
 
-func RunGWAS() {
+func parseRareVariantMode() gwas.RareVariantMode {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("SFGWAS_MODE")))
+	switch mode {
+	case "", string(gwas.RareVariantModeGWAS):
+		return gwas.RareVariantModeGWAS
+	case string(gwas.RareVariantModeSKAT):
+		return gwas.RareVariantModeSKAT
+	case string(gwas.RareVariantModeBurden):
+		return gwas.RareVariantModeBurden
+	case string(gwas.RareVariantModeSKATO):
+		return gwas.RareVariantModeSKATO
+	default:
+		panic(fmt.Sprintf("unsupported SFGWAS_MODE: %s", mode))
+	}
+}
+
+func parseSKATORho() float64 {
+	rhoStr := strings.TrimSpace(os.Getenv("SKATO_RHO"))
+	if rhoStr == "" {
+		return 0.5
+	}
+
+	rho, err := strconv.ParseFloat(rhoStr, 64)
+	if err != nil {
+		panic(fmt.Sprintf("invalid SKATO_RHO: %v", err))
+	}
+	if rho < 0.0 || rho > 1.0 {
+		panic("SKATO_RHO must be in [0, 1]")
+	}
+	return rho
+}
+
+func RunProtocol() {
 	if PID_ERR != nil {
 		panic(PID_ERR)
 	}
@@ -67,8 +105,19 @@ func RunGWAS() {
 	}
 	defer stopFn()
 
-	// Run protocol
-	prot.GWAS()
+	mode := parseRareVariantMode()
+	switch mode {
+	case gwas.RareVariantModeGWAS:
+		prot.GWAS()
+	case gwas.RareVariantModeSKAT:
+		prot.SKAT()
+	case gwas.RareVariantModeBurden:
+		prot.Burden()
+	case gwas.RareVariantModeSKATO:
+		prot.SKATO(parseSKATORho())
+	default:
+		panic(fmt.Sprintf("unsupported protocol mode: %s", mode))
+	}
 
 	prot.SyncAndTerminate(true)
 }

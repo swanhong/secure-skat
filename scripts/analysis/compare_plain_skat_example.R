@@ -1,4 +1,6 @@
 args <- commandArgs(trailingOnly = TRUE)
+debug_mode <- "--debug" %in% args
+args <- args[args != "--debug"]
 
 repo_root <- if (length(args) >= 1) args[[1]] else "."
 repo_root <- normalizePath(repo_root, winslash = "/", mustWork = TRUE)
@@ -33,7 +35,9 @@ if (plink2 == "") {
 cache_dir <- file.path(repo_root, ".local", "tmp", "plain_skat_compare")
 dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
 csv_dir <- file.path(cache_dir, "variant_debug_csv")
-dir.create(csv_dir, recursive = TRUE, showWarnings = FALSE)
+if (debug_mode) {
+  dir.create(csv_dir, recursive = TRUE, showWarnings = FALSE)
+}
 
 secure_party_dir <- function(party_idx) {
   suffix <- if (nzchar(run_suffix)) paste0("_", run_suffix) else ""
@@ -731,11 +735,13 @@ for (block_idx in seq_along(plain_blocks)) {
     stringsAsFactors = FALSE
   )
   all_block_csv[[block_idx]] <- block_csv
-  write.csv(
-    block_csv,
-    file.path(csv_dir, sprintf("variant_debug_block%02d.csv", block_idx)),
-    row.names = FALSE
-  )
+  if (debug_mode) {
+    write.csv(
+      block_csv,
+      file.path(csv_dir, sprintf("variant_debug_block%02d.csv", block_idx)),
+      row.names = FALSE
+    )
+  }
 
   if (!print_block) {
     next
@@ -851,11 +857,13 @@ for (block_idx in seq_along(plain_blocks)) {
   )
 }
 
-write.csv(
-  do.call(rbind, all_block_csv),
-  file.path(csv_dir, "variant_debug_all.csv"),
-  row.names = FALSE
-)
+if (debug_mode) {
+  write.csv(
+    do.call(rbind, all_block_csv),
+    file.path(csv_dir, "variant_debug_all.csv"),
+    row.names = FALSE
+  )
+}
 
 if (!is.na(secure_q)) {
   cat(sprintf("\n--- SKAT Results ---\n"))
