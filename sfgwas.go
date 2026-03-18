@@ -24,6 +24,24 @@ func main() {
 	RunProtocol()
 }
 
+func overrideExampleDataPath(pathValue, datasetRoot string) string {
+	if strings.TrimSpace(datasetRoot) == "" || pathValue == "" {
+		return pathValue
+	}
+
+	cleanDatasetRoot := filepath.Clean(datasetRoot)
+	if pathValue == "example_data" {
+		return cleanDatasetRoot
+	}
+
+	prefix := "example_data" + string(os.PathSeparator)
+	if strings.HasPrefix(pathValue, prefix) {
+		return filepath.Join(cleanDatasetRoot, strings.TrimPrefix(pathValue, prefix))
+	}
+
+	return pathValue
+}
+
 func InitProtocol(configPath string) *gwas.ProtocolInfo {
 	config := new(gwas.Config)
 
@@ -37,6 +55,18 @@ func InitProtocol(configPath string) *gwas.ProtocolInfo {
 	if _, err := toml.DecodeFile(filepath.Join(configPath, fmt.Sprintf("configLocal.Party%d.toml", PID)), config); err != nil {
 		fmt.Println(err)
 		return nil
+	}
+
+	if datasetRoot := strings.TrimSpace(os.Getenv("SFGWAS_DATASET")); datasetRoot != "" && datasetRoot != "example_data" {
+		config.SharedKeysPath = overrideExampleDataPath(config.SharedKeysPath, datasetRoot)
+		config.GenoFilePrefix = overrideExampleDataPath(config.GenoFilePrefix, datasetRoot)
+		config.GenoBlockSizeFile = overrideExampleDataPath(config.GenoBlockSizeFile, datasetRoot)
+		config.PhenoFile = overrideExampleDataPath(config.PhenoFile, datasetRoot)
+		config.CovFile = overrideExampleDataPath(config.CovFile, datasetRoot)
+		config.SnpPosFile = overrideExampleDataPath(config.SnpPosFile, datasetRoot)
+		config.GenoCountFile = overrideExampleDataPath(config.GenoCountFile, datasetRoot)
+		config.SampleKeepFile = overrideExampleDataPath(config.SampleKeepFile, datasetRoot)
+		config.SnpIdsFile = overrideExampleDataPath(config.SnpIdsFile, datasetRoot)
 	}
 
 	if runRoot := strings.TrimSpace(os.Getenv("SFGWAS_RUN_ROOT")); runRoot != "" {

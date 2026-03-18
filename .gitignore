@@ -12,3 +12,5 @@ out/
 cache/
 test_stdout_*.txt
 *.skat.bin
+vendor/*
+*.zip

@@ -184,7 +184,8 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 }
 
 // weightsCalculation computes per-variant p_bar = dosageSum/(2N), p = 1-p_bar,
-// then uses maf = min(p, p_bar) to form beta weights 25 * maf^24.
+// then uses maf = min(p, p_bar) to form beta weights Beta(maf; 1, 25)
+// = 25 * (1-maf)^24.
 func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (mpc_core.RVec, mpc_core.RVec, mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
@@ -219,17 +220,18 @@ func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (
 	pVec := oneShared
 
 	// Use MAF = min(p, 1-p) so the weighting is invariant to allele orientation.
-	mafSelect := mpcObj.LessThan(pVec, pBarVec, useBoolean)
-	mafSelect.MulScalar(oneFrac)
+	// Beta(MAF; 1, 25) = 25 * (1-MAF)^24, so the exponent base is max(p, 1-p).
+	majorSelect := mpcObj.LessThan(pBarVec, pVec, useBoolean)
+	majorSelect.MulScalar(oneFrac)
 
-	weightBase := pBarVec.Copy()
-	mafDelta := pVec.Copy()
-	mafDelta.Sub(pBarVec)
-	mafDelta = mpcObj.SSMultElemVec(mafDelta, mafSelect)
-	mafDelta = mpcObj.TruncVec(mafDelta, mpcObj.GetDataBits(), mpcObj.GetFracBits())
-	weightBase.Add(mafDelta)
+	betaBase := pBarVec.Copy()
+	majorDelta := pVec.Copy()
+	majorDelta.Sub(pBarVec)
+	majorDelta = mpcObj.SSMultElemVec(majorDelta, majorSelect)
+	majorDelta = mpcObj.TruncVec(majorDelta, mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	betaBase.Add(majorDelta)
 
-	w2 := mpcObj.SSMultElemVec(weightBase, weightBase)
+	w2 := mpcObj.SSMultElemVec(betaBase, betaBase)
 	w2 = mpcObj.TruncVec(w2, mpcObj.GetDataBits(), mpcObj.GetFracBits())
 
 	w4 := mpcObj.SSMultElemVec(w2, w2)
@@ -245,7 +247,7 @@ func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (
 	w24 = mpcObj.TruncVec(w24, mpcObj.GetDataBits(), mpcObj.GetFracBits())
 
 	// In SKAT/SKAT-O, beta(MAF; 1, 25) = 25 * (1-MAF)^24.
-	// Since maf = min(p, 1-p), the smaller allele frequency is exactly weightBase.
+	// Since maf = min(p, 1-p), this equals 25 * max(p, 1-p)^24.
 	betaConst := rtype.FromFloat64(25.0, mpcObj.GetFracBits())
 	w24.MulScalar(betaConst)
 	w24 = mpcObj.TruncVec(w24, mpcObj.GetDataBits(), mpcObj.GetFracBits())

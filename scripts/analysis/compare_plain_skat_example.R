@@ -2,8 +2,23 @@ args <- commandArgs(trailingOnly = TRUE)
 debug_mode <- "--debug" %in% args
 args <- args[args != "--debug"]
 
+dataset_root <- "example_data"
+dataset_flag_idx <- match("--dataset", args)
+if (!is.na(dataset_flag_idx)) {
+  if (dataset_flag_idx == length(args)) {
+    stop("Missing value for --dataset")
+  }
+  dataset_root <- args[[dataset_flag_idx + 1]]
+  args <- args[-c(dataset_flag_idx, dataset_flag_idx + 1)]
+}
+
 repo_root <- if (length(args) >= 1) args[[1]] else "."
 repo_root <- normalizePath(repo_root, winslash = "/", mustWork = TRUE)
+dataset_root <- if (grepl("^/", dataset_root)) {
+  normalizePath(dataset_root, winslash = "/", mustWork = TRUE)
+} else {
+  normalizePath(file.path(repo_root, dataset_root), winslash = "/", mustWork = TRUE)
+}
 run_id <- if (length(args) >= 2) args[[2]] else ""
 blocks_arg_index <- if (length(args) >= 3) 3 else NA_integer_
 blocks_to_print <- if (!is.na(blocks_arg_index)) {
@@ -17,8 +32,8 @@ if (length(blocks_to_print) == 0) {
 }
 
 party_dirs <- c(
-  file.path(repo_root, "example_data", "party1"),
-  file.path(repo_root, "example_data", "party2")
+  file.path(dataset_root, "party1"),
+  file.path(dataset_root, "party2")
 )
 
 for (dir_path in party_dirs) {
@@ -169,8 +184,8 @@ for (chr_index in seq_len(22)) {
   maf <- pmin(p, p_bar)
 
   # Keep p and p_bar explicit throughout the script.
-  # The SKAT beta weight uses maf = min(p, 1-p).
-  beta_weight <- 25.0 * (maf^24)
+  # The SKAT beta weight is Beta(MAF; 1, 25) = 25 * (1-MAF)^24.
+  beta_weight <- 25.0 * ((1.0 - maf)^24)
 
   q_block <- sum((beta_weight^2) * (score^2))
   burden_block <- sum(beta_weight * score)

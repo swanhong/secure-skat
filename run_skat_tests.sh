@@ -2,6 +2,12 @@
 
 set -euo pipefail
 
+if [[ -n "${GOFLAGS:-}" ]]; then
+  export GOFLAGS="${GOFLAGS} -mod=vendor"
+else
+  export GOFLAGS="-mod=vendor"
+fi
+
 TEST_NAME="TestSecureSKATEndToEnd"
 RUN_SUFFIX=""
 NUM_MAIN_PARTY=2
@@ -49,7 +55,7 @@ fi
 pkill -f "skat_test.test" 2>/dev/null || true
 
 echo "Compiling test binary..."
-go test -c ./gwas/ -o skat_test.test || { echo "Compilation failed"; exit 1; }
+go test -mod=vendor -c ./gwas/ -o skat_test.test || { echo "Compilation failed"; exit 1; }
 
 rm -f ${LOG_PREFIX}*.txt
 

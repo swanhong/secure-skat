@@ -2,9 +2,16 @@
 
 set -euo pipefail
 
+if [[ -n "${GOFLAGS:-}" ]]; then
+  export GOFLAGS="${GOFLAGS} -mod=vendor"
+else
+  export GOFLAGS="-mod=vendor"
+fi
+
 NUM_MAIN_PARTY=2
 MODE="gwas"
 SKATO_RHO="0.5"
+DATASET="example_data"
 RUN_ROOT=""
 RUN_NAME=""
 RUN_ID=""
@@ -16,6 +23,7 @@ Usage: bash run_example.sh [options]
 
 Options:
   --mode <gwas|skat|burden|skato>
+  --dataset <dataset-root>
   --skato-rho <0..1>
   --help
 EOF
@@ -25,6 +33,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --mode)
       MODE="${2:?missing value for --mode}"
+      shift 2
+      ;;
+    --dataset)
+      DATASET="${2:?missing value for --dataset}"
       shift 2
       ;;
     --skato-rho)
@@ -58,6 +70,7 @@ metadata_file="${RUN_ROOT}/run_metadata.txt"
   echo "cwd=$(pwd)"
   echo "command=bash run_example.sh ${ORIGINAL_ARGS[*]}"
   echo "mode=${MODE}"
+  echo "dataset=${DATASET}"
   echo "skato_rho=${SKATO_RHO}"
   echo "run_root=${RUN_ROOT}"
   echo "pid_count=$((NUM_MAIN_PARTY + 1))"
@@ -67,6 +80,7 @@ metadata_file="${RUN_ROOT}/run_metadata.txt"
 
 echo "Run output directory: ${RUN_ROOT}"
 echo "Run ID: ${RUN_ID}"
+echo "Dataset: ${DATASET}"
 echo "Metadata written to: ${metadata_file}"
 
 run_party() {
@@ -77,9 +91,10 @@ run_party() {
   (
     PID="$pid" \
     SFGWAS_MODE="$MODE" \
+    SFGWAS_DATASET="$DATASET" \
     SFGWAS_RUN_ROOT="$RUN_ROOT" \
     SKATO_RHO="$SKATO_RHO" \
-    go run sfgwas.go 2>&1
+    go run -mod=vendor sfgwas.go 2>&1
   ) | awk -v pid="$pid" '{ print "[PID=" pid "] " $0; fflush() }' | tee "$log_file"
 }
 
@@ -104,6 +119,7 @@ done
 
 echo "Run finished with status ${status}"
 echo "Run ID: ${RUN_ID}"
+echo "Dataset: ${DATASET}"
 echo "Outputs are under: ${RUN_ROOT}"
 
 exit "$status"
