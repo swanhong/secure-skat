@@ -21,15 +21,6 @@ dataset_root <- if (grepl("^/", dataset_root)) {
 }
 run_id <- if (length(args) >= 2) args[[2]] else ""
 blocks_arg_index <- if (length(args) >= 3) 3 else NA_integer_
-blocks_to_print <- if (!is.na(blocks_arg_index)) {
-  as.integer(strsplit(args[[blocks_arg_index]], ",", fixed = TRUE)[[1]])
-} else {
-  c(1L, 22L)
-}
-blocks_to_print <- sort(unique(blocks_to_print[!is.na(blocks_to_print) & blocks_to_print >= 1L & blocks_to_print <= 22L]))
-if (length(blocks_to_print) == 0) {
-  blocks_to_print <- c(1L, 22L)
-}
 
 party_dirs <- c(
   file.path(dataset_root, "party1"),
@@ -42,12 +33,30 @@ for (dir_path in party_dirs) {
   }
 }
 
+chrom_sizes <- as.integer(readLines(file.path(party_dirs[[1]], "chrom_sizes.txt"), warn = FALSE))
+chrom_sizes <- chrom_sizes[!is.na(chrom_sizes)]
+n_blocks <- length(chrom_sizes)
+if (n_blocks == 0) {
+  stop("No blocks found in chrom_sizes.txt")
+}
+
+blocks_to_print <- if (!is.na(blocks_arg_index)) {
+  as.integer(strsplit(args[[blocks_arg_index]], ",", fixed = TRUE)[[1]])
+} else {
+  c(1L, n_blocks)
+}
+blocks_to_print <- sort(unique(blocks_to_print[!is.na(blocks_to_print) & blocks_to_print >= 1L & blocks_to_print <= n_blocks]))
+if (length(blocks_to_print) == 0) {
+  blocks_to_print <- c(1L, n_blocks)
+}
+
 plink2 <- Sys.which("plink2")
 if (plink2 == "") {
   stop("plink2 not found in PATH")
 }
 
-cache_dir <- file.path(repo_root, ".local", "tmp", "plain_skat_compare")
+dataset_cache_tag <- gsub("[^A-Za-z0-9._-]+", "_", dataset_root)
+cache_dir <- file.path(repo_root, ".local", "tmp", "plain_skat_compare", dataset_cache_tag)
 dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
 csv_dir <- file.path(cache_dir, "variant_debug_csv")
 if (debug_mode) {
@@ -95,10 +104,15 @@ export_chr_matrix <- function(party_dir, chr_index) {
   if (!file.exists(raw_path)) {
     pfile_prefix <- file.path(party_dir, "geno", sprintf("chr%d", chr_index))
     sample_keep <- file.path(party_dir, "sample_keep.txt")
+    pfile_modifier <- if (file.exists(sprintf("%s.pvar.zst", pfile_prefix))) {
+      " vzs"
+    } else {
+      ""
+    }
 
     cmd <- sprintf(
-      "\"%s\" --pfile \"%s\" --keep \"%s\" --export A --out \"%s\"",
-      plink2, pfile_prefix, sample_keep, out_prefix
+      "\"%s\" --pfile \"%s\"%s --keep \"%s\" --export A --out \"%s\"",
+      plink2, pfile_prefix, pfile_modifier, sample_keep, out_prefix
     )
 
     status <- system(cmd, ignore.stdout = TRUE, ignore.stderr = TRUE)
@@ -153,10 +167,10 @@ q_total_secure_style <- 0.0
 q_total_standard_weight <- 0.0
 burden_total_secure_style <- 0.0
 variant_total <- 0L
-plain_blocks <- vector("list", 22)
-all_block_csv <- vector("list", 22)
+plain_blocks <- vector("list", n_blocks)
+all_block_csv <- vector("list", n_blocks)
 
-for (chr_index in seq_len(22)) {
+for (chr_index in seq_len(n_blocks)) {
   party_exports <- lapply(party_dirs, export_chr_matrix, chr_index = chr_index)
 
   variant_ids <- party_exports[[1]]$variant_ids
@@ -212,8 +226,10 @@ for (chr_index in seq_len(22)) {
     weight_sq = beta_weight^2,
     weighted_score_sq = (beta_weight^2) * (score^2),
     weighted_score = beta_weight * score,
+    weighted_score_negated = -(beta_weight * score),
     q_block = q_block,
-    burden_block = burden_block
+    burden_block = burden_block,
+    burden_block_negated = -burden_block
   )
 }
 
@@ -494,6 +510,7 @@ summarize_q_debug <- function(secure_q_rows, y_vec, design_mat) {
 cat(sprintf("\n--- Intermediate Value Comparisons ---\n"))
 cat(sprintf("Selected blocks for detailed output: %s\n", paste(blocks_to_print, collapse = ", ")))
 plain_qty <- as.vector(crossprod(Q_matrix, y))
+plain_qty_scaled <- sqrt(n_total) * plain_qty
 
 # Q^T y check
 qty_files <- vapply(seq_along(party_dirs), function(party_idx) {
@@ -512,7 +529,7 @@ sys_qty_list <- Filter(Negate(is.null), sys_qty_list)
 if (length(sys_qty_list) > 0) {
   secure_qty <- rowSums(do.call(cbind, sys_qty_list))
 
-  cat(sprintf("Q^T y max abs diff: %.10e\n", max(abs(secure_qty - plain_qty))))
+  cat(sprintf("Q^T y (scaled) max abs diff: %.10e\n", max(abs(secure_qty - plain_qty_scaled))))
 }
 
 # y_proj_rescaled check (before subtracting from y)
@@ -534,8 +551,9 @@ if (length(sys_yproj_list) == 2) {
   secure_yproj_p2 <- as.vector(sys_yproj_list[[2]])
 
   plain_yproj <- as.vector(Q_matrix %*% plain_qty)
-  plain_yproj_p1 <- plain_yproj[1:1000]
-  plain_yproj_p2 <- plain_yproj[1001:2000]
+  offset_p1 <- party_sample_counts[[1]]
+  plain_yproj_p1 <- plain_yproj[seq_len(offset_p1)]
+  plain_yproj_p2 <- plain_yproj[(offset_p1 + 1):length(plain_yproj)]
 
   cat(sprintf("y_proj max abs diff (p1): %.10e\n", max(abs(secure_yproj_p1 - plain_yproj_p1))))
   cat(sprintf("y_proj max abs diff (p2): %.10e\n", max(abs(secure_yproj_p2 - plain_yproj_p2))))
@@ -840,7 +858,7 @@ for (block_idx in seq_along(plain_blocks)) {
   print_vector_comparison(
     block_idx,
     "wS",
-    vector_diff_stats(secure_weighted_score, plain_block$weighted_score)
+    vector_diff_stats(secure_weighted_score, plain_block$weighted_score_negated)
   )
 
   secure_q_block <- read_secure_vector(file.path(secure_party_dir(1), sprintf("qBlock_block%d.txt", secure_block_idx)))
@@ -861,7 +879,7 @@ for (block_idx in seq_along(plain_blocks)) {
     print_scalar_comparison(
       block_idx,
       "qBurdenBlock",
-      scalar_diff_stats(secure_burden_block[[1]], plain_block$burden_block)
+      scalar_diff_stats(secure_burden_block[[1]], plain_block$burden_block_negated)
     )
   } else {
     cat(sprintf("Block %02d %-18s missing secure output\n", block_idx, "qBurdenBlock"))

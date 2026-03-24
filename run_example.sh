@@ -8,10 +8,15 @@ else
   export GOFLAGS="-mod=vendor"
 fi
 
+unset GOROOT
+export GOCACHE="$(pwd)/.local/go-build-cache"
+mkdir -p "${GOCACHE}"
+
 NUM_MAIN_PARTY=2
 MODE="gwas"
 SKATO_RHO="0.5"
 DATASET="example_data"
+CONFIG_DIR="config"
 RUN_ROOT=""
 RUN_NAME=""
 RUN_ID=""
@@ -24,6 +29,7 @@ Usage: bash run_example.sh [options]
 Options:
   --mode <gwas|skat|burden|skato>
   --dataset <dataset-root>
+  --config-dir <config-dir>
   --skato-rho <0..1>
   --help
 EOF
@@ -37,6 +43,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --dataset)
       DATASET="${2:?missing value for --dataset}"
+      shift 2
+      ;;
+    --config-dir)
+      CONFIG_DIR="${2:?missing value for --config-dir}"
       shift 2
       ;;
     --skato-rho)
@@ -71,6 +81,7 @@ metadata_file="${RUN_ROOT}/run_metadata.txt"
   echo "command=bash run_example.sh ${ORIGINAL_ARGS[*]}"
   echo "mode=${MODE}"
   echo "dataset=${DATASET}"
+  echo "config_dir=${CONFIG_DIR}"
   echo "skato_rho=${SKATO_RHO}"
   echo "run_root=${RUN_ROOT}"
   echo "pid_count=$((NUM_MAIN_PARTY + 1))"
@@ -81,7 +92,32 @@ metadata_file="${RUN_ROOT}/run_metadata.txt"
 echo "Run output directory: ${RUN_ROOT}"
 echo "Run ID: ${RUN_ID}"
 echo "Dataset: ${DATASET}"
+echo "Config directory: ${CONFIG_DIR}"
 echo "Metadata written to: ${metadata_file}"
+
+filter_terminal_output() {
+  awk '
+    /Running rare-variant protocol in mode:/ ||
+    /Starting GWAS protocol/ ||
+    /Finished QC/ ||
+    /SKAT Step [1-4]\/4:/ ||
+    /SKAT Progress:/ ||
+    /Finished rare-variant statistic computation/ ||
+    /Output collectively decrypted and saved to:/ ||
+    /MatMult: block [0-9]+ \/ [0-9]+ elapsed time/ ||
+    /panic:/ ||
+    /fatal:/ ||
+    /exit status/ ||
+    /Error:/ ||
+    /error:/ ||
+    /listen tcp/ ||
+    /Connection failed/ ||
+    /unsupported rare-variant mode/ {
+      print
+      fflush()
+    }
+  '
+}
 
 run_party() {
   local pid="$1"
@@ -92,10 +128,11 @@ run_party() {
     PID="$pid" \
     SFGWAS_MODE="$MODE" \
     SFGWAS_DATASET="$DATASET" \
+    SFGWAS_CONFIG_PATH="$CONFIG_DIR" \
     SFGWAS_RUN_ROOT="$RUN_ROOT" \
     SKATO_RHO="$SKATO_RHO" \
     go run -mod=vendor sfgwas.go 2>&1
-  ) | awk -v pid="$pid" '{ print "[PID=" pid "] " $0; fflush() }' | tee "$log_file"
+  ) | awk -v pid="$pid" '{ print "[PID=" pid "] " $0; fflush() }' | tee "$log_file" | filter_terminal_output
 }
 
 status=0
@@ -120,6 +157,7 @@ done
 echo "Run finished with status ${status}"
 echo "Run ID: ${RUN_ID}"
 echo "Dataset: ${DATASET}"
+echo "Config directory: ${CONFIG_DIR}"
 echo "Outputs are under: ${RUN_ROOT}"
 
 exit "$status"

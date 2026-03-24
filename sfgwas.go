@@ -20,6 +20,13 @@ var PID, PID_ERR = strconv.Atoi(os.Getenv("PID"))
 // Default config path
 var CONFIG_PATH = "config/"
 
+func resolveConfigPath() string {
+	if configPath := strings.TrimSpace(os.Getenv("SFGWAS_CONFIG_PATH")); configPath != "" {
+		return configPath
+	}
+	return CONFIG_PATH
+}
+
 func main() {
 	RunProtocol()
 }
@@ -129,7 +136,7 @@ func RunProtocol() {
 	}
 
 	// Initialize protocol
-	prot := InitProtocol(CONFIG_PATH)
+	prot := InitProtocol(resolveConfigPath())
 
 	// Invoke memory manager
 	err, stopFn := watchdog.HeapDriven(prot.GetConfig().MemoryLimit, 40, watchdog.NewAdaptivePolicy(0.5))

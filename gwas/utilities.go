@@ -144,7 +144,12 @@ func FilterMatrixFilePgen(pgenPrefix string, nrows, ncols int, rowFiltFile, colN
 
 	writeFilterToFile(colFiltFile, colFilt, true)
 
-	cmd := exec.Command("/bin/sh", "scripts/filterMatrixPgen.sh", pgenPrefix, strconv.Itoa(nrows), strconv.Itoa(ncols), rowFiltFile, colFiltFile, colNamesFile, strconv.Itoa(colStartPos), outputFile)
+	scriptPath := "scripts/filterMatrixPgen.sh"
+	if _, err := os.Stat(pgenPrefix + ".pvar.zst"); err == nil {
+		scriptPath = "scripts/filterMatrixPgenVzs.sh"
+	}
+
+	cmd := exec.Command("/bin/sh", scriptPath, pgenPrefix, strconv.Itoa(nrows), strconv.Itoa(ncols), rowFiltFile, colFiltFile, colNamesFile, strconv.Itoa(colStartPos), outputFile)
 	cout, e := cmd.CombinedOutput()
 	fmt.Print(string(cout))
 	if e != nil {
