@@ -516,6 +516,22 @@ func SaveFloatVectorToFile(filename string, x []float64) {
 	writer.Flush()
 }
 
+func SaveStringLinesToFile(filename string, lines []string) {
+	file, err := os.Create(filename)
+	defer file.Close()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	writer := bufio.NewWriter(file)
+	for _, line := range lines {
+		writer.WriteString(line)
+		writer.WriteString("\n")
+	}
+
+	writer.Flush()
+}
+
 func LoadFloatVectorFromFile(filename string, n int) []float64 {
 	file, err := os.Open(filename)
 	defer file.Close()

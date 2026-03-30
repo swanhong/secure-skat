@@ -89,6 +89,23 @@ resolve_secure_run_root <- function() {
 
 secure_run_root <- resolve_secure_run_root()
 
+total_dataset_variants <- sum(chrom_sizes)
+secure_qc_filter <- NULL
+secure_qc_filter_path <- file.path(secure_run_root, "cache", "party1", "gkeep.txt")
+if (file.exists(secure_qc_filter_path)) {
+  secure_qc_filter <- readLines(secure_qc_filter_path, warn = FALSE)
+  secure_qc_filter <- secure_qc_filter[nzchar(secure_qc_filter)]
+  secure_qc_filter <- secure_qc_filter == "1"
+  if (length(secure_qc_filter) != total_dataset_variants) {
+    stop(sprintf(
+      "QC filter length mismatch: expected %d variants but found %d in %s",
+      total_dataset_variants,
+      length(secure_qc_filter),
+      secure_qc_filter_path
+    ))
+  }
+}
+
 read_pheno <- function(party_dir) {
   as.numeric(read.table(file.path(party_dir, "pheno.txt"), header = FALSE)[, 1])
 }
@@ -179,6 +196,15 @@ for (chr_index in seq_len(n_blocks)) {
   }
 
   local_geno <- lapply(party_exports, `[[`, "geno")
+
+  if (!is.null(secure_qc_filter)) {
+    block_start <- if (chr_index == 1L) 1L else sum(chrom_sizes[seq_len(chr_index - 1L)]) + 1L
+    block_end <- sum(chrom_sizes[seq_len(chr_index)])
+    block_filter <- secure_qc_filter[block_start:block_end]
+    variant_ids <- variant_ids[block_filter]
+    local_geno <- lapply(local_geno, function(mat) mat[, block_filter, drop = FALSE])
+  }
+
   local_dosage_sum <- lapply(local_geno, function(mat) {
     mat[is.na(mat)] <- 0.0
     colSums(mat)

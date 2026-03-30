@@ -8,6 +8,10 @@ else
   export GOFLAGS="-mod=vendor"
 fi
 
+unset GOROOT
+export GOCACHE="$(pwd)/.local/go-build-cache"
+mkdir -p "${GOCACHE}"
+
 TEST_NAME="TestSecureSKATEndToEnd"
 RUN_SUFFIX=""
 NUM_MAIN_PARTY=2

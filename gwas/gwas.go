@@ -452,18 +452,29 @@ func (g *ProtocolInfo) combineSKATOStatistic(stats RareVariantCipherStats, rho f
 
 func (g *ProtocolInfo) RunRareVariantTest(mode RareVariantMode, skatoRho float64) {
 	log.LLvl1(time.Now().Format(time.RFC3339), "Running rare-variant protocol in mode:", string(mode))
+	totalStart := time.Now()
+	timingLines := []string{
+		fmt.Sprintf("pid=%d", g.mpcObj[0].GetPid()),
+		fmt.Sprintf("mode=%s", mode),
+		fmt.Sprintf("started_at=%s", totalStart.Format(time.RFC3339)),
+	}
 
 	// Rare-variant tests still rely on QC-filtered sample/SNP counts and filters.
 	// Reuse the standard QC phase to populate gwasParams before SKAT/Burden/SKAT-O.
+	phase1Start := time.Now()
 	g.Phase1()
+	timingLines = append(timingLines, fmt.Sprintf("phase1_qc_sec=%.6f", time.Since(phase1Start).Seconds()))
 
+	computeStart := time.Now()
 	stats := g.ComputeRareVariantStatistics()
+	timingLines = append(timingLines, fmt.Sprintf("compute_rare_variant_stats_sec=%.6f", time.Since(computeStart).Seconds()))
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "Finished rare-variant statistic computation")
 
 	net := g.mpcObj.GetNetworks()
 	net.PrintNetworkLog()
 
+	saveStart := time.Now()
 	switch mode {
 	case RareVariantModeSKAT:
 		g.saveRareVariantScalar("skat_out.txt", stats.SKAT)
@@ -481,6 +492,12 @@ func (g *ProtocolInfo) RunRareVariantTest(mode RareVariantMode, skatoRho float64
 	default:
 		panic(fmt.Sprintf("unsupported rare-variant mode: %s", mode))
 	}
+	timingLines = append(timingLines,
+		fmt.Sprintf("save_outputs_sec=%.6f", time.Since(saveStart).Seconds()),
+		fmt.Sprintf("total_sec=%.6f", time.Since(totalStart).Seconds()),
+		fmt.Sprintf("finished_at=%s", time.Now().Format(time.RFC3339)),
+	)
+	SaveStringLinesToFile(g.OutPath("rare_variant_timing.txt"), timingLines)
 }
 
 // SKAT is the main entry point to run the Secure SKAT protocol independently of single-variant GWAS.

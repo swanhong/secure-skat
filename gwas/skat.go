@@ -452,8 +452,16 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
 	cryptoParams := ast.general.cps
+	totalStart := time.Now()
+	timingLines := []string{
+		fmt.Sprintf("pid=%d", pid),
+		fmt.Sprintf("started_at=%s", totalStart.Format(time.RFC3339)),
+	}
 
+	step1Start := time.Now()
 	ynew := ast.ComputeSKATStep1Residuals()
+	step1Dur := time.Since(step1Start)
+	timingLines = append(timingLines, fmt.Sprintf("step1_null_model_residuals_sec=%.6f", step1Dur.Seconds()))
 	Y := crypto.CipherMatrix{ynew[0]}
 	if pid == 0 {
 		Y = crypto.CipherMatrix{nil}
@@ -464,7 +472,11 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 	numBlocks := ast.general.config.GenoNumBlocks
 
 	for block := 0; block < numBlocks; block++ {
+		blockStart := time.Now()
+
+		step2Start := time.Now()
 		blockData := ast.ComputeSKATStep2LoadBlockScore(block, Y)
+		step2Dur := time.Since(step2Start)
 		outFilter = append(outFilter, blockData.Filter...)
 
 		if pid > 0 {
@@ -473,10 +485,22 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 
 		log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("SKAT Progress: block %d/%d (%.1f%%)", block+1, numBlocks, 100.0*float64(block+1)/float64(numBlocks)))
 
+		step3Start := time.Now()
 		ast.ComputeSKATStep3BlockWeights(&blockData)
+		step3Dur := time.Since(step3Start)
 		ast.saveSKATStep3Outputs(block, blockData)
 
+		step4Start := time.Now()
 		qBlockRes, qBurdenBlockRes := ast.ComputeSKATStep4BlockStatistics(block, blockData)
+		step4Dur := time.Since(step4Start)
+		blockDur := time.Since(blockStart)
+		timingLines = append(timingLines,
+			fmt.Sprintf("block_%02d_num_snps=%d", block+1, blockData.NumSnps),
+			fmt.Sprintf("block_%02d_step2_score_loading_sec=%.6f", block+1, step2Dur.Seconds()),
+			fmt.Sprintf("block_%02d_step3_weight_calc_sec=%.6f", block+1, step3Dur.Seconds()),
+			fmt.Sprintf("block_%02d_step4_stat_aggregation_sec=%.6f", block+1, step4Dur.Seconds()),
+			fmt.Sprintf("block_%02d_total_sec=%.6f", block+1, blockDur.Seconds()),
+		)
 		if pid == 0 {
 			continue
 		}
@@ -491,8 +515,13 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 	}
 
 	if pid > 0 && finalBurdenStat != nil {
+		burdenFinalizeStart := time.Now()
 		finalBurdenStat = crypto.CMult(cryptoParams, finalBurdenStat, finalBurdenStat)
+		timingLines = append(timingLines, fmt.Sprintf("burden_finalize_square_sec=%.6f", time.Since(burdenFinalizeStart).Seconds()))
 	}
+
+	timingLines = append(timingLines, fmt.Sprintf("total_sec=%.6f", time.Since(totalStart).Seconds()))
+	SaveStringLinesToFile(ast.general.OutPath("skat_step_timing.txt"), timingLines)
 
 	return finalQStat, finalBurdenStat, SAll, outFilter
 }
