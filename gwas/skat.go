@@ -8,6 +8,7 @@ import (
 
 	mpc_core "github.com/hhcho/mpc-core"
 	"github.com/hhcho/sfgwas/crypto"
+	"github.com/ldsec/lattigo/v2/ckks"
 	"go.dedis.ch/onet/v3/log"
 )
 
@@ -42,6 +43,48 @@ func (ast *AssocTest) zeroPlainVectorForNonDataParty() crypto.PlainVector {
 	zeros := make([]float64, ast.general.cps.GetSlots())
 	pv, _ := crypto.EncodeFloatVector(ast.general.cps, zeros)
 	return pv
+}
+
+func (ast *AssocTest) computeSKATPackageScaleFactor(ynew crypto.CipherMatrix) float64 {
+	cryptoParams := ast.general.cps
+	mpcObj := ast.general.mpcObj[0]
+	pid := mpcObj.GetPid()
+	hubPid := mpcObj.GetHubPid()
+
+	// AggregateCVec/AggregateCMat are defined only for data parties (pid > 0).
+	// Party 0 participates in the rest of the protocol but does not own encrypted
+	// data blocks, so return the neutral factor here and let data parties compute
+	// and persist the package-compatible scale.
+	if pid == 0 {
+		return 1.0
+	}
+
+	var rssLocal *ckks.Ciphertext
+	if pid > 0 && len(ynew) > 0 && ynew[0] != nil {
+		ynewSq := crypto.CMult(cryptoParams, ynew[0], ynew[0])
+		rssLocal = crypto.InnerSumAll(cryptoParams, ynewSq)
+	} else {
+		rssLocal = crypto.CZeros(cryptoParams, 1)[0]
+	}
+
+	rssAgg := mpcObj.Network.AggregateCVec(cryptoParams, crypto.CipherVector{rssLocal})
+	rssDec := mpcObj.Network.CollectiveDecryptVec(cryptoParams, rssAgg, -1)
+	rss := crypto.DecodeFloatVector(cryptoParams, rssDec)[0]
+
+	dof := ast.skatTotalNumInds() - (len(ast.inputCov) + 1)
+	if dof <= 0 || rss == 0 {
+		return 1.0
+	}
+
+	s2 := rss / float64(dof)
+	scale := 1.0 / (2.0 * s2)
+
+	if pid == hubPid {
+		SaveFloatVectorToFile(ast.general.OutPath("null_model_s2.txt"), []float64{s2})
+		SaveFloatVectorToFile(ast.general.OutPath("skat_q_scale_factor.txt"), []float64{scale})
+	}
+
+	return scale
 }
 
 // computeResidual performs QR and projects covariates out to get the null model residual
@@ -186,6 +229,10 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 // weightsCalculation computes per-variant p_bar = dosageSum/(2N), p = 1-p_bar,
 // then uses maf = min(p, p_bar) to form beta weights Beta(maf; 1, 25)
 // = 25 * (1-maf)^24.
+//
+// This matches the current SKAT package notation, where the weighted linear
+// kernel is K = G W W G' and the user-supplied "weights" correspond to the
+// diagonal entries of W rather than the older paper's W^2 notation.
 func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (mpc_core.RVec, mpc_core.RVec, mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
@@ -246,7 +293,8 @@ func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (
 	w24 := mpcObj.SSMultElemVec(w16, w8)
 	w24 = mpcObj.TruncVec(w24, mpcObj.GetDataBits(), mpcObj.GetFracBits())
 
-	// In SKAT/SKAT-O, beta(MAF; 1, 25) = 25 * (1-MAF)^24.
+	// In the current SKAT package notation, beta(MAF; 1, 25) = 25 * (1-MAF)^24
+	// is the weight vector supplied to SKAT(..., weights = ...).
 	// Since maf = min(p, 1-p), this equals 25 * max(p, 1-p)^24.
 	betaConst := rtype.FromFloat64(25.0, mpcObj.GetFracBits())
 	w24.MulScalar(betaConst)
@@ -270,7 +318,8 @@ func (ast *AssocTest) ScoreCalculation(scoreVec crypto.CipherVector, weightEnc c
 	// Compute [s_j^2]
 	S2 := crypto.CMult(cryptoParams, scoreVec, scoreVec)
 
-	// Compute [w_j^2] and then [w_j^2 * s_j^2]
+	// Compute [w_j^2] and then [w_j^2 * s_j^2].
+	// This matches SKAT::SKAT()'s current weighted linear kernel notation.
 	w2 := crypto.CMult(cryptoParams, weightEnc, weightEnc)
 	w2S2 := crypto.CMult(cryptoParams, w2, S2)
 
@@ -462,6 +511,12 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 	ynew := ast.ComputeSKATStep1Residuals()
 	step1Dur := time.Since(step1Start)
 	timingLines = append(timingLines, fmt.Sprintf("step1_null_model_residuals_sec=%.6f", step1Dur.Seconds()))
+	scaleStart := time.Now()
+	skatPackageScale := ast.computeSKATPackageScaleFactor(ynew)
+	timingLines = append(timingLines,
+		fmt.Sprintf("null_model_q_scale_factor=%.10e", skatPackageScale),
+		fmt.Sprintf("null_model_q_scale_sec=%.6f", time.Since(scaleStart).Seconds()),
+	)
 	Y := crypto.CipherMatrix{ynew[0]}
 	if pid == 0 {
 		Y = crypto.CipherMatrix{nil}
@@ -518,6 +573,10 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 		burdenFinalizeStart := time.Now()
 		finalBurdenStat = crypto.CMult(cryptoParams, finalBurdenStat, finalBurdenStat)
 		timingLines = append(timingLines, fmt.Sprintf("burden_finalize_square_sec=%.6f", time.Since(burdenFinalizeStart).Seconds()))
+		if finalQStat != nil {
+			finalQStat = crypto.CMultConstRescale(cryptoParams, finalQStat, skatPackageScale, false)
+		}
+		finalBurdenStat = crypto.CMultConstRescale(cryptoParams, finalBurdenStat, skatPackageScale, false)
 	}
 
 	timingLines = append(timingLines, fmt.Sprintf("total_sec=%.6f", time.Since(totalStart).Seconds()))
