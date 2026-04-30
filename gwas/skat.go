@@ -16,7 +16,6 @@ type SKATBlockData struct {
 	NumSnps   int
 	ScoreVec  crypto.CipherVector
 	DosageSum []float64
-	Filter    []bool
 	PEnc      crypto.CipherVector
 	PBarEnc   crypto.CipherVector
 	WeightEnc crypto.CipherVector
@@ -363,13 +362,11 @@ func (ast *AssocTest) ComputeSKATStep2LoadBlockScore(block int, Y crypto.CipherM
 
 	var SBlock crypto.CipherMatrix
 	var dosageSum []float64
-	var filterBlock []bool
 	if pid > 0 {
-		SBlock, dosageSum, _, filterBlock = ast.GenoBlockMultSKAT(block, Y, false)
+		SBlock, dosageSum, _, _ = ast.GenoBlockMultSKAT(block, Y, false)
 	} else {
 		SBlock = nil
 		dosageSum = make([]float64, nsnpsBlock)
-		filterBlock = make([]bool, nsnpsBlock)
 	}
 
 	SBlockAggr := mpcObj.Network.AggregateCMat(cryptoParams, SBlock)
@@ -378,7 +375,6 @@ func (ast *AssocTest) ComputeSKATStep2LoadBlockScore(block int, Y crypto.CipherM
 	blockData := SKATBlockData{
 		NumSnps:   nsnpsBlock,
 		DosageSum: dosageSum,
-		Filter:    filterBlock,
 	}
 	if pid > 0 {
 		blockData.ScoreVec = SBlockAggr[0]
@@ -480,14 +476,14 @@ func (ast *AssocTest) ComputeSKATStep4BlockStatistics(block int, blockData SKATB
 	return qBlockRes, qBurdenBlockRes
 }
 
-// Main SKAT computation function calling separated steps.
-func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurden crypto.CipherVector, nullRSS crypto.CipherVector, SAll crypto.CipherMatrix, outFilter []bool) {
+// ComputeSKATStatistics returns the final secure SKAT and Burden statistics.
+func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurden crypto.CipherVector) {
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
 	cryptoParams := ast.general.cps
 
 	ynew := ast.ComputeSKATStep1Residuals()
-	nullRSS = ast.computeEncryptedResidualRSS(ynew)
+	nullRSS := ast.computeEncryptedResidualRSS(ynew)
 	Y := crypto.CipherMatrix{ynew[0]}
 	if pid == 0 {
 		Y = crypto.CipherMatrix{nil}
@@ -499,11 +495,6 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 
 	for block := 0; block < numBlocks; block++ {
 		blockData := ast.ComputeSKATStep2LoadBlockScore(block, Y)
-		outFilter = append(outFilter, blockData.Filter...)
-
-		if pid > 0 {
-			SAll = append(SAll, blockData.ScoreVec)
-		}
 
 		log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("SKAT Progress: block %d/%d (%.1f%%)", block+1, numBlocks, 100.0*float64(block+1)/float64(numBlocks)))
 
@@ -528,5 +519,11 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 		finalBurdenStat = crypto.CMult(cryptoParams, finalBurdenStat, finalBurdenStat)
 	}
 
-	return finalQStat, finalBurdenStat, nullRSS, SAll, outFilter
+	scaleCt, scaleOK := ast.general.rareVariantScaleCipher(nullRSS)
+	if scaleOK {
+		finalQStat = ast.general.scaleRareVariantCipherStat(finalQStat, scaleCt)
+		finalBurdenStat = ast.general.scaleRareVariantCipherStat(finalBurdenStat, scaleCt)
+	}
+
+	return finalQStat, finalBurdenStat
 }

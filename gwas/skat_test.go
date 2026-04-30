@@ -413,11 +413,16 @@ func TestSKATBasicOperations(t *testing.T) {
 		os.MkdirAll(prot.GetConfig().CacheDir, 0755)
 		// We deliberately don't remove this dir automatically
 
-		// Call ComputeSKATStatistics directly to get the score vector
-		// This tests the full integrated path in skat.go
-		_, _, _, S_out, _ := prot.ComputeSKATStatistics()
+			assocTest := prot.InitAssociationTests(nil)
+			ynew := assocTest.ComputeSKATStep1Residuals()
+			Y := crypto.CipherMatrix{ynew[0]}
+			if pid == 0 {
+				Y = crypto.CipherMatrix{nil}
+			}
+			blockData := assocTest.ComputeSKATStep2LoadBlockScore(0, Y)
+			S_out := blockData.ScoreVec
 
-		if pid == 1 {
+			if pid == 1 {
 			// Decrypt and compare score vector for the first block
 			var qr mat.QR
 			qr.Factorize(fullX)
@@ -437,8 +442,8 @@ func TestSKATBasicOperations(t *testing.T) {
 
 			// Assuming GenoBlockMult processes the full dataset here in the plain
 			// However, S_out[0] is aggregated across parties via MPC.
-			pv_s0 := mpcObj.Network.CollectiveDecryptVec(cps, S_out[0], 1)
-			pt_s0 := crypto.DecodeFloatVector(cps, pv_s0)
+				pv_s0 := mpcObj.Network.CollectiveDecryptVec(cps, S_out, 1)
+				pt_s0 := crypto.DecodeFloatVector(cps, pv_s0)
 
 			// We skip the exact math check for S_out since it depends on the plain genotype matrix,
 			// which we haven't loaded in plain here. The goal is to ensure it runs without panics
@@ -447,11 +452,11 @@ func TestSKATBasicOperations(t *testing.T) {
 			if pt_s0[0] != 0 {
 				fmt.Println("TestSKAT_Step1_ScoreVector verified.")
 			}
-		} else if pid > 0 {
-			if len(S_out) > 0 {
-				mpcObj.Network.CollectiveDecryptVec(cps, S_out[0], 1)
-			}
-		} else {
+			} else if pid > 0 {
+				if S_out != nil {
+					mpcObj.Network.CollectiveDecryptVec(cps, S_out, 1)
+				}
+			} else {
 			// Party 0 must participate in collective decryption
 			mpcObj.Network.CollectiveDecryptVec(cps, nil, 1)
 		}

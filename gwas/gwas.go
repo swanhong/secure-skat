@@ -504,19 +504,12 @@ func (g *ProtocolInfo) RunRareVariantTest(mode RareVariantMode, skatoRho float64
 	// Reuse the standard QC phase to populate gwasParams before SKAT/Burden/SKAT-O.
 	g.Phase1()
 
-	skat, burden, nullRSS, _, _ := g.ComputeSKATStatistics()
+	skat, burden := g.ComputeSKATStatistics()
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "Finished rare-variant statistic computation")
 
 	net := g.mpcObj.GetNetworks()
 	net.PrintNetworkLog()
-
-	scaleCt, scaleOK := g.rareVariantScaleCipher(nullRSS)
-
-	if scaleOK {
-		skat = g.scaleRareVariantCipherStat(skat, scaleCt)
-		burden = g.scaleRareVariantCipherStat(burden, scaleCt)
-	}
 
 	switch mode {
 	case RareVariantModeSKAT:
@@ -556,7 +549,7 @@ func (g *ProtocolInfo) SetPhenoAndCov(pheno, cov *mat.Dense) {
 	g.cov = cov
 }
 
-func (g *ProtocolInfo) ComputeSKATStatistics() (crypto.CipherVector, crypto.CipherVector, crypto.CipherVector, crypto.CipherMatrix, []bool) {
+func (g *ProtocolInfo) ComputeSKATStatistics() (crypto.CipherVector, crypto.CipherVector) {
 	assocTest := g.InitAssociationTests(nil) // SKAT does not use PCA
 	return assocTest.ComputeSKATStatistics()
 }
