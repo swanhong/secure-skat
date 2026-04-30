@@ -455,7 +455,7 @@ print_run_level_summaries <- function(skat_summary, burden_summary, secure_resul
   if (!is.na(secure_results$secure_q)) {
     cat(sprintf("\n--- SKAT Results ---\n"))
     cat(sprintf("Secure Q (%s): %.10e\n", secure_results$secure_q_path, secure_results$secure_q))
-    if (is.na(secure_results$secure_scale_global)) {
+    if (!identical(secure_results$secure_q_for_compare, secure_results$secure_q)) {
       cat(sprintf(
         "Secure Q after inferred SKAT-package scaling: %.10e\n",
         secure_results$secure_q_for_compare
@@ -480,7 +480,7 @@ print_run_level_summaries <- function(skat_summary, burden_summary, secure_resul
       secure_results$secure_burden_path,
       secure_results$secure_burden
     ))
-    if (is.na(secure_results$secure_scale_global)) {
+    if (!identical(secure_results$secure_burden_for_compare, secure_results$secure_burden)) {
       cat(sprintf(
         "Secure Burden after inferred SKAT-package scaling: %.10e\n",
         secure_results$secure_burden_for_compare

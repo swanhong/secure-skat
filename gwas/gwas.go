@@ -46,13 +46,6 @@ const (
 	RareVariantModeSKATO  RareVariantMode = "skato"
 )
 
-type RareVariantCipherStats struct {
-	SKAT      crypto.CipherVector
-	Burden    crypto.CipherVector
-	Scores    crypto.CipherMatrix
-	OutFilter []bool
-}
-
 type Config struct {
 	NumMainParties int `toml:"num_main_parties"`
 	HubPartyId     int `toml:"hub_party_id"`
@@ -436,68 +429,112 @@ func (g *ProtocolInfo) decryptRareVariantScalar(stat crypto.CipherVector) []floa
 	return []float64{out[0]}
 }
 
+func (g *ProtocolInfo) rareVariantScaleCipher(rssEnc crypto.CipherVector) (*ckks.Ciphertext, bool) {
+	mpcObj := g.mpcObj[0]
+	pid := mpcObj.GetPid()
+	sourcePid := mpcObj.GetHubPid()
+	if rssEnc == nil && pid > 0 && pid != sourcePid {
+		return nil, false
+	}
+
+	nrowsAll := g.gwasParams.FiltNumInds()
+	if len(nrowsAll) != g.config.NumMainParties+1 {
+		nrowsAll = g.config.NumInds
+	}
+
+	totalInds := 0
+	for p := 1; p <= g.config.NumMainParties; p++ {
+		totalInds += nrowsAll[p]
+	}
+
+	dof := totalInds - (g.gwasParams.NumCov() + 1)
+	if dof <= 0 {
+		return nil, false
+	}
+
+	rtype := mpcObj.GetRType()
+	fracBits := mpcObj.GetFracBits()
+
+	var rssCt *ckks.Ciphertext
+	if pid == sourcePid && rssEnc != nil {
+		rssCt = rssEnc[0]
+	}
+	rssSS := mpcObj.CiphertextToSS(g.cps, rtype, rssCt, sourcePid, 1)
+
+	numerSS := mpc_core.InitRVec(rtype.Zero(), 1)
+	if pid == mpcObj.GetHubPid() {
+		numerSS[0] = rtype.FromFloat64(float64(dof)/2.0, fracBits)
+	}
+
+	alphaSS := mpcObj.Divide(numerSS, rssSS, false)
+
+	alphaSlotsSS := mpc_core.InitRVec(rtype.Zero(), g.cps.GetSlots())
+	for i := range alphaSlotsSS {
+		alphaSlotsSS[i] = alphaSS[0]
+	}
+
+	return mpcObj.SStoCiphertext(g.cps, alphaSlotsSS), true
+}
+
+func (g *ProtocolInfo) scaleRareVariantCipherStat(stat crypto.CipherVector, scaleCt *ckks.Ciphertext) crypto.CipherVector {
+	if stat == nil || scaleCt == nil {
+		return stat
+	}
+	return crypto.CMultScalar(g.cps, stat, scaleCt)
+}
+
 func (g *ProtocolInfo) saveRareVariantScalar(filename string, stat crypto.CipherVector) {
 	if out := g.decryptRareVariantScalar(stat); out != nil {
 		SaveFloatVectorToFile(g.OutPath(filename), out)
 	}
 }
 
-func (g *ProtocolInfo) combineSKATOStatistic(stats RareVariantCipherStats, rho float64) crypto.CipherVector {
+func (g *ProtocolInfo) combineSKATOStatistic(skat, burden crypto.CipherVector, rho float64) crypto.CipherVector {
 	cryptoParams := g.cps
 
-	skatPart := crypto.CMultConstRescale(cryptoParams, stats.SKAT, 1.0-rho, false)
-	burdenPart := crypto.CMultConstRescale(cryptoParams, stats.Burden, rho, false)
+	skatPart := crypto.CMultConstRescale(cryptoParams, skat, 1.0-rho, false)
+	burdenPart := crypto.CMultConstRescale(cryptoParams, burden, rho, false)
 	return crypto.CAdd(cryptoParams, skatPart, burdenPart)
 }
 
 func (g *ProtocolInfo) RunRareVariantTest(mode RareVariantMode, skatoRho float64) {
 	log.LLvl1(time.Now().Format(time.RFC3339), "Running rare-variant protocol in mode:", string(mode))
-	totalStart := time.Now()
-	timingLines := []string{
-		fmt.Sprintf("pid=%d", g.mpcObj[0].GetPid()),
-		fmt.Sprintf("mode=%s", mode),
-		fmt.Sprintf("started_at=%s", totalStart.Format(time.RFC3339)),
-	}
 
 	// Rare-variant tests still rely on QC-filtered sample/SNP counts and filters.
 	// Reuse the standard QC phase to populate gwasParams before SKAT/Burden/SKAT-O.
-	phase1Start := time.Now()
 	g.Phase1()
-	timingLines = append(timingLines, fmt.Sprintf("phase1_qc_sec=%.6f", time.Since(phase1Start).Seconds()))
 
-	computeStart := time.Now()
-	stats := g.ComputeRareVariantStatistics()
-	timingLines = append(timingLines, fmt.Sprintf("compute_rare_variant_stats_sec=%.6f", time.Since(computeStart).Seconds()))
+	skat, burden, nullRSS, _, _ := g.ComputeSKATStatistics()
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "Finished rare-variant statistic computation")
 
 	net := g.mpcObj.GetNetworks()
 	net.PrintNetworkLog()
 
-	saveStart := time.Now()
+	scaleCt, scaleOK := g.rareVariantScaleCipher(nullRSS)
+
+	if scaleOK {
+		skat = g.scaleRareVariantCipherStat(skat, scaleCt)
+		burden = g.scaleRareVariantCipherStat(burden, scaleCt)
+	}
+
 	switch mode {
 	case RareVariantModeSKAT:
-		g.saveRareVariantScalar("skat_out.txt", stats.SKAT)
-		g.saveRareVariantScalar("burden_out.txt", stats.Burden)
+		g.saveRareVariantScalar("skat_out.txt", skat)
+		g.saveRareVariantScalar("burden_out.txt", burden)
 		log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Output collectively decrypted and saved to: %s and %s", g.OutPath("skat_out.txt"), g.OutPath("burden_out.txt")))
 	case RareVariantModeBurden:
-		g.saveRareVariantScalar("burden_out.txt", stats.Burden)
+		g.saveRareVariantScalar("burden_out.txt", burden)
 		log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Output collectively decrypted and saved to: %s", g.OutPath("burden_out.txt")))
 	case RareVariantModeSKATO:
-		skato := g.combineSKATOStatistic(stats, skatoRho)
-		g.saveRareVariantScalar("skat_out.txt", stats.SKAT)
-		g.saveRareVariantScalar("burden_out.txt", stats.Burden)
+		skato := g.combineSKATOStatistic(skat, burden, skatoRho)
+		g.saveRareVariantScalar("skat_out.txt", skat)
+		g.saveRareVariantScalar("burden_out.txt", burden)
 		g.saveRareVariantScalar("skato_out.txt", skato)
 		log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Output collectively decrypted and saved to: %s, %s, and %s", g.OutPath("skat_out.txt"), g.OutPath("burden_out.txt"), g.OutPath("skato_out.txt")))
 	default:
 		panic(fmt.Sprintf("unsupported rare-variant mode: %s", mode))
 	}
-	timingLines = append(timingLines,
-		fmt.Sprintf("save_outputs_sec=%.6f", time.Since(saveStart).Seconds()),
-		fmt.Sprintf("total_sec=%.6f", time.Since(totalStart).Seconds()),
-		fmt.Sprintf("finished_at=%s", time.Now().Format(time.RFC3339)),
-	)
-	SaveStringLinesToFile(g.OutPath("rare_variant_timing.txt"), timingLines)
 }
 
 // SKAT is the main entry point to run the Secure SKAT protocol independently of single-variant GWAS.
@@ -519,19 +556,9 @@ func (g *ProtocolInfo) SetPhenoAndCov(pheno, cov *mat.Dense) {
 	g.cov = cov
 }
 
-func (g *ProtocolInfo) ComputeSKATStatistics() (crypto.CipherVector, crypto.CipherVector, crypto.CipherMatrix, []bool) {
+func (g *ProtocolInfo) ComputeSKATStatistics() (crypto.CipherVector, crypto.CipherVector, crypto.CipherVector, crypto.CipherMatrix, []bool) {
 	assocTest := g.InitAssociationTests(nil) // SKAT does not use PCA
 	return assocTest.ComputeSKATStatistics()
-}
-
-func (g *ProtocolInfo) ComputeRareVariantStatistics() RareVariantCipherStats {
-	skat, burden, scores, outFilter := g.ComputeSKATStatistics()
-	return RareVariantCipherStats{
-		SKAT:      skat,
-		Burden:    burden,
-		Scores:    scores,
-		OutFilter: outFilter,
-	}
 }
 
 func (g *ProtocolInfo) CZeroTest() {

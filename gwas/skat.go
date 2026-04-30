@@ -45,18 +45,13 @@ func (ast *AssocTest) zeroPlainVectorForNonDataParty() crypto.PlainVector {
 	return pv
 }
 
-func (ast *AssocTest) computeSKATPackageScaleFactor(ynew crypto.CipherMatrix) float64 {
+func (ast *AssocTest) computeEncryptedResidualRSS(ynew crypto.CipherMatrix) crypto.CipherVector {
 	cryptoParams := ast.general.cps
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
-	hubPid := mpcObj.GetHubPid()
 
-	// AggregateCVec/AggregateCMat are defined only for data parties (pid > 0).
-	// Party 0 participates in the rest of the protocol but does not own encrypted
-	// data blocks, so return the neutral factor here and let data parties compute
-	// and persist the package-compatible scale.
 	if pid == 0 {
-		return 1.0
+		return nil
 	}
 
 	var rssLocal *ckks.Ciphertext
@@ -67,24 +62,7 @@ func (ast *AssocTest) computeSKATPackageScaleFactor(ynew crypto.CipherMatrix) fl
 		rssLocal = crypto.CZeros(cryptoParams, 1)[0]
 	}
 
-	rssAgg := mpcObj.Network.AggregateCVec(cryptoParams, crypto.CipherVector{rssLocal})
-	rssDec := mpcObj.Network.CollectiveDecryptVec(cryptoParams, rssAgg, -1)
-	rss := crypto.DecodeFloatVector(cryptoParams, rssDec)[0]
-
-	dof := ast.skatTotalNumInds() - (len(ast.inputCov) + 1)
-	if dof <= 0 || rss == 0 {
-		return 1.0
-	}
-
-	s2 := rss / float64(dof)
-	scale := 1.0 / (2.0 * s2)
-
-	if pid == hubPid {
-		SaveFloatVectorToFile(ast.general.OutPath("null_model_s2.txt"), []float64{s2})
-		SaveFloatVectorToFile(ast.general.OutPath("skat_q_scale_factor.txt"), []float64{scale})
-	}
-
-	return scale
+	return mpcObj.Network.AggregateCVec(cryptoParams, crypto.CipherVector{rssLocal})
 }
 
 // computeResidual performs QR and projects covariates out to get the null model residual
@@ -120,9 +98,6 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 	// Joint QR (NetDQRenc inside requires Party 0)
 	// SKAT runs without PCA covariates, passing nil
 
-	// Joint QR (NetDQRenc inside requires Party 0)
-	// SKAT runs without PCA covariates, passing nil
-
 	Q := ast.computeCombinedQV2(C, nil)
 
 	// In SKAT, the first covariate is ALWAYS the identically precise intercept.
@@ -144,10 +119,12 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 		Q, _ = crypto.FlattenLevels(cryptoParams, Q)
 	}
 
-	// Save vertically partitioned arrays by iterating individually to avoid
-	// MPC extracting ciphertexts composed of independent data halves (-1).
-	for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
-		SaveMatrixToFile(cryptoParams, mpcObj, Q, nrowsAll[p], p, ast.general.OutPath("Qcomb.txt"))
+	if ast.general.config.Debug {
+		// Save vertically partitioned arrays by iterating individually to avoid
+		// MPC extracting ciphertexts composed of independent data halves (-1).
+		for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
+			SaveMatrixToFile(cryptoParams, mpcObj, Q, nrowsAll[p], p, ast.general.OutPath("Qcomb.txt"))
+		}
 	}
 
 	// Project covariates out of y: ynew = (I - Q*Q')*y
@@ -172,36 +149,39 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 			log.Lvl1("Error in DCMatMulAAtBPlainWithIntmd: ", err)
 		}
 
-		for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
-			if QTY != nil {
-				// Manually decrypt the 0-th slot of each ciphertext in QTY[0]
-				ptList := mpcObj.Network.CollectiveDecryptVec(cryptoParams, QTY[0], p)
+			if ast.general.config.Debug {
+			for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
+				if QTY != nil {
+					// Manually decrypt the 0-th slot of each ciphertext in QTY[0]
+					ptList := mpcObj.Network.CollectiveDecryptVec(cryptoParams, QTY[0], p)
 
-				if pid == p {
-					f, err := os.Create(ast.general.OutPath("qty.txt"))
-					if err == nil {
-						var vals []string
-						for _, pt := range ptList {
-							v := crypto.DecodeFloatVector(cryptoParams, crypto.PlainVector{pt})[0]
-							vals = append(vals, fmt.Sprintf("%.6e", v))
+					if pid == p {
+						f, err := os.Create(ast.general.OutPath("qty.txt"))
+						if err == nil {
+							var vals []string
+							for _, pt := range ptList {
+								v := crypto.DecodeFloatVector(cryptoParams, crypto.PlainVector{pt})[0]
+								vals = append(vals, fmt.Sprintf("%.6e", v))
+							}
+							f.WriteString(strings.Join(vals, ",") + "\n")
+							f.Close()
 						}
-						f.WriteString(strings.Join(vals, ",") + "\n")
-						f.Close()
 					}
 				}
 			}
-		}
-
-		// Save y_proj before rescaling/subtraction
-		for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
-			SaveMatrixToFile(cryptoParams, mpcObj, ynew, nrowsAll[p], p, ast.general.OutPath("y_proj_raw.txt"))
+			// Save y_proj before rescaling/subtraction
+			for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
+				SaveMatrixToFile(cryptoParams, mpcObj, ynew, nrowsAll[p], p, ast.general.OutPath("y_proj_raw.txt"))
+			}
 		}
 
 		ynew[0] = crypto.CMultConstRescale(cryptoParams, ynew[0], nrowsTotalInv, true)
 
-		// Save y_proj AFTER rescaling but before subtracting from pheno
-		for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
-			SaveMatrixToFile(cryptoParams, mpcObj, ynew, nrowsAll[p], p, ast.general.OutPath("y_proj_rescaled.txt"))
+			if ast.general.config.Debug {
+			// Save y_proj AFTER rescaling but before subtracting from pheno
+			for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
+				SaveMatrixToFile(cryptoParams, mpcObj, ynew, nrowsAll[p], p, ast.general.OutPath("y_proj_rescaled.txt"))
+			}
 		}
 
 	} else {
@@ -219,8 +199,10 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 		ynew[0] = crypto.CPAdd(cryptoParams, ynew[0], ast.pheno)
 	}
 
-	for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
-		SaveMatrixToFile(cryptoParams, mpcObj, ynew, nrowsAll[p], p, ast.general.OutPath("ynew.txt"))
+	if ast.general.config.Debug {
+		for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
+			SaveMatrixToFile(cryptoParams, mpcObj, ynew, nrowsAll[p], p, ast.general.OutPath("ynew.txt"))
+		}
 	}
 
 	return ynew
@@ -421,7 +403,7 @@ func (ast *AssocTest) ComputeSKATStep3BlockWeights(blockData *SKATBlockData) {
 func (ast *AssocTest) saveSKATStep3Outputs(block int, blockData SKATBlockData) {
 	cryptoParams := ast.general.cps
 	mpcObj := ast.general.mpcObj[0]
-	if mpcObj.GetPid() == 0 {
+	if mpcObj.GetPid() == 0 || !ast.general.config.Debug {
 		return
 	}
 
@@ -468,55 +450,44 @@ func (ast *AssocTest) ComputeSKATStep4BlockStatistics(block int, blockData SKATB
 	log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("SKAT Step 4/4: block statistic aggregation (%d SNPs)", blockData.NumSnps))
 	qBlockRes, qBurdenBlockRes, S2, w2, w2S2, wS := ast.ScoreCalculation(blockData.ScoreVec, blockData.WeightEnc)
 
-	SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qBlock_block%d.txt", block)))
-	SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBurdenBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qBurdenBlock_block%d.txt", block)))
-	SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{S2}, blockData.NumSnps, -1, ast.general.OutPath(fmt.Sprintf("S2_block%d.txt", block)))
-	SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{w2}, blockData.NumSnps, -1, ast.general.OutPath(fmt.Sprintf("w2_block%d.txt", block)))
-	SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{w2S2}, blockData.NumSnps, -1, ast.general.OutPath(fmt.Sprintf("w2S2_block%d.txt", block)))
-	SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{wS}, blockData.NumSnps, -1, ast.general.OutPath(fmt.Sprintf("wS_block%d.txt", block)))
-	SaveMatrixComplexPartsToFile(
-		cryptoParams,
-		mpcObj,
-		crypto.CipherMatrix{w2},
-		blockData.NumSnps,
-		-1,
-		ast.general.OutPath(fmt.Sprintf("w2_block%d_real.txt", block)),
-		ast.general.OutPath(fmt.Sprintf("w2_block%d_imag.txt", block)),
-	)
-	SaveMatrixComplexPartsToFile(
-		cryptoParams,
-		mpcObj,
-		crypto.CipherMatrix{w2S2},
-		blockData.NumSnps,
-		-1,
-		ast.general.OutPath(fmt.Sprintf("w2S2_block%d_real.txt", block)),
-		ast.general.OutPath(fmt.Sprintf("w2S2_block%d_imag.txt", block)),
-	)
+	if ast.general.config.Debug {
+		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qBlock_block%d.txt", block)))
+		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBurdenBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qBurdenBlock_block%d.txt", block)))
+		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{S2}, blockData.NumSnps, -1, ast.general.OutPath(fmt.Sprintf("S2_block%d.txt", block)))
+		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{w2}, blockData.NumSnps, -1, ast.general.OutPath(fmt.Sprintf("w2_block%d.txt", block)))
+		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{w2S2}, blockData.NumSnps, -1, ast.general.OutPath(fmt.Sprintf("w2S2_block%d.txt", block)))
+		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{wS}, blockData.NumSnps, -1, ast.general.OutPath(fmt.Sprintf("wS_block%d.txt", block)))
+		SaveMatrixComplexPartsToFile(
+			cryptoParams,
+			mpcObj,
+			crypto.CipherMatrix{w2},
+			blockData.NumSnps,
+			-1,
+			ast.general.OutPath(fmt.Sprintf("w2_block%d_real.txt", block)),
+			ast.general.OutPath(fmt.Sprintf("w2_block%d_imag.txt", block)),
+		)
+		SaveMatrixComplexPartsToFile(
+			cryptoParams,
+			mpcObj,
+			crypto.CipherMatrix{w2S2},
+			blockData.NumSnps,
+			-1,
+			ast.general.OutPath(fmt.Sprintf("w2S2_block%d_real.txt", block)),
+			ast.general.OutPath(fmt.Sprintf("w2S2_block%d_imag.txt", block)),
+		)
+	}
 
 	return qBlockRes, qBurdenBlockRes
 }
 
 // Main SKAT computation function calling separated steps.
-func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurden crypto.CipherVector, SAll crypto.CipherMatrix, outFilter []bool) {
+func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurden crypto.CipherVector, nullRSS crypto.CipherVector, SAll crypto.CipherMatrix, outFilter []bool) {
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
 	cryptoParams := ast.general.cps
-	totalStart := time.Now()
-	timingLines := []string{
-		fmt.Sprintf("pid=%d", pid),
-		fmt.Sprintf("started_at=%s", totalStart.Format(time.RFC3339)),
-	}
 
-	step1Start := time.Now()
 	ynew := ast.ComputeSKATStep1Residuals()
-	step1Dur := time.Since(step1Start)
-	timingLines = append(timingLines, fmt.Sprintf("step1_null_model_residuals_sec=%.6f", step1Dur.Seconds()))
-	scaleStart := time.Now()
-	skatPackageScale := ast.computeSKATPackageScaleFactor(ynew)
-	timingLines = append(timingLines,
-		fmt.Sprintf("null_model_q_scale_factor=%.10e", skatPackageScale),
-		fmt.Sprintf("null_model_q_scale_sec=%.6f", time.Since(scaleStart).Seconds()),
-	)
+	nullRSS = ast.computeEncryptedResidualRSS(ynew)
 	Y := crypto.CipherMatrix{ynew[0]}
 	if pid == 0 {
 		Y = crypto.CipherMatrix{nil}
@@ -527,11 +498,7 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 	numBlocks := ast.general.config.GenoNumBlocks
 
 	for block := 0; block < numBlocks; block++ {
-		blockStart := time.Now()
-
-		step2Start := time.Now()
 		blockData := ast.ComputeSKATStep2LoadBlockScore(block, Y)
-		step2Dur := time.Since(step2Start)
 		outFilter = append(outFilter, blockData.Filter...)
 
 		if pid > 0 {
@@ -540,22 +507,10 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 
 		log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("SKAT Progress: block %d/%d (%.1f%%)", block+1, numBlocks, 100.0*float64(block+1)/float64(numBlocks)))
 
-		step3Start := time.Now()
 		ast.ComputeSKATStep3BlockWeights(&blockData)
-		step3Dur := time.Since(step3Start)
 		ast.saveSKATStep3Outputs(block, blockData)
 
-		step4Start := time.Now()
 		qBlockRes, qBurdenBlockRes := ast.ComputeSKATStep4BlockStatistics(block, blockData)
-		step4Dur := time.Since(step4Start)
-		blockDur := time.Since(blockStart)
-		timingLines = append(timingLines,
-			fmt.Sprintf("block_%02d_num_snps=%d", block+1, blockData.NumSnps),
-			fmt.Sprintf("block_%02d_step2_score_loading_sec=%.6f", block+1, step2Dur.Seconds()),
-			fmt.Sprintf("block_%02d_step3_weight_calc_sec=%.6f", block+1, step3Dur.Seconds()),
-			fmt.Sprintf("block_%02d_step4_stat_aggregation_sec=%.6f", block+1, step4Dur.Seconds()),
-			fmt.Sprintf("block_%02d_total_sec=%.6f", block+1, blockDur.Seconds()),
-		)
 		if pid == 0 {
 			continue
 		}
@@ -570,17 +525,8 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 	}
 
 	if pid > 0 && finalBurdenStat != nil {
-		burdenFinalizeStart := time.Now()
 		finalBurdenStat = crypto.CMult(cryptoParams, finalBurdenStat, finalBurdenStat)
-		timingLines = append(timingLines, fmt.Sprintf("burden_finalize_square_sec=%.6f", time.Since(burdenFinalizeStart).Seconds()))
-		if finalQStat != nil {
-			finalQStat = crypto.CMultConstRescale(cryptoParams, finalQStat, skatPackageScale, false)
-		}
-		finalBurdenStat = crypto.CMultConstRescale(cryptoParams, finalBurdenStat, skatPackageScale, false)
 	}
 
-	timingLines = append(timingLines, fmt.Sprintf("total_sec=%.6f", time.Since(totalStart).Seconds()))
-	SaveStringLinesToFile(ast.general.OutPath("skat_step_timing.txt"), timingLines)
-
-	return finalQStat, finalBurdenStat, SAll, outFilter
+	return finalQStat, finalBurdenStat, nullRSS, SAll, outFilter
 }

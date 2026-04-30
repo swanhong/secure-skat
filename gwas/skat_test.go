@@ -30,6 +30,9 @@ func InitProtocolForTest(t *testing.T) *ProtocolInfo {
 
 	_, filename, _, _ := runtime.Caller(0)
 	configPath := filepath.Join(filepath.Dir(filepath.Dir(filename)), "config")
+	if envPath := os.Getenv("TEST_CONFIG_DIR"); envPath != "" {
+		configPath = envPath
+	}
 	config := new(Config)
 
 	// Import global parameters
@@ -412,7 +415,7 @@ func TestSKATBasicOperations(t *testing.T) {
 
 		// Call ComputeSKATStatistics directly to get the score vector
 		// This tests the full integrated path in skat.go
-		_, _, S_out, _ := prot.ComputeSKATStatistics()
+		_, _, _, S_out, _ := prot.ComputeSKATStatistics()
 
 		if pid == 1 {
 			// Decrypt and compare score vector for the first block

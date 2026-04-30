@@ -67,17 +67,6 @@ read_secure_ynew <- function(party_dir, party_dirs, secure_run_root) {
   read_comma_numeric_vector(ynew_path)
 }
 
-# Apply the default scale only when the secure pipeline did not write an explicit scale.
-infer_scaled_secure_value <- function(secure_val, secure_scale_global, default_scale) {
-  if (is.na(secure_val)) {
-    return(NA_real_)
-  }
-  if (is.na(secure_scale_global)) {
-    return(secure_val * default_scale)
-  }
-  secure_val
-}
-
 # Pick the secure scale when present, otherwise fall back to the plain reference scale.
 resolve_selected_secure_scale <- function(secure_scale_global, default_scale) {
   if (is.na(secure_scale_global)) {
@@ -87,7 +76,8 @@ resolve_selected_secure_scale <- function(secure_scale_global, default_scale) {
   }
 }
 
-# Load the top-level secure SKAT and burden scalars plus their comparison-scale variants.
+# Load the top-level secure SKAT and burden statistics.
+# These files already contain the final secure outputs for direct comparison.
 load_secure_scalar_results <- function(context) {
   secure_q_path <- file.path(secure_party_dir(context$secure_run_root, 1L), "skat_out.txt")
   secure_q <- if (file.exists(secure_q_path)) {
@@ -96,12 +86,7 @@ load_secure_scalar_results <- function(context) {
     NA_real_
   }
 
-  secure_scale_path_global <- file.path(secure_party_dir(context$secure_run_root, 1L), "skat_q_scale_factor.txt")
-  secure_scale_global <- if (file.exists(secure_scale_path_global)) {
-    as.numeric(scan(secure_scale_path_global, quiet = TRUE, nmax = 1))
-  } else {
-    NA_real_
-  }
+  secure_scale_global <- NA_real_
 
   secure_burden_path <- file.path(secure_party_dir(context$secure_run_root, 1L), "burden_out.txt")
   secure_burden <- if (file.exists(secure_burden_path)) {
@@ -114,18 +99,10 @@ load_secure_scalar_results <- function(context) {
     secure_q_path = secure_q_path,
     secure_q = secure_q,
     secure_scale_global = secure_scale_global,
-    secure_q_for_compare = infer_scaled_secure_value(
-      secure_q,
-      secure_scale_global,
-      context$skat_package_q_scale
-    ),
+    secure_q_for_compare = secure_q,
     secure_burden_path = secure_burden_path,
     secure_burden = secure_burden,
-    secure_burden_for_compare = infer_scaled_secure_value(
-      secure_burden,
-      secure_scale_global,
-      context$skat_package_q_scale
-    )
+    secure_burden_for_compare = secure_burden
   )
 }
 
