@@ -1,117 +1,157 @@
 # Analysis Scripts
 
-This directory contains analysis helpers plus the plain-vs-secure SKAT
-comparison script.
+This directory contains analysis helpers plus the Python-first secure-vs-plain
+SKAT comparison pipeline.
 
-## Plain SKAT Compare
+## SKAT Compare
 
-Entrypoint:
+Primary entrypoint:
 
-```r
-scripts/analysis/compare_plain_skat_example.R
+```bash
+scripts/analysis/skat_compare.py
 ```
 
-The entrypoint is intentionally thin. Most logic now lives in:
+Tiny R helper kept only for the public `SKAT` package reference step:
 
-- `scripts/analysis/plain_skat_compare/args.R`
-- `scripts/analysis/plain_skat_compare/data_io.R`
-- `scripts/analysis/plain_skat_compare/secure_io.R`
-- `scripts/analysis/plain_skat_compare/skat.R`
-- `scripts/analysis/plain_skat_compare/burden.R`
-- `scripts/analysis/plain_skat_compare/windows.R`
-- `scripts/analysis/plain_skat_compare/reporting.R`
-- `scripts/analysis/plain_skat_compare/workflow.R`
+```bash
+scripts/analysis/r_skat_reference.R
+```
 
-## Prerequisites
+Internal implementation is split under `scripts/analysis/skat_compare_lib/`:
 
-- `Rscript`
+- `cli.py`: argparse and subcommand dispatch
+- `context.py`: dataset/run resolution plus null-model inputs
+- `dataset_io.py`: dataset readers and PLINK raw export
+- `secure_io.py`: secure output readers
+- `compute.py`: secure-compatible SKAT/Burden math
+- `reference.py`: `Rscript` bridge to the `SKAT` package
+- `reporting.py`: CSV writing and console diagnostics
+- `plotting.py`: scatter plot rendering
+- `workflow.py`: orchestration of the compare/manual/secure/reference flows
+
+## Environment Setup
+
+Create a repo-local analysis virtualenv and install the committed dependencies:
+
+```bash
+python3 -m venv .local/venv/analysis
+.local/venv/analysis/bin/pip install -r scripts/analysis/requirements-skat-compare.txt
+```
+
+Required tools:
+
+- `python3`
 - `plink2`
-- Optional: the R `SKAT` package if you want direct package-to-plain comparison
+- `Rscript`
 
-## Test Commands
+Optional for the `reference`/`compare` subcommands when `--skip-reference` is
+not set:
 
-Parse-check the entrypoint and all submodules:
+- R package `SKAT`
+
+## Dataset Resolution
+
+When `--dataset` is omitted, `skat_compare.py` resolves the dataset in this
+order:
+
+1. `run_metadata.txt` `dataset=` entry
+2. Unique local match across `example_data` and `.local/datasets/*` using
+   block count plus total variant count inferred from the secure run
+
+The script refuses to compare a run against a dataset whose block count or total
+variant count does not match the run metadata/cache hints.
+
+## Main Commands
+
+Auto-resolve the dataset from `run_metadata.txt` and run the full compare flow
+without the R package reference:
 
 ```bash
-Rscript -e 'files <- c("scripts/analysis/compare_plain_skat_example.R", list.files("scripts/analysis/plain_skat_compare", full.names = TRUE)); invisible(lapply(files, parse)); cat("parse_ok\n")'
+python3 scripts/analysis/skat_compare.py compare --run-id ca92 --skip-reference
 ```
 
-Load the entrypoint without running the full workflow:
+Legacy run without `dataset=` metadata; provide the dataset explicitly:
 
 ```bash
-Rscript -e 'source("scripts/analysis/compare_plain_skat_example.R", local = new.env(parent = globalenv())); cat("source_ok\n")'
+python3 scripts/analysis/skat_compare.py compare --run-id e6d9 --dataset example_data --skip-reference
 ```
 
-Pick the latest secure run id from `out/output_*`:
+Write per-variant debug CSVs:
 
 ```bash
-RUN_ID=$(basename "$(ls -dt out/output_* | head -n 1)" | awk -F_ '{print $NF}')
-printf '%s\n' "$RUN_ID"
-```
-
-Minimal smoke test against block 1 without requiring the `SKAT` package:
-
-```bash
-RUN_ID=$(basename "$(ls -dt out/output_* | head -n 1)" | awk -F_ '{print $NF}')
-Rscript scripts/analysis/compare_plain_skat_example.R --skip-skat-package . "$RUN_ID" 1
-```
-
-Same run, but also write per-block and merged debug CSVs under `.local/tmp/plain_skat_compare/...`:
-
-```bash
-RUN_ID=$(basename "$(ls -dt out/output_* | head -n 1)" | awk -F_ '{print $NF}')
-Rscript scripts/analysis/compare_plain_skat_example.R --debug --skip-skat-package . "$RUN_ID" 1
+python3 scripts/analysis/skat_compare.py compare \
+  --run-id ca92 \
+  --debug \
+  --skip-reference
 ```
 
 Windowed comparison example:
 
 ```bash
-RUN_ID=$(basename "$(ls -dt out/output_* | head -n 1)" | awk -F_ '{print $NF}')
-Rscript scripts/analysis/compare_plain_skat_example.R \
-  --skip-skat-package \
+python3 scripts/analysis/skat_compare.py compare \
+  --run-id ca92 \
+  --skip-reference \
   --window-bp 50000 \
   --step-bp 10000 \
   --min-window-variants 2 \
   --window-limit 20 \
-  --window-output-tag smoke \
-  . "$RUN_ID" 1
+  --window-output-tag smoke
 ```
 
-If the R `SKAT` package is installed, run the same comparison with direct
-package reference enabled:
+Run only one stage:
 
 ```bash
-RUN_ID=$(basename "$(ls -dt out/output_* | head -n 1)" | awk -F_ '{print $NF}')
-Rscript scripts/analysis/compare_plain_skat_example.R . "$RUN_ID" 1
+python3 scripts/analysis/skat_compare.py manual --run-id ca92 --dataset .local/datasets/1000g_all_chr22_anchor50kb_top16
+python3 scripts/analysis/skat_compare.py secure --run-id ca92 --dataset .local/datasets/1000g_all_chr22_anchor50kb_top16
+python3 scripts/analysis/skat_compare.py reference --run-id ca92 --dataset .local/datasets/1000g_all_chr22_anchor50kb_top16
 ```
 
-## Arguments
+## Shared Arguments
 
-Positional arguments:
-
-1. `repo_root`
-2. `run_id`
-3. `blocks_to_print`
-
-Supported flags:
-
+- `--repo-root <path>`
+- `--run-id <id>`
 - `--dataset <path>`
+- `--blocks <spec>`
+  - Analysis scope. Defaults to all blocks.
+- `--detail-blocks <spec>`
+  - Verbose block diagnostics only. Defaults to `1,last`.
 - `--debug`
-- `--skip-skat-package`
 - `--window-bp <int>`
 - `--step-bp <int>`
 - `--min-window-variants <int>`
 - `--window-limit <int>`
 - `--window-output-tag <string>`
+- `--skip-reference`
+
+Block specs accept comma-separated values such as `all`, `1,last`, or
+`1-4,8`.
 
 ## Output Notes
 
-- Console output prints intermediate comparisons, block-level diagnostics, and
-  final SKAT/Burden summaries.
-- Debug CSVs are written only when `--debug` is enabled.
-- Window CSV and scatter plots are written only when `--window-bp` is provided.
-- Cached PLINK `.raw` exports are written under:
+Outputs are written under:
 
 ```text
-.local/tmp/plain_skat_compare/
+.local/tmp/skat_compare/<dataset_tag>/<run_id>/
 ```
+
+`compare` always writes:
+
+- `summary.csv`
+- `block_compare.csv`
+- `block_compare_skat_scatter.png`
+- `block_compare_burden_scatter.png`
+
+When `--window-bp` is set, it also writes:
+
+- `window_compare_<tag>.csv`
+- `window_compare_<tag>_skat_scatter.png`
+- `window_compare_<tag>_burden_scatter.png`
+
+When `--debug` is set, it also writes:
+
+- `variant_debug_csv/variant_debug_blockXX.csv`
+- `variant_debug_csv/variant_debug_all.csv`
+
+The `summary.csv` `secure` column is always aligned to the selected analysis
+blocks. When full-run secure scalars are also present, they are printed in the
+console summary as additional diagnostics.

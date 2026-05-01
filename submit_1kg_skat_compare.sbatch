@@ -18,6 +18,7 @@ DATASET="${DATASET:-.local/datasets/1000g_afr_chr22_rare50k}"
 CONFIG_DIR="${CONFIG_DIR:-.local/config_1kg_afr_chr22_rare50k}"
 MODE="${MODE:-skat}"
 COMPARE_BLOCKS="${COMPARE_BLOCKS:-1}"
+COMPARE_SKIP_REFERENCE="${COMPARE_SKIP_REFERENCE:-0}"
 
 # Python environment for preprocessing/export helpers.
 CONDA_MODULE="${CONDA_MODULE:-miniconda}"
@@ -78,11 +79,24 @@ if [[ -z "$RUN_ID" || -z "$RUN_ROOT" ]]; then
   exit 1
 fi
 
-COMPARE_LOG="${RUN_ROOT}/plain_compare.txt"
+COMPARE_LOG="${RUN_ROOT}/skat_compare.txt"
 
-echo "Running plain comparison for run id: $RUN_ID"
-Rscript scripts/analysis/compare_plain_skat_example.R . "$RUN_ID" "$COMPARE_BLOCKS" \
-  --dataset "$DATASET" | tee "$COMPARE_LOG"
+COMPARE_CMD=(
+  python
+  scripts/analysis/skat_compare.py
+  compare
+  --repo-root .
+  --run-id "$RUN_ID"
+  --dataset "$DATASET"
+  --detail-blocks "$COMPARE_BLOCKS"
+)
+
+if [[ "$COMPARE_SKIP_REFERENCE" == "1" ]]; then
+  COMPARE_CMD+=(--skip-reference)
+fi
+
+echo "Running Python SKAT comparison for run id: $RUN_ID"
+"${COMPARE_CMD[@]}" | tee "$COMPARE_LOG"
 
 echo "Secure run root: $RUN_ROOT"
 echo "Comparison log: $COMPARE_LOG"

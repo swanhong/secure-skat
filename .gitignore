@@ -1,5 +1,6 @@
 .local/*
 *.txt
+!scripts/analysis/requirements-skat-compare.txt
 go.sum
 *.log
 *.bin
@@ -15,3 +16,4 @@ test_stdout_*.txt
 vendor/*
 *.zip
 sfgwas
+*.pyc
