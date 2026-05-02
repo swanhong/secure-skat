@@ -1,65 +1,71 @@
-"""R reference bridge for invoking the public SKAT package."""
+"""R helper bridge for package-reference SKAT and burden statistics."""
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from .common import require_executable
-from .models import CompareContext, ManualResults, ReferenceResult
-
 
 R_REFERENCE_HELPER = Path(__file__).resolve().parent.parent / "r_skat_reference.R"
 
 
-def write_reference_inputs(ctx: CompareContext, manual: ManualResults) -> tuple[Path, Path, Path, Path]:
-    selected_blocks = [manual.blocks[block - 1] for block in ctx.analysis_blocks]
+def require_executable(arg_name: str) -> str:
+    path = shutil.which(arg_name)
+    if not path:
+        raise RuntimeError(f"{arg_name} not found in PATH")
+    return path
 
-    manifest_path = ctx.cache_dir / "reference_manifest.tsv"
-    pheno_path = ctx.cache_dir / "reference_pheno.tsv"
-    cov_path = ctx.cache_dir / "reference_cov.tsv"
-    weights_path = ctx.cache_dir / "reference_weights.tsv"
+
+def write_reference_inputs(arg_ctx: dict, arg_manual_result: dict) -> tuple[Path, Path, Path, Path]:
+    selected_blocks = [arg_manual_result["blocks"][block_index - 1] for block_index in arg_ctx["analysis_blocks"]]
+
+    manifest_path = arg_ctx["cache_dir"] / "reference_manifest.tsv"
+    pheno_path = arg_ctx["cache_dir"] / "reference_pheno.tsv"
+    cov_path = arg_ctx["cache_dir"] / "reference_cov.tsv"
+    weights_path = arg_ctx["cache_dir"] / "reference_weights.tsv"
 
     manifest_rows = []
     for block in selected_blocks:
-        keep_path = ctx.cache_dir / f"reference_block{block.block_index:02d}_variant_ids.txt"
-        keep_path.write_text("\n".join(block.variant_ids) + "\n")
+        keep_path = arg_ctx["cache_dir"] / f"reference_block{block['block_index']:02d}_variant_ids.txt"
+        keep_path.write_text("\n".join(block["variant_ids"]) + "\n")
         manifest_rows.append(
             {
-                "block": block.block_index,
-                "raw_path_party1": str(block.raw_paths_by_party[0]),
-                "raw_path_party2": str(block.raw_paths_by_party[1]),
+                "block": block["block_index"],
+                "raw_path_party1": str(block["raw_paths_by_party"][0]),
+                "raw_path_party2": str(block["raw_paths_by_party"][1]),
                 "variant_ids_path": str(keep_path),
-                "n_variants": block.n_variants,
+                "n_variants": block["n_variants"],
             }
         )
 
     pd.DataFrame(manifest_rows).to_csv(manifest_path, sep="\t", index=False)
-    pd.DataFrame({"y": ctx.model.y}).to_csv(pheno_path, sep="\t", index=False)
-    cov_df = pd.DataFrame(ctx.model.x, columns=[f"X{i}" for i in range(1, ctx.model.x.shape[1] + 1)])
+    pd.DataFrame({"y": arg_ctx["model"]["y"]}).to_csv(pheno_path, sep="\t", index=False)
+    X = np.asarray(arg_ctx["model"]["X"], dtype=float)
+    cov_df = pd.DataFrame(X, columns=[f"X{i}" for i in range(1, X.shape[1] + 1)])
     cov_df.to_csv(cov_path, sep="\t", index=False)
-    weights = np.concatenate([block.weight_vec for block in selected_blocks]).astype(float)
+    weights = np.concatenate([block["weight_vec"] for block in selected_blocks]).astype(float)
     pd.DataFrame({"weight": weights}).to_csv(weights_path, sep="\t", index=False)
 
     return manifest_path, pheno_path, cov_path, weights_path
 
 
-def run_reference(ctx: CompareContext, manual: ManualResults) -> ReferenceResult:
-    if ctx.skip_reference:
-        return ReferenceResult(
-            skat_q=float("nan"),
-            burden_q=float("nan"),
-            n_markers=0,
-            summary_path=None,
-            skipped_reason="skipped by --skip-reference",
-        )
+def run_reference(arg_ctx: dict, arg_manual_result: dict) -> dict:
+    if arg_ctx["skip_reference"]:
+        return {
+            "skat_q": float("nan"),
+            "burden_q": float("nan"),
+            "n_markers": 0,
+            "summary_path": None,
+            "skipped_reason": "skipped by --skip-reference",
+        }
 
     rscript = require_executable("Rscript")
-    manifest_path, pheno_path, cov_path, weights_path = write_reference_inputs(ctx, manual)
-    out_path = ctx.cache_dir / "reference_summary.tsv"
+    manifest_path, pheno_path, cov_path, weights_path = write_reference_inputs(arg_ctx, arg_manual_result)
+    out_path = arg_ctx["cache_dir"] / "reference_summary.tsv"
     cmd = [
         rscript,
         str(R_REFERENCE_HELPER),
@@ -78,13 +84,15 @@ def run_reference(ctx: CompareContext, manual: ManualResults) -> ReferenceResult
     if proc.returncode != 0:
         stderr = proc.stderr.strip() or proc.stdout.strip()
         raise RuntimeError(f"R SKAT reference failed: {stderr}")
+
     summary_df = pd.read_csv(out_path, sep="\t")
     if summary_df.shape[0] != 1:
         raise RuntimeError(f"Expected exactly one row in {out_path}")
     row = summary_df.iloc[0]
-    return ReferenceResult(
-        skat_q=float(row["skat_q"]),
-        burden_q=float(row["burden_q"]),
-        n_markers=int(row["n_markers"]),
-        summary_path=out_path,
-    )
+    return {
+        "skat_q": float(row["skat_q"]),
+        "burden_q": float(row["burden_q"]),
+        "n_markers": int(row["n_markers"]),
+        "summary_path": out_path,
+        "skipped_reason": None,
+    }

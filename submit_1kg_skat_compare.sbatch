@@ -17,7 +17,7 @@ REPO_ROOT="${REPO_ROOT:-$HOME/secure-skat}"
 DATASET="${DATASET:-.local/datasets/1000g_afr_chr22_rare50k}"
 CONFIG_DIR="${CONFIG_DIR:-.local/config_1kg_afr_chr22_rare50k}"
 MODE="${MODE:-skat}"
-COMPARE_BLOCKS="${COMPARE_BLOCKS:-1}"
+COMPARE_BLOCKS="${COMPARE_BLOCKS:-all}"
 COMPARE_SKIP_REFERENCE="${COMPARE_SKIP_REFERENCE:-0}"
 
 # Python environment for preprocessing/export helpers.
@@ -88,7 +88,7 @@ COMPARE_CMD=(
   --repo-root .
   --run-id "$RUN_ID"
   --dataset "$DATASET"
-  --detail-blocks "$COMPARE_BLOCKS"
+  --blocks "$COMPARE_BLOCKS"
 )
 
 if [[ "$COMPARE_SKIP_REFERENCE" == "1" ]]; then

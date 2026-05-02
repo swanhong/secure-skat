@@ -1,6 +1,6 @@
 # Analysis Scripts
 
-This directory contains analysis helpers plus the Python-first secure-vs-plain
+This directory contains analysis helpers plus the simplified plain-vs-secure
 SKAT comparison pipeline.
 
 ## SKAT Compare
@@ -20,14 +20,10 @@ scripts/analysis/r_skat_reference.R
 Internal implementation is split under `scripts/analysis/skat_compare_lib/`:
 
 - `cli.py`: argparse and subcommand dispatch
-- `context.py`: dataset/run resolution plus null-model inputs
-- `dataset_io.py`: dataset readers and PLINK raw export
-- `secure_io.py`: secure output readers
-- `compute.py`: secure-compatible SKAT/Burden math
+- `pipeline.py`: dataset/run resolution, file loading, block compare output
+- `compute.py`: null-model fitting plus secure-compatible SKAT/Burden math
 - `reference.py`: `Rscript` bridge to the `SKAT` package
-- `reporting.py`: CSV writing and console diagnostics
-- `plotting.py`: scatter plot rendering
-- `workflow.py`: orchestration of the compare/manual/secure/reference flows
+- `plotting.py`: block scatter plot rendering
 
 ## Environment Setup
 
@@ -43,6 +39,7 @@ Required tools:
 - `python3`
 - `plink2`
 - `Rscript`
+- `matplotlib` via `requirements-skat-compare.txt`
 
 Optional for the `reference`/`compare` subcommands when `--skip-reference` is
 not set:
@@ -76,33 +73,9 @@ Legacy run without `dataset=` metadata; provide the dataset explicitly:
 python3 scripts/analysis/skat_compare.py compare --run-id e6d9 --dataset example_data --skip-reference
 ```
 
-Write per-variant debug CSVs:
+Run only the R package reference:
 
 ```bash
-python3 scripts/analysis/skat_compare.py compare \
-  --run-id ca92 \
-  --debug \
-  --skip-reference
-```
-
-Windowed comparison example:
-
-```bash
-python3 scripts/analysis/skat_compare.py compare \
-  --run-id ca92 \
-  --skip-reference \
-  --window-bp 50000 \
-  --step-bp 10000 \
-  --min-window-variants 2 \
-  --window-limit 20 \
-  --window-output-tag smoke
-```
-
-Run only one stage:
-
-```bash
-python3 scripts/analysis/skat_compare.py manual --run-id ca92 --dataset .local/datasets/1000g_all_chr22_anchor50kb_top16
-python3 scripts/analysis/skat_compare.py secure --run-id ca92 --dataset .local/datasets/1000g_all_chr22_anchor50kb_top16
 python3 scripts/analysis/skat_compare.py reference --run-id ca92 --dataset .local/datasets/1000g_all_chr22_anchor50kb_top16
 ```
 
@@ -113,15 +86,8 @@ python3 scripts/analysis/skat_compare.py reference --run-id ca92 --dataset .loca
 - `--dataset <path>`
 - `--blocks <spec>`
   - Analysis scope. Defaults to all blocks.
-- `--detail-blocks <spec>`
-  - Verbose block diagnostics only. Defaults to `1,last`.
-- `--debug`
-- `--window-bp <int>`
-- `--step-bp <int>`
-- `--min-window-variants <int>`
-- `--window-limit <int>`
-- `--window-output-tag <string>`
 - `--skip-reference`
+  - `compare` subcommand only.
 
 Block specs accept comma-separated values such as `all`, `1,last`, or
 `1-4,8`.
@@ -140,17 +106,6 @@ Outputs are written under:
 - `block_compare.csv`
 - `block_compare_skat_scatter.png`
 - `block_compare_burden_scatter.png`
-
-When `--window-bp` is set, it also writes:
-
-- `window_compare_<tag>.csv`
-- `window_compare_<tag>_skat_scatter.png`
-- `window_compare_<tag>_burden_scatter.png`
-
-When `--debug` is set, it also writes:
-
-- `variant_debug_csv/variant_debug_blockXX.csv`
-- `variant_debug_csv/variant_debug_all.csv`
 
 The `summary.csv` `secure` column is always aligned to the selected analysis
 blocks. When full-run secure scalars are also present, they are printed in the
