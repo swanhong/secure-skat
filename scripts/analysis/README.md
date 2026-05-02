@@ -46,6 +46,9 @@ not set:
 
 - R package `SKAT`
 
+For the null model, `skat_compare.py` uses all covariate columns present in each
+party's `cov.txt`. The parties must have the same number of covariate columns.
+
 ## Dataset Resolution
 
 When `--dataset` is omitted, `skat_compare.py` resolves the dataset in this

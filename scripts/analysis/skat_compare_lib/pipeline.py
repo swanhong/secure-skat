@@ -510,13 +510,19 @@ def build_context(arg_ns: object) -> dict:
 
     y_parts = [read_pheno(party_dir) for party_dir in dataset_info["party_dirs"]]
     X_parts = []
+    cov_n_cols = None
     for party_dir in dataset_info["party_dirs"]:
         X_part = np.asarray(read_cov(party_dir), dtype=float)
         if X_part.ndim == 1:
             X_part = X_part.reshape(1, -1)
-        if X_part.shape[1] < 4:
-            raise RuntimeError("Covariate file has fewer than 4 columns")
-        X_parts.append(X_part[:, :4])
+        if cov_n_cols is None:
+            cov_n_cols = int(X_part.shape[1])
+        elif X_part.shape[1] != cov_n_cols:
+            raise RuntimeError(
+                "Covariate column-count mismatch across parties: "
+                f"expected {cov_n_cols} columns but found {X_part.shape[1]} in {party_dir / 'cov.txt'}"
+            )
+        X_parts.append(X_part)
     model = compute.fit_null_model(np.vstack(X_parts).astype(float), np.concatenate(y_parts).astype(float))
 
     cache_dir = (

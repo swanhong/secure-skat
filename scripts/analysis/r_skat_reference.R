@@ -1,8 +1,9 @@
 #!/usr/bin/env Rscript
 
 # Tiny R bridge for invoking the public SKAT package from the Python compare
-# pipeline. It expects pre-exported PLINK `.raw` block files plus pheno/cov/weight
-# tables already written by Python.
+# pipeline. It expects pre-exported PLINK `.raw` block files plus pheno/cov
+# tables already written by Python. The SKAT package computes its default
+# Beta(1,25) weights internally.
 
 pop_flag_value <- function(args, flag) {
   flag_idx <- match(flag, args)
@@ -26,8 +27,6 @@ parse_args <- function(args) {
   args <- pheno_res$args
   cov_res <- pop_flag_value(args, "--cov")
   args <- cov_res$args
-  weights_res <- pop_flag_value(args, "--weights")
-  args <- weights_res$args
   out_res <- pop_flag_value(args, "--out")
   args <- out_res$args
 
@@ -39,7 +38,6 @@ parse_args <- function(args) {
     manifest = manifest_res$value,
     pheno = pheno_res$value,
     cov = cov_res$value,
-    weights = weights_res$value,
     out = out_res$value
   )
   missing <- names(required)[vapply(required, is.null, logical(1))]
@@ -100,59 +98,28 @@ main <- function() {
   })
 
   geno <- do.call(cbind, geno_blocks)
-  geno[is.na(geno)] <- 0.0
 
   pheno_df <- read.delim(args$pheno, stringsAsFactors = FALSE)
   cov_df <- read.delim(args$cov, stringsAsFactors = FALSE)
-  weights_df <- read.delim(args$weights, stringsAsFactors = FALSE)
 
   y <- pheno_df[[1]]
-  weights <- as.numeric(weights_df[[1]])
   if (nrow(geno) != length(y)) {
     stop(sprintf("Sample count mismatch: geno has %d rows but phenotype has %d rows", nrow(geno), length(y)))
   }
-  if (ncol(geno) != length(weights)) {
-    stop(sprintf("Marker count mismatch: geno has %d columns but weight vector has %d rows", ncol(geno), length(weights)))
-  }
 
-  null_df <- cbind(data.frame(y = y), cov_df)
-  cov_names <- names(cov_df)
-  null_formula <- if (length(cov_names) > 0L) {
-    as.formula(paste("y ~", paste(cov_names, collapse = " + ")))
+  X <- as.matrix(cov_df)
+  null_df <- data.frame(y = y)
+  if (ncol(X) > 0L) {
+    null_df$X <- I(X)
+    null_formula <- y ~ X
   } else {
-    y ~ 1
+    null_formula <- y ~ 1
   }
 
   null_obj <- SKAT::SKAT_Null_Model(null_formula, out_type = "C", data = null_df)
 
-  skat_res <- SKAT::SKAT(
-    geno,
-    null_obj,
-    kernel = "linear.weighted",
-    method = "davies",
-    weights = weights,
-    is_check_genotype = FALSE,
-    is_dosage = TRUE,
-    impute.method = "fixed",
-    missing_cutoff = 1,
-    max_maf = 1,
-    estimate_MAF = 1,
-    r.corr = 0
-  )
-  burden_res <- SKAT::SKAT(
-    geno,
-    null_obj,
-    kernel = "linear.weighted",
-    method = "davies",
-    weights = weights,
-    is_check_genotype = FALSE,
-    is_dosage = TRUE,
-    impute.method = "fixed",
-    missing_cutoff = 1,
-    max_maf = 1,
-    estimate_MAF = 1,
-    r.corr = 1
-  )
+  skat_res <- SKAT::SKAT(geno, null_obj)
+  burden_res <- SKAT::SKAT(geno, null_obj, r.corr = 1)
 
   n_markers <- if (!is.null(skat_res$param$n.marker.test)) {
     as.integer(skat_res$param$n.marker.test)

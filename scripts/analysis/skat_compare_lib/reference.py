@@ -6,7 +6,6 @@ import shutil
 import subprocess
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 
@@ -20,13 +19,12 @@ def require_executable(arg_name: str) -> str:
     return path
 
 
-def write_reference_inputs(arg_ctx: dict, arg_manual_result: dict) -> tuple[Path, Path, Path, Path]:
+def write_reference_inputs(arg_ctx: dict, arg_manual_result: dict) -> tuple[Path, Path, Path]:
     selected_blocks = [arg_manual_result["blocks"][block_index - 1] for block_index in arg_ctx["analysis_blocks"]]
 
     manifest_path = arg_ctx["cache_dir"] / "reference_manifest.tsv"
     pheno_path = arg_ctx["cache_dir"] / "reference_pheno.tsv"
     cov_path = arg_ctx["cache_dir"] / "reference_cov.tsv"
-    weights_path = arg_ctx["cache_dir"] / "reference_weights.tsv"
 
     manifest_rows = []
     for block in selected_blocks:
@@ -44,13 +42,11 @@ def write_reference_inputs(arg_ctx: dict, arg_manual_result: dict) -> tuple[Path
 
     pd.DataFrame(manifest_rows).to_csv(manifest_path, sep="\t", index=False)
     pd.DataFrame({"y": arg_ctx["model"]["y"]}).to_csv(pheno_path, sep="\t", index=False)
-    X = np.asarray(arg_ctx["model"]["X"], dtype=float)
+    X = arg_ctx["model"]["X"]
     cov_df = pd.DataFrame(X, columns=[f"X{i}" for i in range(1, X.shape[1] + 1)])
     cov_df.to_csv(cov_path, sep="\t", index=False)
-    weights = np.concatenate([block["weight_vec"] for block in selected_blocks]).astype(float)
-    pd.DataFrame({"weight": weights}).to_csv(weights_path, sep="\t", index=False)
 
-    return manifest_path, pheno_path, cov_path, weights_path
+    return manifest_path, pheno_path, cov_path
 
 
 def run_reference(arg_ctx: dict, arg_manual_result: dict) -> dict:
@@ -64,7 +60,7 @@ def run_reference(arg_ctx: dict, arg_manual_result: dict) -> dict:
         }
 
     rscript = require_executable("Rscript")
-    manifest_path, pheno_path, cov_path, weights_path = write_reference_inputs(arg_ctx, arg_manual_result)
+    manifest_path, pheno_path, cov_path = write_reference_inputs(arg_ctx, arg_manual_result)
     out_path = arg_ctx["cache_dir"] / "reference_summary.tsv"
     cmd = [
         rscript,
@@ -75,8 +71,6 @@ def run_reference(arg_ctx: dict, arg_manual_result: dict) -> dict:
         str(pheno_path),
         "--cov",
         str(cov_path),
-        "--weights",
-        str(weights_path),
         "--out",
         str(out_path),
     ]
