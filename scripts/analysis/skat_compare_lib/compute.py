@@ -4,6 +4,13 @@ from __future__ import annotations
 
 import numpy as np
 
+from . import test_plain_modes
+
+PLAIN_MODE_STANDARD = "standard"
+PLAIN_MODE_LOCAL_WEIGHT_BURDEN = test_plain_modes.PLAIN_MODE_LOCAL_WEIGHT_BURDEN
+LOCAL_WEIGHT_MODE_DIRECT_TOTAL = test_plain_modes.LOCAL_WEIGHT_MODE_DIRECT_TOTAL
+LOCAL_WEIGHT_MODE_PRODUCT_APPROX = test_plain_modes.LOCAL_WEIGHT_MODE_PRODUCT_APPROX
+
 
 def fit_null_model(arg_X: np.ndarray, arg_y: np.ndarray) -> dict:
     X = np.asarray(arg_X, dtype=float)
@@ -46,7 +53,7 @@ def compute_beta_weight(arg_beta_base_vec: np.ndarray) -> np.ndarray:
     return 25.0 * np.power(np.asarray(arg_beta_base_vec, dtype=float), 24)
 
 
-def compute_manual_block(arg_G_parts: list[np.ndarray], arg_y_resid: np.ndarray, arg_n_total: int) -> dict:
+def compute_standard_manual_block(arg_G_parts: list[np.ndarray], arg_y_resid: np.ndarray, arg_n_total: int) -> dict:
     G_parts = [np.asarray(G_part, dtype=float) for G_part in arg_G_parts]
     y_resid = np.asarray(arg_y_resid, dtype=float).reshape(-1)
     n_total = int(arg_n_total)
@@ -75,25 +82,65 @@ def compute_manual_block(arg_G_parts: list[np.ndarray], arg_y_resid: np.ndarray,
 
     return {
         "weight_vec": weight_vec,
+        "score_vec": score_vec,
         "q_skat_block_raw": q_skat_block_raw,
         "q_burden_block_raw": q_burden_block_raw,
     }
 
 
+def compute_manual_block(
+    arg_G_parts: list[np.ndarray],
+    arg_y_resid: np.ndarray,
+    arg_n_total: int,
+    arg_plain_mode: str,
+    arg_local_weight_mode: str,
+) -> dict:
+    # Start from the standard pooled-weight block statistic.
+    block_result = compute_standard_manual_block(arg_G_parts, arg_y_resid, arg_n_total)
+
+    if arg_plain_mode == PLAIN_MODE_STANDARD:
+        block_result["burden_mode"] = PLAIN_MODE_STANDARD
+        return block_result
+
+    # Optionally replace only the burden-side raw sum with an experimental
+    # party-local weighting rule while keeping the standard SKAT block statistic.
+    if arg_plain_mode == PLAIN_MODE_LOCAL_WEIGHT_BURDEN:
+        return test_plain_modes.apply_plain_test_mode(
+            block_result,
+            arg_G_parts,
+            arg_y_resid,
+            arg_n_total,
+            arg_plain_mode,
+            arg_local_weight_mode,
+        )
+
+    raise RuntimeError(f"Unsupported plain mode: {arg_plain_mode}")
+
+
 def compute_manual_results(arg_ctx: dict, arg_block_inputs: list[dict]) -> dict:
+    # Load the shared null-model pieces and the plain-mode switch used for every block.
     y_resid = arg_ctx["model"]["y_resid"]
     n_total = arg_ctx["model"]["n_total"]
     rare_variant_scale = arg_ctx["model"]["rare_variant_scale"]
+    plain_mode = arg_ctx["plain_mode"]
+    local_weight_mode = arg_ctx["local_weight_mode"]
+    selected_block_set = set(arg_ctx["analysis_blocks"])
 
     blocks = []
     all_q_skat_raw_total = 0.0
     all_q_burden_raw_total = 0.0
+    analysis_q_skat_raw_total = 0.0
+    analysis_q_burden_raw_total = 0.0
 
+    # Compute one plain/manual result per selected block, then accumulate both
+    # all-block and analysis-block raw totals.
     for block_input in arg_block_inputs:
         block_math = compute_manual_block(
             block_input["local_alt_genotypes_by_party"],
             y_resid,
             n_total,
+            plain_mode,
+            local_weight_mode,
         )
 
         block_result = {
@@ -105,21 +152,26 @@ def compute_manual_results(arg_ctx: dict, arg_block_inputs: list[dict]) -> dict:
             "weight_vec": block_math["weight_vec"],
             "q_skat_block_raw": block_math["q_skat_block_raw"],
             "q_burden_block_raw": block_math["q_burden_block_raw"],
+            "burden_mode": block_math["burden_mode"],
         }
+        if "local_weight_details" in block_math:
+            block_result["local_weight_details"] = block_math["local_weight_details"]
         blocks.append(block_result)
         all_q_skat_raw_total += block_result["q_skat_block_raw"]
         all_q_burden_raw_total += block_result["q_burden_block_raw"]
+        if block_result["block_index"] in selected_block_set:
+            analysis_q_skat_raw_total += block_result["q_skat_block_raw"]
+            analysis_q_burden_raw_total += block_result["q_burden_block_raw"]
 
-    selected_blocks = [blocks[block_index - 1] for block_index in arg_ctx["analysis_blocks"]]
-    analysis_q_skat_raw_total = float(sum(block["q_skat_block_raw"] for block in selected_blocks))
-    analysis_q_burden_raw_total = float(sum(block["q_burden_block_raw"] for block in selected_blocks))
-
+    # Apply the shared null-model scale only once after summing the raw block statistics.
     return {
+        "plain_mode": plain_mode,
+        "local_weight_mode": local_weight_mode,
         "blocks": blocks,
-        "analysis_q_skat_raw_total": analysis_q_skat_raw_total,
-        "analysis_q_burden_raw_total": analysis_q_burden_raw_total,
-        "analysis_skat_q": analysis_q_skat_raw_total * rare_variant_scale,
-        "analysis_burden_q": (analysis_q_burden_raw_total**2) * rare_variant_scale,
+        "analysis_q_skat_raw_total": float(analysis_q_skat_raw_total),
+        "analysis_q_burden_raw_total": float(analysis_q_burden_raw_total),
+        "analysis_skat_q": float(analysis_q_skat_raw_total * rare_variant_scale),
+        "analysis_burden_q": float((analysis_q_burden_raw_total**2) * rare_variant_scale),
         "all_q_skat_raw_total": all_q_skat_raw_total,
         "all_q_burden_raw_total": all_q_burden_raw_total,
         "all_skat_q": all_q_skat_raw_total * rare_variant_scale,

@@ -1,4 +1,4 @@
-"""R helper bridge for package-reference SKAT and burden statistics."""
+"""R helper bridge for block-wise package-reference SKAT and burden statistics."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def require_executable(arg_name: str) -> str:
 
 
 def write_reference_inputs(arg_ctx: dict, arg_manual_result: dict) -> tuple[Path, Path, Path]:
-    selected_blocks = [arg_manual_result["blocks"][block_index - 1] for block_index in arg_ctx["analysis_blocks"]]
+    selected_blocks = sorted(arg_manual_result["blocks"], key=lambda block: int(block["block_index"]))
 
     manifest_path = arg_ctx["cache_dir"] / "reference_manifest.tsv"
     pheno_path = arg_ctx["cache_dir"] / "reference_pheno.tsv"
@@ -52,16 +52,15 @@ def write_reference_inputs(arg_ctx: dict, arg_manual_result: dict) -> tuple[Path
 def run_reference(arg_ctx: dict, arg_manual_result: dict) -> dict:
     if arg_ctx["skip_reference"]:
         return {
-            "skat_q": float("nan"),
-            "burden_q": float("nan"),
-            "n_markers": 0,
+            "blocks": {},
+            "n_blocks": 0,
             "summary_path": None,
             "skipped_reason": "skipped by --skip-reference",
         }
 
     rscript = require_executable("Rscript")
     manifest_path, pheno_path, cov_path = write_reference_inputs(arg_ctx, arg_manual_result)
-    out_path = arg_ctx["cache_dir"] / "reference_summary.tsv"
+    out_path = arg_ctx["cache_dir"] / "reference_block_summary.tsv"
     cmd = [
         rscript,
         str(R_REFERENCE_HELPER),
@@ -80,13 +79,23 @@ def run_reference(arg_ctx: dict, arg_manual_result: dict) -> dict:
         raise RuntimeError(f"R SKAT reference failed: {stderr}")
 
     summary_df = pd.read_csv(out_path, sep="\t")
-    if summary_df.shape[0] != 1:
-        raise RuntimeError(f"Expected exactly one row in {out_path}")
-    row = summary_df.iloc[0]
+    required_cols = {"block", "skat_q", "burden_q", "n_markers"}
+    missing_cols = required_cols.difference(summary_df.columns)
+    if missing_cols:
+        raise RuntimeError(f"Missing expected reference columns in {out_path}: {sorted(missing_cols)}")
+
+    block_rows = {}
+    for _, row in summary_df.iterrows():
+        block_index = int(row["block"])
+        block_rows[block_index] = {
+            "skat_q": float(row["skat_q"]),
+            "burden_q": float(row["burden_q"]),
+            "n_markers": int(row["n_markers"]),
+        }
+
     return {
-        "skat_q": float(row["skat_q"]),
-        "burden_q": float(row["burden_q"]),
-        "n_markers": int(row["n_markers"]),
+        "blocks": block_rows,
+        "n_blocks": len(block_rows),
         "summary_path": out_path,
         "skipped_reason": None,
     }

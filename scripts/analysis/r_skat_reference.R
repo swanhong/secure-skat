@@ -2,8 +2,9 @@
 
 # Tiny R bridge for invoking the public SKAT package from the Python compare
 # pipeline. It expects pre-exported PLINK `.raw` block files plus pheno/cov
-# tables already written by Python. The SKAT package computes its default
-# Beta(1,25) weights internally.
+# tables already written by Python. To avoid building one giant genotype
+# matrix, it runs the SKAT package block-by-block with a shared null model.
+# The SKAT package computes its default Beta(1,25) weights internally.
 
 pop_flag_value <- function(args, flag) {
   flag_idx <- match(flag, args)
@@ -87,25 +88,10 @@ main <- function() {
     stop("Reference manifest is empty")
   }
 
-  geno_blocks <- lapply(seq_len(nrow(manifest_df)), function(idx) {
-    keep_ids_path <- manifest_df$variant_ids_path[[idx]]
-    p1 <- read_raw_matrix(manifest_df$raw_path_party1[[idx]], keep_ids_path)
-    p2 <- read_raw_matrix(manifest_df$raw_path_party2[[idx]], keep_ids_path)
-    if (ncol(p1) != ncol(p2)) {
-      stop(sprintf("Variant count mismatch between party raw exports for block %s", manifest_df$block[[idx]]))
-    }
-    rbind(p1, p2)
-  })
-
-  geno <- do.call(cbind, geno_blocks)
-
   pheno_df <- read.delim(args$pheno, stringsAsFactors = FALSE)
   cov_df <- read.delim(args$cov, stringsAsFactors = FALSE)
 
   y <- pheno_df[[1]]
-  if (nrow(geno) != length(y)) {
-    stop(sprintf("Sample count mismatch: geno has %d rows but phenotype has %d rows", nrow(geno), length(y)))
-  }
 
   X <- as.matrix(cov_df)
   null_df <- data.frame(y = y)
@@ -118,20 +104,42 @@ main <- function() {
 
   null_obj <- SKAT::SKAT_Null_Model(null_formula, out_type = "C", data = null_df)
 
-  skat_res <- SKAT::SKAT(geno, null_obj)
-  burden_res <- SKAT::SKAT(geno, null_obj, r.corr = 1)
+  out_rows <- lapply(seq_len(nrow(manifest_df)), function(idx) {
+    keep_ids_path <- manifest_df$variant_ids_path[[idx]]
+    p1 <- read_raw_matrix(manifest_df$raw_path_party1[[idx]], keep_ids_path)
+    p2 <- read_raw_matrix(manifest_df$raw_path_party2[[idx]], keep_ids_path)
+    if (ncol(p1) != ncol(p2)) {
+      stop(sprintf("Variant count mismatch between party raw exports for block %s", manifest_df$block[[idx]]))
+    }
 
-  n_markers <- if (!is.null(skat_res$param$n.marker.test)) {
-    as.integer(skat_res$param$n.marker.test)
-  } else {
-    as.integer(ncol(geno))
-  }
+    geno <- rbind(p1, p2)
+    if (nrow(geno) != length(y)) {
+      stop(sprintf(
+        "Sample count mismatch for block %s: geno has %d rows but phenotype has %d rows",
+        manifest_df$block[[idx]],
+        nrow(geno),
+        length(y)
+      ))
+    }
 
-  out_df <- data.frame(
-    skat_q = as.numeric(skat_res$Q),
-    burden_q = as.numeric(burden_res$Q),
-    n_markers = n_markers
-  )
+    skat_res <- SKAT::SKAT(geno, null_obj)
+    burden_res <- SKAT::SKAT(geno, null_obj, r.corr = 1)
+
+    n_markers <- if (!is.null(skat_res$param$n.marker.test)) {
+      as.integer(skat_res$param$n.marker.test)
+    } else {
+      as.integer(ncol(geno))
+    }
+
+    data.frame(
+      block = as.integer(manifest_df$block[[idx]]),
+      skat_q = as.numeric(skat_res$Q),
+      burden_q = as.numeric(burden_res$Q),
+      n_markers = n_markers
+    )
+  })
+
+  out_df <- do.call(rbind, out_rows)
   write.table(out_df, file = args$out, sep = "\t", row.names = FALSE, quote = FALSE)
 }
 

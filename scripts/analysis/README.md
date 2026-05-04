@@ -20,9 +20,10 @@ scripts/analysis/r_skat_reference.R
 Internal implementation is split under `scripts/analysis/skat_compare_lib/`:
 
 - `cli.py`: argparse and subcommand dispatch
-- `pipeline.py`: dataset/run resolution, file loading, block compare output
+- `pipeline.py`: dataset/run resolution, block-wise compare output, summary stats
 - `compute.py`: null-model fitting plus secure-compatible SKAT/Burden math
-- `reference.py`: `Rscript` bridge to the `SKAT` package
+- `test_plain_modes.py`: experimental compare-only plain variants kept separate from the standard math path
+- `reference.py`: block-wise `Rscript` bridge to the `SKAT` package
 - `plotting.py`: block scatter plot rendering
 
 ## Environment Setup
@@ -76,6 +77,12 @@ Legacy run without `dataset=` metadata; provide the dataset explicitly:
 python3 scripts/analysis/skat_compare.py compare --run-id e6d9 --dataset example_data --skip-reference
 ```
 
+Run compare with the plain test-only local-weight burden variant:
+
+```bash
+python3 scripts/analysis/skat_compare.py compare --run-id ca92 --plain-mode local-weight-burden --skip-reference
+```
+
 Run only the R package reference:
 
 ```bash
@@ -91,6 +98,43 @@ python3 scripts/analysis/skat_compare.py reference --run-id ca92 --dataset .loca
   - Analysis scope. Defaults to all blocks.
 - `--skip-reference`
   - `compare` subcommand only.
+- `--plain-mode {standard,local-weight-burden}`
+  - `compare` subcommand only.
+  - `standard` keeps the current pooled/global plain SKAT and burden calculation.
+  - `local-weight-burden` keeps plain SKAT unchanged and enables the experimental local burden logic below.
+- `--local-weight-mode {direct-total,product-approx}`
+  - `compare` subcommand only.
+  - Used only when `--plain-mode local-weight-burden`.
+  - `direct-total`
+    - builds `w_local(p) = 25 * max(1 - p_local, p_local)^24`
+    - uses each party's local numerator but the global `2N_total` denominator
+    - forms each party's local burden linear term and sums those local terms
+  - `product-approx`
+    - defines each party's local alt-frequency contribution as `x_p = alt_count_p / (2N_total)`
+    - builds an approximate shared weight `w_hat = 25 * product_p (1 - x_p)^24`
+    - applies that shared approximate weight to the aggregated score term for the matched test data
+
+## Plain Mode Notes
+
+`--plain-mode local-weight-burden` is a compare-only testing mode. It does not
+change the Go secure pipeline, and the R reference path still uses the public
+`SKAT` package's standard pooled weighting.
+
+Because the R helper continues to use the public `SKAT` package's standard
+pooled weighting, its burden output is expected to differ from the manual/plain
+burden output when `--plain-mode local-weight-burden` is enabled.
+
+The `product-approx` submode is a matched-data approximation experiment inside
+the compare pipeline. It is useful for testing a separable weight construction,
+but it still relies on the current compare script's matched per-variant test
+inputs.
+
+## Reference Memory Notes
+
+The R reference helper now runs block-by-block with a shared null model instead
+of concatenating every selected block into one giant genotype matrix. This
+significantly reduces peak reference memory use when `compare` runs without
+`--skip-reference`.
 
 Block specs accept comma-separated values such as `all`, `1,last`, or
 `1-4,8`.
@@ -107,9 +151,19 @@ Outputs are written under:
 
 - `summary.csv`
 - `block_compare.csv`
+- `reference_block_summary.tsv` when the reference step is enabled
 - `block_compare_skat_scatter.png`
 - `block_compare_burden_scatter.png`
 
-The `summary.csv` `secure` column is always aligned to the selected analysis
-blocks. When full-run secure scalars are also present, they are printed in the
-console summary as additional diagnostics.
+`block_compare.csv` contains per-block plain/manual, secure, and reference Q
+values plus pairwise absolute/relative differences.
+
+`summary.csv` contains block-wise error summaries such as max absolute
+difference and max relative difference for:
+
+- `plain_vs_reference`
+- `secure_vs_reference`
+- `plain_vs_secure`
+
+No final aggregate reference scalar is reported; the compare output is centered
+on per-block Q values and worst-case block errors.

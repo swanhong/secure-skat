@@ -281,7 +281,7 @@ def export_block_matrix(arg_party_dir: Path, arg_block_index: int, arg_cache_dir
 
 def load_plain_blocks(arg_ctx: dict) -> list[dict]:
     block_inputs = []
-    for block_index in range(1, arg_ctx["n_blocks"] + 1):
+    for block_index in arg_ctx["analysis_blocks"]:
         party_exports = [
             export_block_matrix(party_dir, block_index, arg_ctx["cache_dir"], arg_ctx["plink2"])
             for party_dir in arg_ctx["party_dirs"]
@@ -367,11 +367,15 @@ def load_secure_compare(arg_ctx: dict) -> dict:
 def build_block_compare_frame(arg_ctx: dict, arg_manual_result: dict, arg_secure_result: dict) -> pd.DataFrame:
     rows = []
     rare_variant_scale = arg_ctx["model"]["rare_variant_scale"]
-    for block_index in arg_ctx["analysis_blocks"]:
-        block = arg_manual_result["blocks"][block_index - 1]
+    reference_blocks = arg_ctx.get("reference_blocks", {})
+    for block in arg_manual_result["blocks"]:
+        block_index = int(block["block_index"])
         secure_block = arg_secure_result["blocks"].get(block_index, {})
+        reference_block = reference_blocks.get(block_index, {})
         secure_q_skat_raw = secure_block.get("q_skat_block_raw")
         secure_q_burden_raw = secure_block.get("q_burden_block_raw")
+        reference_skat_q = reference_block.get("skat_q", float("nan"))
+        reference_burden_q = reference_block.get("burden_q", float("nan"))
 
         plain_skat_q = block["q_skat_block_raw"] * rare_variant_scale
         plain_burden_q = (block["q_burden_block_raw"]**2) * rare_variant_scale
@@ -387,55 +391,84 @@ def build_block_compare_frame(arg_ctx: dict, arg_manual_result: dict, arg_secure
                 "start_variant_id": block["variant_ids"][0] if block["n_variants"] else "",
                 "end_variant_id": block["variant_ids"][-1] if block["n_variants"] else "",
                 "plain_skat_q": plain_skat_q,
+                "reference_skat_q": reference_skat_q,
                 "secure_skat_q": secure_skat_q,
                 "skat_abs_diff": abs(plain_skat_q - secure_skat_q) if math.isfinite(secure_skat_q) else np.nan,
                 "skat_rel_diff": safe_rel_diff(plain_skat_q, secure_skat_q),
                 "plain_burden_q": plain_burden_q,
+                "reference_burden_q": reference_burden_q,
                 "secure_burden_q": secure_burden_q,
                 "burden_abs_diff": abs(plain_burden_q - secure_burden_q) if math.isfinite(secure_burden_q) else np.nan,
                 "burden_rel_diff": safe_rel_diff(plain_burden_q, secure_burden_q),
                 "plain_burden_sum": block["q_burden_block_raw"],
                 "secure_burden_sum": float("nan") if secure_q_burden_raw is None else secure_q_burden_raw,
+                "plain_vs_reference_skat_abs_diff": abs(plain_skat_q - reference_skat_q) if math.isfinite(reference_skat_q) else np.nan,
+                "plain_vs_reference_skat_rel_diff": safe_rel_diff(plain_skat_q, reference_skat_q),
+                "secure_vs_reference_skat_abs_diff": abs(secure_skat_q - reference_skat_q) if math.isfinite(secure_skat_q) and math.isfinite(reference_skat_q) else np.nan,
+                "secure_vs_reference_skat_rel_diff": safe_rel_diff(secure_skat_q, reference_skat_q),
+                "plain_vs_reference_burden_abs_diff": abs(plain_burden_q - reference_burden_q) if math.isfinite(reference_burden_q) else np.nan,
+                "plain_vs_reference_burden_rel_diff": safe_rel_diff(plain_burden_q, reference_burden_q),
+                "secure_vs_reference_burden_abs_diff": abs(secure_burden_q - reference_burden_q) if math.isfinite(secure_burden_q) and math.isfinite(reference_burden_q) else np.nan,
+                "secure_vs_reference_burden_rel_diff": safe_rel_diff(secure_burden_q, reference_burden_q),
             }
         )
     return pd.DataFrame(rows)
 
 
-def write_summary_csv(arg_ctx: dict, arg_manual_result: dict, arg_secure_result: dict, arg_reference_result: dict) -> Path:
+def summarize_pairwise_errors(arg_block_df: pd.DataFrame, arg_metric: str, arg_left_prefix: str, arg_right_prefix: str) -> dict | None:
+    left_col = f"{arg_left_prefix}_{arg_metric}_q"
+    right_col = f"{arg_right_prefix}_{arg_metric}_q"
+    if left_col not in arg_block_df.columns or right_col not in arg_block_df.columns:
+        return None
+
+    left = arg_block_df[left_col].to_numpy(dtype=float)
+    right = arg_block_df[right_col].to_numpy(dtype=float)
+    keep = np.isfinite(left) & np.isfinite(right)
+    if int(np.sum(keep)) == 0:
+        return None
+
+    blocks = arg_block_df.loc[keep, "block"].to_numpy(dtype=int)
+    left = left[keep]
+    right = right[keep]
+    abs_diff = np.abs(left - right)
+    rel_diff = np.asarray([safe_rel_diff(left_val, right_val) for left_val, right_val in zip(left, right)], dtype=float)
+
+    max_abs_idx = int(np.nanargmax(abs_diff))
+    max_rel_idx = int(np.nanargmax(rel_diff))
+
+    return {
+        "metric": arg_metric,
+        "comparison": f"{arg_left_prefix}_vs_{arg_right_prefix}",
+        "n_blocks_compared": int(blocks.size),
+        "max_abs_diff": float(abs_diff[max_abs_idx]),
+        "max_abs_diff_block": int(blocks[max_abs_idx]),
+        "max_rel_diff": float(rel_diff[max_rel_idx]),
+        "max_rel_diff_block": int(blocks[max_rel_idx]),
+        "mean_abs_diff": float(np.mean(abs_diff)),
+        "mean_rel_diff": float(np.mean(rel_diff)),
+    }
+
+
+def build_summary_frame(arg_block_df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for metric in ("skat", "burden"):
+        for left_prefix, right_prefix in (
+            ("plain", "reference"),
+            ("secure", "reference"),
+            ("plain", "secure"),
+        ):
+            row = summarize_pairwise_errors(arg_block_df, metric, left_prefix, right_prefix)
+            if row is not None:
+                rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def write_summary_csv(arg_ctx: dict, arg_block_df: pd.DataFrame) -> tuple[Path, pd.DataFrame]:
     summary_path = arg_ctx["cache_dir"] / "summary.csv"
-    summary_df = pd.DataFrame(
-        [
-            {
-                "metric": "skat",
-                "reference": arg_reference_result["skat_q"],
-                "manual": arg_manual_result["analysis_skat_q"],
-                "secure": arg_secure_result["summary_skat_q"],
-            },
-            {
-                "metric": "burden",
-                "reference": arg_reference_result["burden_q"],
-                "manual": arg_manual_result["analysis_burden_q"],
-                "secure": arg_secure_result["summary_burden_q"],
-            },
-        ]
-    )
-    summary_df["abs_diff_manual_vs_reference"] = np.abs(summary_df["manual"] - summary_df["reference"])
-    summary_df["rel_diff_manual_vs_reference"] = [
-        safe_rel_diff(manual_value, reference_value)
-        for manual_value, reference_value in zip(summary_df["manual"], summary_df["reference"])
-    ]
-    summary_df["abs_diff_secure_vs_reference"] = np.abs(summary_df["secure"] - summary_df["reference"])
-    summary_df["rel_diff_secure_vs_reference"] = [
-        safe_rel_diff(secure_value, reference_value)
-        for secure_value, reference_value in zip(summary_df["secure"], summary_df["reference"])
-    ]
-    summary_df["abs_diff_manual_vs_secure"] = np.abs(summary_df["manual"] - summary_df["secure"])
-    summary_df["rel_diff_manual_vs_secure"] = [
-        safe_rel_diff(manual_value, secure_value)
-        for manual_value, secure_value in zip(summary_df["manual"], summary_df["secure"])
-    ]
+    summary_df = build_summary_frame(arg_block_df)
     summary_df.to_csv(summary_path, index=False)
-    return summary_path
+    return summary_path, summary_df
 
 
 def print_preflight(arg_ctx: dict) -> None:
@@ -452,6 +485,9 @@ def print_preflight(arg_ctx: dict) -> None:
     )
     if arg_ctx["command"] == "compare":
         print(f"Reference step: {'skipped' if arg_ctx['skip_reference'] else 'enabled'}")
+        print(f"Plain mode: {arg_ctx['plain_mode']}")
+        if arg_ctx["plain_mode"] == compute.PLAIN_MODE_LOCAL_WEIGHT_BURDEN:
+            print(f"Local weight mode: {arg_ctx['local_weight_mode']}")
     else:
         print("Reference step: enabled")
     print(f"Output directory: {arg_ctx['cache_dir']}")
@@ -471,28 +507,26 @@ def print_block_comparison_summary(arg_block_df: pd.DataFrame, arg_block_csv_pat
 
 
 def print_compare_summary(
-    arg_manual_result: dict,
-    arg_secure_result: dict,
     arg_reference_result: dict,
+    arg_summary_df: pd.DataFrame,
     arg_summary_path: Path,
     arg_png_paths: list[Path],
 ) -> None:
     print("\n--- Final Summary ---")
     if arg_reference_result["skipped_reason"] is None:
-        print(f"Reference SKAT Q: {arg_reference_result['skat_q']:.10e}")
-        print(f"Reference Burden Q: {arg_reference_result['burden_q']:.10e}")
-        print(f"Reference markers tested: {arg_reference_result['n_markers']}")
+        print(f"Reference mode: block-wise SKAT package run ({arg_reference_result['n_blocks']} blocks)")
+        print(f"Reference block summary TSV: {arg_reference_result['summary_path']}")
     else:
         print(f"Reference result: {arg_reference_result['skipped_reason']}")
 
-    print(f"Manual SKAT Q: {arg_manual_result['analysis_skat_q']:.10e}")
-    print(f"Manual Burden Q: {arg_manual_result['analysis_burden_q']:.10e}")
-    print(f"Secure SKAT Q: {format_float(arg_secure_result['summary_skat_q'])}")
-    print(f"Secure Burden Q: {format_float(arg_secure_result['summary_burden_q'])}")
-    print(f"Secure source: {'run-level scalars' if arg_secure_result['used_run_scalars'] else 'selected block sums'}")
-    if math.isfinite(arg_secure_result["run_skat_q"]) or math.isfinite(arg_secure_result["run_burden_q"]):
-        print(f"Secure run-level SKAT Q: {format_float(arg_secure_result['run_skat_q'])}")
-        print(f"Secure run-level Burden Q: {format_float(arg_secure_result['run_burden_q'])}")
+    for _, row in arg_summary_df.iterrows():
+        print(
+            f"{row['metric']} {row['comparison']}: "
+            f"max_abs={format_float(float(row['max_abs_diff']))} "
+            f"(block {int(row['max_abs_diff_block'])}), "
+            f"max_rel={format_float(float(row['max_rel_diff']))} "
+            f"(block {int(row['max_rel_diff_block'])})"
+        )
     print(f"Summary CSV: {arg_summary_path}")
     for png_path in arg_png_paths:
         print(f"PNG: {png_path}")
@@ -548,6 +582,8 @@ def build_context(arg_ns: object) -> dict:
         "n_blocks": dataset_info["n_blocks"],
         "block_offsets": dataset_info["block_offsets"],
         "analysis_blocks": analysis_blocks,
+        "plain_mode": getattr(arg_ns, "plain_mode", compute.PLAIN_MODE_STANDARD),
+        "local_weight_mode": getattr(arg_ns, "local_weight_mode", compute.LOCAL_WEIGHT_MODE_DIRECT_TOTAL),
         "skip_reference": bool(getattr(arg_ns, "skip_reference", False)),
         "cache_dir": cache_dir,
         "plink2": plink2,
@@ -558,16 +594,22 @@ def build_context(arg_ns: object) -> dict:
 
 
 def run_compare(arg_ctx: dict) -> int:
+    # 1) Load the selected blocks plus the shared null-model context.
     print_preflight(arg_ctx)
     block_inputs = load_plain_blocks(arg_ctx)
+
+    # 2) Compute the plain/manual statistics, then load the secure and R-package references.
     manual_result = compute.compute_manual_results(arg_ctx, block_inputs)
     secure_result = load_secure_compare(arg_ctx)
     reference_result = reference.run_reference(arg_ctx, manual_result)
+    arg_ctx["reference_blocks"] = reference_result["blocks"]
 
+    # 3) Assemble block-level comparison tables and write the main CSV artifact.
     block_df = build_block_compare_frame(arg_ctx, manual_result, secure_result)
     block_csv_path = arg_ctx["cache_dir"] / "block_compare.csv"
     block_df.to_csv(block_csv_path, index=False)
 
+    # 4) Render the block-level scatter plots used for quick visual comparison.
     png_paths = []
     skat_png_path = arg_ctx["cache_dir"] / "block_compare_skat_scatter.png"
     burden_png_path = arg_ctx["cache_dir"] / "block_compare_burden_scatter.png"
@@ -588,22 +630,22 @@ def run_compare(arg_ctx: dict) -> int:
     ):
         png_paths.append(burden_png_path)
 
-    summary_path = write_summary_csv(arg_ctx, manual_result, secure_result, reference_result)
+    # 5) Write the compact summary table and print the final console report.
+    summary_path, summary_df = write_summary_csv(arg_ctx, block_df)
     print_block_comparison_summary(block_df, block_csv_path, png_paths)
-    print_compare_summary(manual_result, secure_result, reference_result, summary_path, png_paths)
+    print_compare_summary(reference_result, summary_df, summary_path, png_paths)
     return 0
 
 
 def run_reference_only(arg_ctx: dict) -> int:
+    # Load the selected blocks, build the plain inputs, and hand them to the R package helper.
     print_preflight(arg_ctx)
     block_inputs = load_plain_blocks(arg_ctx)
     manual_result = compute.compute_manual_results(arg_ctx, block_inputs)
     reference_result = reference.run_reference(arg_ctx, manual_result)
     if reference_result["skipped_reason"] is None:
         print("\n--- Reference Summary ---")
-        print(f"Reference SKAT Q: {reference_result['skat_q']:.10e}")
-        print(f"Reference Burden Q: {reference_result['burden_q']:.10e}")
-        print(f"Reference markers tested: {reference_result['n_markers']}")
-        print(f"Reference summary TSV: {reference_result['summary_path']}")
+        print(f"Reference blocks computed: {reference_result['n_blocks']}")
+        print(f"Reference block summary TSV: {reference_result['summary_path']}")
         return 0
     raise RuntimeError(reference_result["skipped_reason"])

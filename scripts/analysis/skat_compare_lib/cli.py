@@ -30,6 +30,29 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip the R SKAT package reference step.",
     )
+    arg_compare_parser.add_argument(
+        "--plain-mode",
+        choices=["standard", "local-weight-burden"],
+        default="standard",
+        help=(
+            "Manual/plain calculation mode. "
+            "'standard' uses pooled weights for SKAT and burden; "
+            "'local-weight-burden' keeps SKAT standard but computes burden from "
+            "party-local weights and party-local partial sums."
+        ),
+    )
+    arg_compare_parser.add_argument(
+        "--local-weight-mode",
+        choices=["direct-total", "product-approx"],
+        default="direct-total",
+        help=(
+            "Experimental submode used only when --plain-mode local-weight-burden. "
+            "'direct-total' applies the beta weight separately per party using the "
+            "party-local numerator over the global 2N denominator. "
+            "'product-approx' builds a shared approximate weight "
+            "25 * product_p (1 - x_p)^24 from each party's local alt-frequency contribution x_p."
+        ),
+    )
 
     arg_reference_parser = arg_subparsers.add_parser("reference", help="Run only the R SKAT package reference.")
     add_shared_arguments(arg_reference_parser)
