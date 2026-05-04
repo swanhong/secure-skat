@@ -10,11 +10,13 @@ else
   export GOFLAGS="-mod=vendor"
 fi
 
-# Normalize the Go toolchain environment and keep build cache inside the repo.
-# This makes repeated local runs faster and avoids surprises from a stale global GOROOT.
+# Normalize the Go toolchain environment and keep caches inside the repo.
+# This makes repeated local runs faster and avoids surprises from stale global Go state.
 unset GOROOT
 export GOCACHE="$(pwd)/.local/go-build-cache"
+export GOMODCACHE="$(pwd)/.local/go-mod-cache"
 mkdir -p "${GOCACHE}"
+mkdir -p "${GOMODCACHE}"
 
 # Default knobs for the example run. These are the only user-facing settings this wrapper exposes.
 # The actual protocol code reads them through environment variables set in run_party().

@@ -1,7 +1,6 @@
 .local/*
 *.txt
 !scripts/analysis/requirements-skat-compare.txt
-go.sum
 *.log
 *.bin
 cache/*
@@ -13,7 +12,11 @@ out/
 cache/
 test_stdout_*.txt
 *.skat.bin
-vendor/*
 *.zip
 sfgwas
 *.pyc
+
+# Vendored Go dependencies must be tracked as-is, even if filenames match
+# generic ignore patterns such as *.txt or *.log.
+!vendor/
+!vendor/**

@@ -18,42 +18,42 @@ SF-GWAS requires that `go`, `python3`, and `plink2` are available in the exec pa
 - Python (>=3.9.2) with [NumPy](https://numpy.org/install/)
 - [PLINK2](https://www.cog-genomics.org/plink/2.0/)
 
-### Setting up required Go libraries for secure computation
+### Vendored Go dependencies
 
-1. SF-GWAS uses the [Lattigo](https://github.com/tuneinsight/lattigo) library for multiparty homomorphic encryption. To install a forked version used by SF-GWAS (branch: `lattigo_pca`), run:
+This repository is set up to commit the Go dependency tree under `vendor/`.
+That makes it much easier to clone the repo on another machine and build/run it
+without separately cloning `lattigo`, `mpc-core`, or downloading modules during
+the first run.
+
+After changing Go dependencies, refresh the vendored tree from the repo root:
 ```
-git clone https://github.com/hcholab/lattigo.git
-cd lattigo
-git checkout lattigo_pca
-cd ..
+GOCACHE=$(pwd)/.local/go-build-cache GOMODCACHE=$(pwd)/.local/go-mod-cache go mod vendor
 ```
 
-2. Next, SF-GWAS also uses our own library of secret sharing-based multiparty computation routines. This can be obtained by running:
+When publishing the repo, commit these files together:
 ```
-git clone https://github.com/hhcho/mpc-core
+go.mod
+go.sum
+vendor/
 ```
 
 ### Installing SF-GWAS
 
-To install SF-GWAS, clone the repository and try building as follows.
+To install SF-GWAS, clone the repository and build from the vendored dependencies:
 ```
 git clone https://github.com/hhcho/sfgwas
 cd sfgwas
-go get github.com/hhcho/sfgwas
-go build
+go build -mod=vendor
 ```
 
-Note that, if `lattigo` and `mpc-core` repos from the previous steps are cloned to a different location,
-update `../lattigo` and `../mpc-core` in the following lines of `sfgwas/go.mod`
-to point to the correct folders. The paths are relative, starting from the root directory of `sfgwas` repo where the `go.mod` file is located.
-
+The example/test wrapper scripts in this repository already force `-mod=vendor`,
+so a fresh clone can go straight to:
 ```
-replace github.com/ldsec/lattigo/v2 => ../lattigo
-replace github.com/hhcho/mpc-core => ../mpc-core
+bash run_example.sh
 ```
 
-If `go build` produces an error, run any commands suggested by Go and try again. If the build
-finishes without any output, the package has been successfully configured.
+Vendoring only covers Go dependencies. Python packages and `plink2` still need to
+be installed separately as described above.
 
 ## Data preparation
 

@@ -1,0 +1,147 @@
+# github.com/BurntSushi/toml v0.4.1
+## explicit; go 1.16
+github.com/BurntSushi/toml
+github.com/BurntSushi/toml/internal
+# github.com/aead/chacha20 v0.0.0-20180709150244-8b13a72661da
+## explicit
+github.com/aead/chacha20/chacha
+# github.com/containerd/cgroups v0.0.0-20201119153540-4cbc285b3327
+## explicit; go 1.13
+github.com/containerd/cgroups
+github.com/containerd/cgroups/stats/v1
+# github.com/coreos/go-systemd/v22 v22.1.0
+## explicit; go 1.12
+github.com/coreos/go-systemd/v22/dbus
+# github.com/daviddengcn/go-colortext v1.0.0
+## explicit; go 1.14
+github.com/daviddengcn/go-colortext
+# github.com/docker/go-units v0.4.0
+## explicit
+github.com/docker/go-units
+# github.com/elastic/gosigar v0.12.0
+## explicit; go 1.14
+github.com/elastic/gosigar
+github.com/elastic/gosigar/sys/windows
+# github.com/fanliao/go-concurrentMap v0.0.0-20141114143905-7d2d7a5ea67b
+## explicit
+github.com/fanliao/go-concurrentMap
+# github.com/godbus/dbus/v5 v5.0.3
+## explicit; go 1.12
+github.com/godbus/dbus/v5
+# github.com/gogo/protobuf v1.3.1
+## explicit
+github.com/gogo/protobuf/gogoproto
+github.com/gogo/protobuf/proto
+github.com/gogo/protobuf/protoc-gen-gogo/descriptor
+# github.com/google/uuid v1.3.0
+## explicit
+github.com/google/uuid
+# github.com/gopherjs/gopherjs v1.17.2
+## explicit; go 1.17
+# github.com/gorilla/websocket v1.4.2
+## explicit; go 1.12
+github.com/gorilla/websocket
+# github.com/hhcho/frand v1.3.1-0.20210217213629-f1c60c334950
+## explicit; go 1.12
+github.com/hhcho/frand
+# github.com/hhcho/mpc-core v0.0.0-20220828210829-24cf7abd1073
+## explicit; go 1.16
+github.com/hhcho/mpc-core
+# github.com/jtolds/gls v4.20.0+incompatible
+## explicit
+# github.com/ldsec/lattigo/v2 v2.4.0 => github.com/hcholab/lattigo/v2 v2.1.2-0.20230123224332-e8d68c24b94a
+## explicit; go 1.13
+github.com/ldsec/lattigo/v2/ckks
+github.com/ldsec/lattigo/v2/ckks/bettersine
+github.com/ldsec/lattigo/v2/dckks
+github.com/ldsec/lattigo/v2/drlwe
+github.com/ldsec/lattigo/v2/ring
+github.com/ldsec/lattigo/v2/rlwe
+github.com/ldsec/lattigo/v2/utils
+# github.com/ldsec/unlynx v1.4.3
+## explicit; go 1.17
+github.com/ldsec/unlynx/lib
+github.com/ldsec/unlynx/lib/tools
+# github.com/montanaflynn/stats v0.6.6
+## explicit; go 1.13
+github.com/montanaflynn/stats
+# github.com/opencontainers/runtime-spec v1.0.2
+## explicit
+github.com/opencontainers/runtime-spec/specs-go
+# github.com/pkg/errors v0.9.1
+## explicit
+github.com/pkg/errors
+# github.com/raulk/clock v1.1.0
+## explicit; go 1.14
+github.com/raulk/clock
+# github.com/raulk/go-watchdog v1.2.0
+## explicit; go 1.15
+github.com/raulk/go-watchdog
+# github.com/smartystreets/assertions v1.13.0
+## explicit; go 1.17
+# go.dedis.ch/fixbuf v1.0.3
+## explicit
+go.dedis.ch/fixbuf
+# go.dedis.ch/kyber/v3 v3.0.13
+## explicit; go 1.13
+go.dedis.ch/kyber/v3
+go.dedis.ch/kyber/v3/group/edwards25519
+go.dedis.ch/kyber/v3/group/internal/marshalling
+go.dedis.ch/kyber/v3/group/mod
+go.dedis.ch/kyber/v3/group/nist
+go.dedis.ch/kyber/v3/pairing
+go.dedis.ch/kyber/v3/pairing/bn256
+go.dedis.ch/kyber/v3/sign/schnorr
+go.dedis.ch/kyber/v3/suites
+go.dedis.ch/kyber/v3/util/encoding
+go.dedis.ch/kyber/v3/util/key
+go.dedis.ch/kyber/v3/util/random
+go.dedis.ch/kyber/v3/xof/blake2xb
+# go.dedis.ch/onet/v3 v3.2.10
+## explicit; go 1.13
+go.dedis.ch/onet/v3
+go.dedis.ch/onet/v3/cfgpath
+go.dedis.ch/onet/v3/log
+go.dedis.ch/onet/v3/network
+go.dedis.ch/onet/v3/simul/monitor
+# go.dedis.ch/protobuf v1.0.11
+## explicit; go 1.13
+go.dedis.ch/protobuf
+# go.etcd.io/bbolt v1.3.6
+## explicit; go 1.12
+go.etcd.io/bbolt
+# golang.org/x/crypto v0.0.0-20210921155107-089bfa567519
+## explicit; go 1.17
+golang.org/x/crypto/blake2b
+# golang.org/x/sys v0.0.0-20211117180635-dee7805ff2e1
+## explicit; go 1.17
+golang.org/x/sys/cpu
+golang.org/x/sys/internal/unsafeheader
+golang.org/x/sys/unix
+golang.org/x/sys/windows
+# golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1
+## explicit; go 1.11
+golang.org/x/xerrors
+golang.org/x/xerrors/internal
+# gonum.org/v1/gonum v0.9.3
+## explicit; go 1.14
+gonum.org/v1/gonum/blas
+gonum.org/v1/gonum/blas/blas64
+gonum.org/v1/gonum/blas/cblas128
+gonum.org/v1/gonum/blas/gonum
+gonum.org/v1/gonum/floats
+gonum.org/v1/gonum/floats/scalar
+gonum.org/v1/gonum/internal/asm/c128
+gonum.org/v1/gonum/internal/asm/c64
+gonum.org/v1/gonum/internal/asm/f32
+gonum.org/v1/gonum/internal/asm/f64
+gonum.org/v1/gonum/internal/cmplx64
+gonum.org/v1/gonum/internal/math32
+gonum.org/v1/gonum/lapack
+gonum.org/v1/gonum/lapack/gonum
+gonum.org/v1/gonum/lapack/lapack64
+gonum.org/v1/gonum/mat
+# rsc.io/goversion v1.2.0
+## explicit
+rsc.io/goversion/version
+# github.com/ldsec/lattigo/v2 => github.com/hcholab/lattigo/v2 v2.1.2-0.20230123224332-e8d68c24b94a

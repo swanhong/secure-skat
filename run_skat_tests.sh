@@ -10,7 +10,9 @@ fi
 
 unset GOROOT
 export GOCACHE="$(pwd)/.local/go-build-cache"
+export GOMODCACHE="$(pwd)/.local/go-mod-cache"
 mkdir -p "${GOCACHE}"
+mkdir -p "${GOMODCACHE}"
 
 TEST_NAME="TestSecureSKATEndToEnd"
 RUN_SUFFIX=""
