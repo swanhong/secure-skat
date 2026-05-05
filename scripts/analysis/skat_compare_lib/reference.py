@@ -22,13 +22,13 @@ def require_executable(arg_name: str) -> str:
 def write_reference_inputs(arg_ctx: dict, arg_manual_result: dict) -> tuple[Path, Path, Path]:
     selected_blocks = sorted(arg_manual_result["blocks"], key=lambda block: int(block["block_index"]))
 
-    manifest_path = arg_ctx["cache_dir"] / "reference_manifest.tsv"
-    pheno_path = arg_ctx["cache_dir"] / "reference_pheno.tsv"
-    cov_path = arg_ctx["cache_dir"] / "reference_cov.tsv"
+    manifest_path = arg_ctx["scratch_dir"] / "reference_manifest.tsv"
+    pheno_path = arg_ctx["scratch_dir"] / "reference_pheno.tsv"
+    cov_path = arg_ctx["scratch_dir"] / "reference_cov.tsv"
 
     manifest_rows = []
     for block in selected_blocks:
-        keep_path = arg_ctx["cache_dir"] / f"reference_block{block['block_index']:02d}_variant_ids.txt"
+        keep_path = arg_ctx["scratch_dir"] / f"reference_block{block['block_index']:02d}_variant_ids.txt"
         keep_path.write_text("\n".join(block["variant_ids"]) + "\n")
         manifest_rows.append(
             {
@@ -60,7 +60,7 @@ def run_reference(arg_ctx: dict, arg_manual_result: dict) -> dict:
 
     rscript = require_executable("Rscript")
     manifest_path, pheno_path, cov_path = write_reference_inputs(arg_ctx, arg_manual_result)
-    out_path = arg_ctx["cache_dir"] / "reference_block_summary.tsv"
+    out_path = arg_ctx["output_dir"] / "reference_block_summary.tsv"
     cmd = [
         rscript,
         str(R_REFERENCE_HELPER),
