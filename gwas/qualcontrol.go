@@ -32,7 +32,7 @@ func (g *ProtocolInfo) InitQC(filterParams *FilterParams) QC {
 	}
 }
 
-//IndividualMissAndHetFilters filters individuals based on missing rate and heterozygosity filter
+// IndividualMissAndHetFilters filters individuals based on missing rate and heterozygosity filter
 func (qc *QC) IndividualMissAndHetFilters() []bool {
 	if qc.general.mpcObj[0].GetPid() == 0 {
 		return make([]bool, 1)
@@ -154,7 +154,10 @@ func (qc *QC) SNPFilterWithPrecomputedStats(ac, gc [][]uint32, miss []uint32, us
 		gmissFilt := mpcPar.NotLessThanPublic(xCount, rtype.FromInt(lb), useBoolean) // Secure comparison
 		log.LLvl1(time.Now().Format(time.RFC3339), "done. ", time.Since(start))
 
+		revealStart := time.Now()
+		log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Starting RevealSymVec for SNP missingness filter: pid %d len %d", pid, len(gmissFilt)))
 		snpFilt := mpcPar.RevealSymVec(gmissFilt)
+		log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Finished RevealSymVec for SNP missingness filter: pid %d len %d elapsed %s", pid, len(gmissFilt), time.Since(revealStart)))
 
 		jkeep = make([]bool, len(snpFilt))
 		if pid > 0 {
@@ -169,10 +172,14 @@ func (qc *QC) SNPFilterWithPrecomputedStats(ac, gc [][]uint32, miss []uint32, us
 	if pid > 0 {
 		numSnpKeep = SumBool(jkeep)
 		if pid == mpcPar[0].GetHubPid() {
+			log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Sending numSnpKeep to pid 0 after missingness filter: pid %d numSnpKeep %d", pid, numSnpKeep))
 			mpcPar[0].Network.SendInt(numSnpKeep, 0)
+			log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Sent numSnpKeep to pid 0 after missingness filter: pid %d numSnpKeep %d", pid, numSnpKeep))
 		}
 	} else if pid == 0 {
+		log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Waiting for numSnpKeep from hub pid %d after missingness filter", mpcPar[0].GetHubPid()))
 		numSnpKeep = mpcPar[0].Network.ReceiveInt(mpcPar[0].GetHubPid())
+		log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Received numSnpKeep from hub pid %d after missingness filter: %d", mpcPar[0].GetHubPid(), numSnpKeep))
 	}
 	log.LLvl1(time.Now().Format(time.RFC3339), "Number of SNPs remaining after missingness filter:", numSnpKeep)
 
@@ -641,7 +648,7 @@ func (qc *QC) QualityControlProtocolWithPrecomputedGenoStats(useCache bool) {
 	return
 }
 
-//QualityControlProtocol (1) applies SNP filters and individual filters to input data, (2) filters input wrt filters
+// QualityControlProtocol (1) applies SNP filters and individual filters to input data, (2) filters input wrt filters
 func (qc *QC) QualityControlProtocol(useCache bool) {
 	mpc := qc.general.mpcObj[0]
 	pid := mpc.GetPid()

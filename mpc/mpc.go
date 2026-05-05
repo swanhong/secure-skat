@@ -24,6 +24,7 @@ type MPC struct {
 	Network          *Network
 
 	divSqrtMaxLen int
+	threadID      int
 
 	orLagrangeCache map[TypedKey]mpc_core.RVec
 	lagrangeCache   map[TypedKey]mpc_core.RMat
@@ -53,6 +54,7 @@ func InitParallelMPCEnv(netObjs []*Network, rtype mpc_core.RElem, dataBits, frac
 			invPowCache:      make(map[TypedKey]mpc_core.RElem),
 			pascalCache:      make(map[TypedKey]mpc_core.RMat),
 			syncCounter:      0,
+			threadID:         i,
 			rtype:            rtype,
 		}
 	}
@@ -74,6 +76,7 @@ func initMPCEnv(netObj *Network, rtype mpc_core.RElem, dataBits, fracBits int) *
 		Network:         netObj,
 		dataBits:        dataBits,
 		fracBits:        fracBits,
+		threadID:        0,
 		orLagrangeCache: make(map[TypedKey]mpc_core.RVec),
 		lagrangeCache:   make(map[TypedKey]mpc_core.RMat),
 		invPowCache:     make(map[TypedKey]mpc_core.RElem),
@@ -397,27 +400,55 @@ func (mpcObj *MPC) RevealSymMat(a mpc_core.RMat) mpc_core.RMat {
 
 	rtype := a.Type()
 	nr, nc := a.Dims()
+	traceReveal := nr == 1 && nc >= 10000
+	start := time.Now()
+
+	if traceReveal {
+		log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("RevealSymMat start: pid %d thread %d dims %dx%d", pid, mpcObj.threadID, nr, nc))
+	}
 
 	ar := a.Copy()
 
 	for p := 1; p < mpcObj.Network.NumParties; p++ {
 		if p < pid {
+			if traceReveal {
+				log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("RevealSymMat pid %d thread %d: sending to party %d before receive", pid, mpcObj.threadID, p))
+			}
 			mpcObj.Network.SendRData(a, p)
+			if traceReveal {
+				log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("RevealSymMat pid %d thread %d: waiting to receive from party %d", pid, mpcObj.threadID, p))
+			}
 			r := mpcObj.Network.ReceiveRMat(rtype, nr, nc, p)
 			ar.Add(r)
+			if traceReveal {
+				log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("RevealSymMat pid %d thread %d: received from party %d", pid, mpcObj.threadID, p))
+			}
 
 			//DEBUG
 			//fmt.Println(pid, "send", p, a[0][:5])
 			//fmt.Println(pid, "receive", p, r[0][:5])
 		} else if p > pid {
+			if traceReveal {
+				log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("RevealSymMat pid %d thread %d: waiting to receive from party %d before send", pid, mpcObj.threadID, p))
+			}
 			r := mpcObj.Network.ReceiveRMat(rtype, nr, nc, p)
 			ar.Add(r)
+			if traceReveal {
+				log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("RevealSymMat pid %d thread %d: received from party %d, sending response", pid, mpcObj.threadID, p))
+			}
 			mpcObj.Network.SendRData(a, p)
+			if traceReveal {
+				log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("RevealSymMat pid %d thread %d: sent response to party %d", pid, mpcObj.threadID, p))
+			}
 
 			//DEBUG
 			//fmt.Println(pid, "send", p, a[0][:5])
 			//fmt.Println(pid, "receive", p, r[0][:5])
 		}
+	}
+
+	if traceReveal {
+		log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("RevealSymMat done: pid %d thread %d dims %dx%d elapsed %s", pid, mpcObj.threadID, nr, nc, time.Since(start)))
 	}
 
 	return ar
@@ -2775,9 +2806,14 @@ func (mpcObjs ParallelMPC) runParallel(a mpc_core.RMat, aux mpc_core.RElem, name
 				go func(threadID, startIndex, endIndex, divSqrtMaxLen int, aSub mpc_core.RMat) {
 					defer wg.Done()
 					mpcObjs[threadID].divSqrtMaxLen = divSqrtMaxLen
+					if name == "RevealSymVec" {
+						log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("runParallel (%s): pid %d thread %d starting range %d-%d / %d", name, mpcObjs[threadID].GetPid(), threadID, startIndex, endIndex, n))
+					}
 					tmp := fn(mpcObjs[threadID], aSub, aux)
 					copy(res[startIndex:endIndex], tmp)
-					// log.LLvl1(fmt.Sprintf("runParallel (%s): processed %d-%d / %d", name, startIndex, endIndex, n))
+					if name == "RevealSymVec" {
+						log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("runParallel (%s): pid %d thread %d finished range %d-%d / %d", name, mpcObjs[threadID].GetPid(), threadID, startIndex, endIndex, n))
+					}
 				}(i, startIndex, endIndex, divSqrtMaxLen, aSub)
 			}
 
