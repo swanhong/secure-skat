@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from . import test_plain_modes
-
 PLAIN_MODE_STANDARD = "standard"
-PLAIN_MODE_LOCAL_WEIGHT_BURDEN = test_plain_modes.PLAIN_MODE_LOCAL_WEIGHT_BURDEN
-LOCAL_WEIGHT_MODE_DIRECT_TOTAL = test_plain_modes.LOCAL_WEIGHT_MODE_DIRECT_TOTAL
-LOCAL_WEIGHT_MODE_PRODUCT_APPROX = test_plain_modes.LOCAL_WEIGHT_MODE_PRODUCT_APPROX
+PLAIN_MODE_LOCAL_WEIGHT_BURDEN = "local-weight-burden"
+LOCAL_WEIGHT_MODE_DIRECT_TOTAL = "direct-total"
+LOCAL_WEIGHT_MODE_PRODUCT_APPROX = "product-approx"
 
 
 def fit_null_model(arg_X: np.ndarray, arg_y: np.ndarray) -> dict:
@@ -105,6 +103,8 @@ def compute_manual_block(
     # Optionally replace only the burden-side raw sum with an experimental
     # party-local weighting rule while keeping the standard SKAT block statistic.
     if arg_plain_mode == PLAIN_MODE_LOCAL_WEIGHT_BURDEN:
+        from . import test_plain_modes
+
         return test_plain_modes.apply_plain_test_mode(
             block_result,
             arg_G_parts,
