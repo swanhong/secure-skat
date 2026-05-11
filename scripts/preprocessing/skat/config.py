@@ -92,6 +92,13 @@ def emit_config_dir(
 
 
 def write_manifest(args: argparse.Namespace, out_dataset: Path, config_out_dir: Path, source_prefix: Path) -> None:
+    if args.pheno_file and args.cov_file:
+        phenotype_input_mode = "split_table"
+    elif args.pheno_file:
+        phenotype_input_mode = "merged_table"
+    else:
+        phenotype_input_mode = "aligned_vector_matrix"
+    cov_selector = args.cov_cols or args.cov_col_indices or ("all_except_first_id_column" if args.cov_file else "")
     manifest = {
         "chromosome": str(args.chromosome),
         "input_type": "pgen" if args.pgen_prefix else "vcf",
@@ -100,10 +107,17 @@ def write_manifest(args: argparse.Namespace, out_dataset: Path, config_out_dir: 
         "vcf_keep": args.vcf_keep or "",
         "vcf_double_id": str(not args.vcf_no_double_id),
         "source_prefix": str(source_prefix),
+        "phenotype_input_mode": phenotype_input_mode,
         "pheno_file": str(resolve_path(args.pheno_file)) if args.pheno_file else "",
+        "cov_file": str(resolve_path(args.cov_file)) if args.cov_file else "",
         "id_col": args.id_col or "",
         "pheno_col": args.pheno_col or "",
+        "pheno_col_index": str(args.pheno_col_index or ""),
         "cov_cols": args.cov_cols or "",
+        "cov_col_indices": args.cov_col_indices or "",
+        "cov_selector": cov_selector,
+        "pheno_sep": args.pheno_sep or "",
+        "cov_sep": args.cov_sep or "",
         "pheno_vector_file": str(resolve_path(args.pheno_vector_file)) if args.pheno_vector_file else "",
         "cov_matrix_file": str(resolve_path(args.cov_matrix_file)) if args.cov_matrix_file else "",
         "n_samples": str(args.n_samples),

@@ -448,9 +448,10 @@ func (ast *AssocTest) ComputeSKATStep4BlockStatistics(block int, blockData SKATB
 	log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("SKAT Step 4/4: block statistic aggregation (%d SNPs)", blockData.NumSnps))
 	qBlockRes, qBurdenBlockRes, S2, w2, w2S2, wS := ast.ScoreCalculation(blockData.ScoreVec, blockData.WeightEnc)
 
+	SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qBlock_block%d.txt", block)))
+	SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBurdenBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qBurdenBlock_block%d.txt", block)))
+
 	if ast.general.config.Debug {
-		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qBlock_block%d.txt", block)))
-		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBurdenBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qBurdenBlock_block%d.txt", block)))
 		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{S2}, blockData.NumSnps, -1, ast.general.OutPath(fmt.Sprintf("S2_block%d.txt", block)))
 		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{w2}, blockData.NumSnps, -1, ast.general.OutPath(fmt.Sprintf("w2_block%d.txt", block)))
 		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{w2S2}, blockData.NumSnps, -1, ast.general.OutPath(fmt.Sprintf("w2S2_block%d.txt", block)))

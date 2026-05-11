@@ -16,6 +16,47 @@ def split_cov_cols(cov_cols: str) -> list[str]:
     return cols
 
 
+def split_col_indices(index_text: str) -> list[int]:
+    indices = [int(part.strip()) for part in index_text.split(",") if part.strip()]
+    if not indices:
+        raise ValueError("--cov-col-indices must contain at least one index")
+    return indices
+
+
+def is_missing_value(value: object) -> bool:
+    text = str(value).strip()
+    return text == "" or text.lower() in {"na", "nan", "null", "none"}
+
+
+def parse_numeric_or_missing(value: object) -> float:
+    if is_missing_value(value):
+        return float("nan")
+    return parse_float(value)
+
+
+def parse_covariate_value(value: object, *, sample_id: str, column: str, path: Path) -> float:
+    if is_missing_value(value):
+        return float("nan")
+    parsed = parse_float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(
+            f"Non-numeric covariate value in {path}: sample_id={sample_id}, column={column}, value={value!r}"
+        )
+    return parsed
+
+
+def column_from_1based_index(header: list[str], index: int, *, flag: str, path: Path) -> str:
+    if index < 1 or index > len(header):
+        raise ValueError(f"{flag}={index} is out of range for {path}; file has {len(header)} columns")
+    return header[index - 1]
+
+
+def validate_columns(header: list[str], cols: list[str], path: Path) -> None:
+    missing = [col for col in cols if col not in header]
+    if missing:
+        raise ValueError(f"Missing columns in {path}: {missing}")
+
+
 def read_psam_samples(psam_path: Path) -> list[dict[str, object]]:
     with psam_path.open() as fh:
         header = None
@@ -52,20 +93,24 @@ def read_psam_samples(psam_path: Path) -> list[dict[str, object]]:
     return samples
 
 
-def load_table_records(path: Path, sep: str | None, required_cols: list[str], id_col: str) -> dict[str, dict[str, str]]:
+def read_table_header(path: Path, sep: str | None) -> list[str]:
     with path.open(newline="") as fh:
-        header = None
         for line in fh:
             if line.strip():
-                header = split_table_line(line, sep)
+                return split_table_line(line, sep)
+    raise ValueError(f"Empty table: {path}")
+
+
+def load_table_records(path: Path, sep: str | None, required_cols: list[str], id_col: str) -> dict[str, dict[str, str]]:
+    header = read_table_header(path, sep)
+    validate_columns(header, required_cols, path)
+    if id_col not in header:
+        raise ValueError(f"Missing ID column in {path}: {id_col}")
+
+    with path.open(newline="") as fh:
+        for line in fh:
+            if line.strip():
                 break
-        if header is None:
-            raise ValueError(f"Empty phenotype table: {path}")
-
-        missing = [col for col in required_cols if col not in header]
-        if missing:
-            raise ValueError(f"Missing phenotype/covariate columns in {path}: {missing}")
-
         id_idx = header.index(id_col)
         required_indices = {col: header.index(col) for col in required_cols}
         records: dict[str, dict[str, str]] = {}
@@ -81,6 +126,60 @@ def load_table_records(path: Path, sep: str | None, required_cols: list[str], id
                 row[col] = toks[idx] if idx < len(toks) else ""
             records[sample_id] = row
     return records
+
+
+def load_table_records_by_first_col(path: Path, sep: str | None, selected_cols: list[str]) -> tuple[list[str], dict[str, dict[str, str]]]:
+    header = read_table_header(path, sep)
+    if len(header) < 2:
+        raise ValueError(f"Expected at least two columns in {path}")
+    validate_columns(header, selected_cols, path)
+
+    id_idx = 0
+    selected_indices = {col: header.index(col) for col in selected_cols}
+    records: dict[str, dict[str, str]] = {}
+    with path.open(newline="") as fh:
+        for line in fh:
+            if line.strip():
+                break
+        for line in fh:
+            if not line.strip():
+                continue
+            toks = split_table_line(line, sep)
+            if len(toks) <= id_idx:
+                continue
+            sample_id = toks[id_idx]
+            row = {}
+            for col, idx in selected_indices.items():
+                row[col] = toks[idx] if idx < len(toks) else ""
+            records[sample_id] = row
+    return header, records
+
+
+def resolve_pheno_col(args: argparse.Namespace, header: list[str], path: Path) -> str:
+    if args.pheno_col:
+        validate_columns(header, [args.pheno_col], path)
+        return args.pheno_col
+    return column_from_1based_index(header, args.pheno_col_index, flag="--pheno-col-index", path=path)
+
+
+def resolve_split_cov_cols(args: argparse.Namespace, header: list[str], path: Path) -> list[str]:
+    if args.cov_cols:
+        cols = split_cov_cols(args.cov_cols)
+        validate_columns(header, cols, path)
+    elif args.cov_col_indices:
+        cols = [
+            column_from_1based_index(header, index, flag="--cov-col-indices", path=path)
+            for index in split_col_indices(args.cov_col_indices)
+        ]
+    else:
+        cols = header[1:]
+
+    if not cols:
+        raise ValueError(f"No covariate columns selected from {path}")
+    id_col = header[0]
+    if id_col in cols:
+        raise ValueError(f"Covariate selection includes the first ID column ({id_col}) in {path}")
+    return cols
 
 
 def write_keep_file(path: Path, rows: list[dict[str, object]]) -> None:
@@ -111,19 +210,39 @@ def build_sample_files(
     psam_samples = read_psam_samples(pfile_path(raw_prefix, ".psam"))
 
     if args.pheno_file:
-        cov_input_cols = split_cov_cols(args.cov_cols)
-        num_covs = len(cov_input_cols)
-
         pheno_path = resolve_path(args.pheno_file)
-        required = [args.id_col, args.pheno_col, *cov_input_cols]
-        pheno_by_id = load_table_records(pheno_path, args.pheno_sep, required, args.id_col)
+        if args.cov_file:
+            cov_path = resolve_path(args.cov_file)
+            pheno_header = read_table_header(pheno_path, args.pheno_sep)
+            pheno_col = resolve_pheno_col(args, pheno_header, pheno_path)
+            if pheno_col == pheno_header[0]:
+                raise ValueError(f"Phenotype selection cannot use the first ID column ({pheno_col}) in {pheno_path}")
+            cov_header = read_table_header(cov_path, args.cov_sep)
+            cov_input_cols = resolve_split_cov_cols(args, cov_header, cov_path)
+            _, pheno_by_id = load_table_records_by_first_col(pheno_path, args.pheno_sep, [pheno_col])
+            _, cov_by_id = load_table_records_by_first_col(cov_path, args.cov_sep, cov_input_cols)
+        else:
+            pheno_header = read_table_header(pheno_path, args.pheno_sep)
+            pheno_col = resolve_pheno_col(args, pheno_header, pheno_path)
+            cov_input_cols = split_cov_cols(args.cov_cols)
+            required = [args.id_col, pheno_col, *cov_input_cols]
+            pheno_by_id = load_table_records(pheno_path, args.pheno_sep, required, args.id_col)
+            cov_by_id = pheno_by_id
+
+        num_covs = len(cov_input_cols)
         merged = []
         for sample in psam_samples:
-            record = pheno_by_id.get(str(sample["IID_OUT"]))
-            if record is None:
+            sample_id = str(sample["IID_OUT"])
+            pheno_record = pheno_by_id.get(sample_id)
+            cov_record = cov_by_id.get(sample_id)
+            if pheno_record is None or cov_record is None:
                 continue
-            phenotype = parse_float(record[args.pheno_col])
-            covariates = [parse_float(record[col]) for col in cov_input_cols]
+            phenotype = parse_numeric_or_missing(pheno_record[pheno_col])
+            cov_value_path = resolve_path(args.cov_file) if args.cov_file else pheno_path
+            covariates = [
+                parse_covariate_value(cov_record[col], sample_id=sample_id, column=col, path=cov_value_path)
+                for col in cov_input_cols
+            ]
             if math.isfinite(phenotype) and all(math.isfinite(value) for value in covariates):
                 merged.append({**sample, "phenotype": phenotype, "covariates": covariates})
     else:

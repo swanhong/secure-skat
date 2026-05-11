@@ -84,31 +84,59 @@ def materialize_raw_vcf_as_pgen(args: argparse.Namespace, raw_dir: Path) -> Path
     materialize_optional_index_files(args.vcf, vcf_path, args)
 
     raw_prefix = raw_dir / f"vcf_chr{args.chromosome}"
-    if pfile_path(raw_prefix, ".pgen").exists() and not args.force:
+    keep_path = None
+    if args.vcf_keep:
+        keep_path = materialize_input_file(args.vcf_keep, raw_dir, args, f"vcf_chr{args.chromosome}.keep.txt")
+
+    return run_vcf_to_pgen(
+        vcf_path=vcf_path,
+        out_prefix=raw_prefix,
+        chromosome=args.chromosome,
+        plink2=args.plink2,
+        new_id_max_allele_len=args.new_id_max_allele_len,
+        vcf_no_double_id=args.vcf_no_double_id,
+        keep_path=keep_path,
+        force=args.force,
+    )
+
+
+def run_vcf_to_pgen(
+    *,
+    vcf_path: Path,
+    out_prefix: Path,
+    chromosome: int,
+    plink2: str,
+    new_id_max_allele_len: int,
+    vcf_no_double_id: bool = False,
+    keep_path: Path | None = None,
+    force: bool = False,
+) -> Path:
+    raw_prefix = out_prefix
+    if pfile_path(raw_prefix, ".pgen").exists() and not force:
         print(f"Reusing existing VCF-derived PGEN prefix: {raw_prefix}")
         return raw_prefix
 
-    if args.force:
+    if force:
         for pattern in (raw_prefix.name + ".*", raw_prefix.name + "-temporary.*"):
             for path in raw_prefix.parent.glob(pattern):
                 path.unlink()
 
-    cmd = [args.plink2, "--vcf", str(vcf_path)]
-    if not args.vcf_no_double_id:
+    raw_prefix.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [plink2, "--vcf", str(vcf_path)]
+    if not vcf_no_double_id:
         cmd.append("--double-id")
-    if args.vcf_keep:
-        keep_path = materialize_input_file(args.vcf_keep, raw_dir, args, f"vcf_chr{args.chromosome}.keep.txt")
+    if keep_path:
         cmd.extend(["--keep", str(keep_path)])
     cmd.extend(
         [
             "--chr",
-            str(args.chromosome),
+            str(chromosome),
             "--max-alleles",
             "2",
             "--set-all-var-ids",
             "@:#:$r:$a",
             "--new-id-max-allele-len",
-            str(args.new_id_max_allele_len),
+            str(new_id_max_allele_len),
             "--make-pgen",
             "vzs",
             "--out",

@@ -5,11 +5,19 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
-from pipeline import require_executable
+
 import pandas as pd
 
 
 R_REFERENCE_HELPER = Path(__file__).resolve().parent.parent / "r_skat_reference.R"
+
+
+def require_executable(arg_name: str) -> str:
+    path = shutil.which(arg_name)
+    if not path:
+        raise RuntimeError(f"{arg_name} not found in PATH")
+    return path
+
 
 def write_reference_inputs(arg_ctx: dict, arg_manual_result: dict) -> tuple[Path, Path, Path]:
     selected_blocks = sorted(arg_manual_result["blocks"], key=lambda block: int(block["block_index"]))

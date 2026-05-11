@@ -230,6 +230,16 @@ def max_duration(values: list[float | None]) -> float | None:
     return max(present) if present else None
 
 
+def min_duration(values: list[float | None]) -> float | None:
+    present = [value for value in values if value is not None]
+    return min(present) if present else None
+
+
+def mean_duration(values: list[float | None]) -> float | None:
+    present = [value for value in values if value is not None]
+    return sum(present) / len(present) if present else None
+
+
 def pid_breakdown(values_by_pid: list[tuple[int, float | None]]) -> str:
     present = [(pid, value) for pid, value in values_by_pid if value is not None]
     if not present:
@@ -269,6 +279,40 @@ def metric_line(label: str, values_by_pid: list[tuple[int, float | None]], inden
     if breakdown:
         return f"{indent}{label}: max {format_seconds(max_value)} {breakdown}"
     return f"{indent}{label}: n/a"
+
+
+def block_summary_line(
+    label: str,
+    values_by_block: dict[int, list[tuple[int, float | None]]],
+    indent: str = "    ",
+) -> str:
+    block_maxes = [
+        max_duration([value for _, value in values_by_pid])
+        for _, values_by_pid in sorted(values_by_block.items())
+    ]
+    present_block_maxes = [value for value in block_maxes if value is not None]
+    if not present_block_maxes:
+        return f"{indent}{label}: n/a"
+
+    pids = sorted({pid for values_by_pid in values_by_block.values() for pid, _ in values_by_pid})
+    per_pid_parts = []
+    for pid in pids:
+        pid_values = [
+            value
+            for values_by_pid in values_by_block.values()
+            for value_pid, value in values_by_pid
+            if value_pid == pid and value is not None
+        ]
+        if pid_values:
+            per_pid_parts.append(f"pid{pid} avg {format_seconds(mean_duration(pid_values))}")
+
+    per_pid_text = f"; per_pid_avg ({', '.join(per_pid_parts)})" if per_pid_parts else ""
+    return (
+        f"{indent}{label}: block_max avg {format_seconds(mean_duration(present_block_maxes))}, "
+        f"min {format_seconds(min_duration(present_block_maxes))}, "
+        f"max {format_seconds(max_duration(present_block_maxes))} "
+        f"over {len(present_block_maxes)} blocks{per_pid_text}"
+    )
 
 
 def summarize(run_root: Path) -> list[str]:
@@ -321,15 +365,18 @@ def summarize(run_root: Path) -> list[str]:
     lines.append(metric_line("step1_null_model_residuals_until_first_block", step1_values))
 
     block_indices = sorted({block.index for party in parties for block in party.blocks.values()})
+    step2_values_by_block: dict[int, list[tuple[int, float | None]]] = {}
+    step3_values_by_block: dict[int, list[tuple[int, float | None]]] = {}
+    after_step4_values_by_block: dict[int, list[tuple[int, float | None]]] = {}
     for block_index in block_indices:
-        step2_to_step3 = [
+        step2_values_by_block[block_index] = [
             (
                 party.pid,
                 block_step2_to_step3_seconds(party, block_index),
             )
             for party in parties
         ]
-        step3_to_step4 = [
+        step3_values_by_block[block_index] = [
             (
                 party.pid,
                 seconds_between(
@@ -339,7 +386,7 @@ def summarize(run_root: Path) -> list[str]:
             )
             for party in parties
         ]
-        after_step4 = [
+        after_step4_values_by_block[block_index] = [
             (
                 party.pid,
                 seconds_between(
@@ -349,12 +396,11 @@ def summarize(run_root: Path) -> list[str]:
             )
             for party in parties
         ]
-        lines.append(metric_line(
-            f"block{block_index}_step2_score_loading_to_step3_weights",
-            step2_to_step3,
-        ))
-        lines.append(metric_line(f"block{block_index}_step3_weights_to_step4_aggregation", step3_to_step4))
-        lines.append(metric_line(f"block{block_index}_step4_aggregation_to_next_or_finish", after_step4))
+    if block_indices:
+        lines.append(f"    block_count: {len(block_indices)}")
+        lines.append(block_summary_line("block_step2_score_loading_to_step3_weights", step2_values_by_block))
+        lines.append(block_summary_line("block_step3_weights_to_step4_aggregation", step3_values_by_block))
+        lines.append(block_summary_line("block_step4_aggregation_to_next_or_finish", after_step4_values_by_block))
 
     output_values = [
         (party.pid, seconds_between(party.finished_compute, party.output_saved)) for party in parties

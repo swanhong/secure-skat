@@ -34,14 +34,43 @@ def parse_args() -> argparse.Namespace:
         default=".local/skat/work",
         help="Local working directory for temporary source/filter files (default: .local/skat/work).",
     )
-    parser.add_argument("--pheno-file", help="Phenotype/covariate table path for table mode.")
-    parser.add_argument("--id-col", help="Column in --pheno-file matching the PGEN IID.")
+    parser.add_argument(
+        "--pheno-file",
+        help=(
+            "Phenotype table path for table mode. Without --cov-file, this is the legacy merged "
+            "phenotype/covariate table."
+        ),
+    )
+    parser.add_argument(
+        "--cov-file",
+        help=(
+            "Optional covariate table for split table mode. The first column in both --pheno-file and "
+            "--cov-file is used as the sample ID."
+        ),
+    )
+    parser.add_argument("--id-col", help="Column in a legacy merged --pheno-file matching the PGEN IID.")
     parser.add_argument("--pheno-col", help="Phenotype column to write as pheno.txt.")
     parser.add_argument(
+        "--pheno-col-index",
+        type=int,
+        help="1-based phenotype column index in --pheno-file. Mutually exclusive with --pheno-col.",
+    )
+    parser.add_argument(
         "--cov-cols",
-        help="Comma-separated covariate columns to write as cov.txt. Do not include an intercept.",
+        help=(
+            "Comma-separated covariate columns to write as cov.txt. In split mode, omit this and "
+            "--cov-col-indices to use all covariate columns except the first ID column."
+        ),
+    )
+    parser.add_argument(
+        "--cov-col-indices",
+        help=(
+            "Comma-separated 1-based covariate column indices in --cov-file for split table mode. "
+            "Mutually exclusive with --cov-cols."
+        ),
     )
     parser.add_argument("--pheno-sep", default=None, help="Optional delimiter for --pheno-file.")
+    parser.add_argument("--cov-sep", default=None, help="Optional delimiter for --cov-file.")
     parser.add_argument(
         "--pheno-vector-file",
         help="Phenotype vector already aligned to PSAM row order. Use with --cov-matrix-file.",
@@ -147,21 +176,44 @@ def parse_args() -> argparse.Namespace:
         parser.error("--new-id-max-allele-len must be positive")
 
     table_mode = args.pheno_file is not None
+    split_table_mode = table_mode and args.cov_file is not None
+    merged_table_mode = table_mode and args.cov_file is None
     aligned_mode = args.pheno_vector_file is not None or args.cov_matrix_file is not None
     if table_mode == aligned_mode:
         parser.error("choose exactly one phenotype mode: --pheno-file or --pheno-vector-file/--cov-matrix-file")
     if table_mode:
-        missing = [
-            flag
-            for flag, value in (
-                ("--id-col", args.id_col),
-                ("--pheno-col", args.pheno_col),
-                ("--cov-cols", args.cov_cols),
-            )
-            if not value
-        ]
-        if missing:
-            parser.error(f"table mode requires {', '.join(missing)}")
+        if args.pheno_col and args.pheno_col_index is not None:
+            parser.error("choose only one phenotype selector: --pheno-col or --pheno-col-index")
+        if not args.pheno_col and args.pheno_col_index is None:
+            parser.error("table mode requires --pheno-col or --pheno-col-index")
+        if args.pheno_col_index is not None and args.pheno_col_index <= 0:
+            parser.error("--pheno-col-index must be a positive 1-based index")
+        if args.cov_cols and args.cov_col_indices:
+            parser.error("choose only one covariate selector: --cov-cols or --cov-col-indices")
+        if args.cov_col_indices:
+            for token in [part.strip() for part in args.cov_col_indices.split(",") if part.strip()]:
+                if not token.isdigit() or int(token) <= 0:
+                    parser.error("--cov-col-indices must contain positive 1-based indices")
+        if merged_table_mode:
+            missing = [
+                flag
+                for flag, value in (
+                    ("--id-col", args.id_col),
+                    ("--cov-cols", args.cov_cols),
+                )
+                if not value
+            ]
+            if missing:
+                parser.error(f"legacy merged table mode requires {', '.join(missing)}")
+            if args.cov_col_indices:
+                parser.error("--cov-col-indices requires split table mode with --cov-file")
+        if split_table_mode and args.id_col:
+            parser.error("split table mode uses the first column as ID; omit --id-col")
+    else:
+        if args.cov_file:
+            parser.error("--cov-file requires --pheno-file")
+        if args.pheno_col or args.pheno_col_index is not None or args.id_col or args.cov_cols or args.cov_col_indices:
+            parser.error("table column options require --pheno-file")
     if aligned_mode and (not args.pheno_vector_file or not args.cov_matrix_file):
         parser.error("aligned mode requires both --pheno-vector-file and --cov-matrix-file")
     return args
