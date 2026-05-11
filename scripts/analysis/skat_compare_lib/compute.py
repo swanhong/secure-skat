@@ -127,8 +127,6 @@ def compute_manual_results(arg_ctx: dict, arg_block_inputs: list[dict]) -> dict:
     selected_block_set = set(arg_ctx["analysis_blocks"])
 
     blocks = []
-    all_q_skat_raw_total = 0.0
-    all_q_burden_raw_total = 0.0
     analysis_q_skat_raw_total = 0.0
     analysis_q_burden_raw_total = 0.0
 
@@ -157,8 +155,6 @@ def compute_manual_results(arg_ctx: dict, arg_block_inputs: list[dict]) -> dict:
         if "local_weight_details" in block_math:
             block_result["local_weight_details"] = block_math["local_weight_details"]
         blocks.append(block_result)
-        all_q_skat_raw_total += block_result["q_skat_block_raw"]
-        all_q_burden_raw_total += block_result["q_burden_block_raw"]
         if block_result["block_index"] in selected_block_set:
             analysis_q_skat_raw_total += block_result["q_skat_block_raw"]
             analysis_q_burden_raw_total += block_result["q_burden_block_raw"]
@@ -172,8 +168,4 @@ def compute_manual_results(arg_ctx: dict, arg_block_inputs: list[dict]) -> dict:
         "analysis_q_burden_raw_total": float(analysis_q_burden_raw_total),
         "analysis_skat_q": float(analysis_q_skat_raw_total * rare_variant_scale),
         "analysis_burden_q": float((analysis_q_burden_raw_total**2) * rare_variant_scale),
-        "all_q_skat_raw_total": all_q_skat_raw_total,
-        "all_q_burden_raw_total": all_q_burden_raw_total,
-        "all_skat_q": all_q_skat_raw_total * rare_variant_scale,
-        "all_burden_q": (all_q_burden_raw_total**2) * rare_variant_scale,
     }

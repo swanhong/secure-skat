@@ -148,7 +148,7 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 			log.Lvl1("Error in DCMatMulAAtBPlainWithIntmd: ", err)
 		}
 
-			if ast.general.config.Debug {
+		if ast.general.config.Debug {
 			for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
 				if QTY != nil {
 					// Manually decrypt the 0-th slot of each ciphertext in QTY[0]
@@ -176,7 +176,7 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 
 		ynew[0] = crypto.CMultConstRescale(cryptoParams, ynew[0], nrowsTotalInv, true)
 
-			if ast.general.config.Debug {
+		if ast.general.config.Debug {
 			// Save y_proj AFTER rescaling but before subtracting from pheno
 			for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
 				SaveMatrixToFile(cryptoParams, mpcObj, ynew, nrowsAll[p], p, ast.general.OutPath("y_proj_rescaled.txt"))
@@ -391,8 +391,10 @@ func (ast *AssocTest) ComputeSKATStep3BlockWeights(blockData *SKATBlockData) {
 		return
 	}
 
-	blockData.PEnc = mpcObj.SSToCVec(ast.general.cps, pBlockRVec)
-	blockData.PBarEnc = mpcObj.SSToCVec(ast.general.cps, pBarBlockRVec)
+	if ast.general.config.Debug {
+		blockData.PEnc = mpcObj.SSToCVec(ast.general.cps, pBlockRVec)
+		blockData.PBarEnc = mpcObj.SSToCVec(ast.general.cps, pBarBlockRVec)
+	}
 	blockData.WeightEnc = mpcObj.SSToCVec(ast.general.cps, weightBlockRVec)
 }
 

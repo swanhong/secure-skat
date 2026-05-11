@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/ldsec/lattigo/v2/ring"
@@ -97,15 +96,12 @@ func NewCryptoParams(params *ckks.Parameters, sk, aggregateSk *ckks.SecretKey, p
 	}
 
 	encoders := make(chan ckks.Encoder, numThreads)
-	var wg sync.WaitGroup
 	for i := 0; i < numThreads; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			encoders <- ckks.NewEncoderBig(params, prec)
-		}()
+		// Lattigo v2 initializes package-level big.Float lookup tables inside
+		// NewEncoderBig. Building encoders concurrently can trip a runtime
+		// "concurrent map writes" panic during CollectiveInit.
+		encoders <- ckks.NewEncoderBig(params, prec)
 	}
-	wg.Wait()
 
 	encryptors := make(chan ckks.Encryptor, numThreads)
 	for i := 0; i < numThreads; i++ {

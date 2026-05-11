@@ -37,13 +37,21 @@ def safe_corr(arg_x: pd.Series | np.ndarray, arg_y: pd.Series | np.ndarray) -> f
     return float(np.corrcoef(x[keep], y[keep])[0, 1])
 
 
+def safe_r2(arg_x: pd.Series | np.ndarray, arg_y: pd.Series | np.ndarray) -> float:
+    corr = safe_corr(arg_x, arg_y)
+    if not math.isfinite(corr):
+        return float("nan")
+    return float(corr * corr)
+
+
+def count_finite_pairs(arg_x: pd.Series | np.ndarray, arg_y: pd.Series | np.ndarray) -> int:
+    x = np.asarray(arg_x, dtype=float)
+    y = np.asarray(arg_y, dtype=float)
+    return int(np.sum(np.isfinite(x) & np.isfinite(y)))
+
+
 def format_float(arg_value: float) -> str:
     return "NA" if not math.isfinite(arg_value) else f"{arg_value:.10e}"
-
-
-def sanitize_path_tag(arg_path: Path | str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", str(arg_path))
-
 
 def read_kv_file(arg_path: Path) -> dict[str, str]:
     out: dict[str, str] = {}
@@ -155,6 +163,20 @@ def resolve_run_root(arg_repo_root: Path, arg_run_id: str) -> Path:
         raise RuntimeError(f"No secure output directory found for run id: {arg_run_id}")
     run_roots.sort(key=lambda path: path.stat().st_mtime, reverse=True)
     return run_roots[0].resolve()
+
+
+def resolve_run_root_arg(arg_repo_root: Path, arg_run_id: str | None, arg_run_root: str | None) -> Path:
+    if arg_run_root:
+        run_root = Path(arg_run_root)
+        if not run_root.is_absolute():
+            run_root = arg_repo_root / run_root
+        run_root = run_root.resolve()
+        if not run_root.is_dir():
+            raise RuntimeError(f"Run root does not exist: {run_root}")
+        return run_root
+    if not arg_run_id:
+        raise RuntimeError("Provide --run-id or --run-root")
+    return resolve_run_root(arg_repo_root, arg_run_id)
 
 
 def resolve_dataset_path(arg_repo_root: Path, arg_dataset_value: str) -> Path:
@@ -330,6 +352,7 @@ def load_secure_compare(arg_ctx: dict) -> dict:
     selected_q_burden_raw_total = 0.0
     selected_available = True
     n_blocks_available = 0
+    missing_blocks = []
 
     for block_index in arg_ctx["analysis_blocks"]:
         q_skat_block_raw = read_secure_scalar(party1_dir / f"qBlock_block{block_index - 1}.txt")
@@ -340,6 +363,7 @@ def load_secure_compare(arg_ctx: dict) -> dict:
         }
         if q_skat_block_raw is None or q_burden_block_raw is None:
             selected_available = False
+            missing_blocks.append(block_index)
             continue
         n_blocks_available += 1
         selected_q_skat_raw_total += q_skat_block_raw
@@ -360,6 +384,7 @@ def load_secure_compare(arg_ctx: dict) -> dict:
         "selected_burden_q": selected_burden_q,
         "n_blocks_available": n_blocks_available,
         "n_blocks_requested": len(arg_ctx["analysis_blocks"]),
+        "missing_blocks": missing_blocks,
         "run_skat_q": float("nan") if run_skat_q is None else run_skat_q,
         "run_burden_q": float("nan") if run_burden_q is None else run_burden_q,
         "summary_skat_q": (float("nan") if run_skat_q is None else run_skat_q) if used_run_scalars else selected_skat_q,
@@ -499,18 +524,31 @@ def print_preflight(arg_ctx: dict) -> None:
 
 
 def print_block_comparison_summary(arg_block_df: pd.DataFrame, arg_block_csv_path: Path, arg_png_paths: list[Path]) -> None:
+    skat_pair_count = count_finite_pairs(arg_block_df["plain_skat_q"], arg_block_df["secure_skat_q"])
+    burden_pair_count = count_finite_pairs(arg_block_df["plain_burden_q"], arg_block_df["secure_burden_q"])
+    skat_corr = safe_corr(arg_block_df["plain_skat_q"], arg_block_df["secure_skat_q"])
+    burden_corr = safe_corr(arg_block_df["plain_burden_q"], arg_block_df["secure_burden_q"])
+    skat_r2 = safe_r2(arg_block_df["plain_skat_q"], arg_block_df["secure_skat_q"])
+    burden_r2 = safe_r2(arg_block_df["plain_burden_q"], arg_block_df["secure_burden_q"])
+
     print("\n--- Block Comparison ---")
     print(f"Blocks retained: {len(arg_block_df)}")
     print(f"Block summary CSV: {arg_block_csv_path}")
     if len(arg_png_paths) >= 1:
         print(f"Block-level SKAT scatter plot: {arg_png_paths[0]}")
+    else:
+        print(f"Block-level SKAT scatter plot: not generated ({skat_pair_count} finite plain/secure pairs)")
     if len(arg_png_paths) >= 2:
         print(f"Block-level Burden scatter plot: {arg_png_paths[1]}")
-    print(f"Block SKAT corr: {safe_corr(arg_block_df['plain_skat_q'], arg_block_df['secure_skat_q']):.10f}")
-    print(f"Block Burden corr: {safe_corr(arg_block_df['plain_burden_q'], arg_block_df['secure_burden_q']):.10f}")
+    else:
+        print(f"Block-level Burden scatter plot: not generated ({burden_pair_count} finite plain/secure pairs)")
+    print(f"Block SKAT corr: {skat_corr:.10f}")
+    print(f"Block SKAT r2: {skat_r2:.10f}")
+    print(f"Block Burden corr: {burden_corr:.10f}")
+    print(f"Block Burden r2: {burden_r2:.10f}")
 
 
-def print_aggregate_comparison_summary(arg_manual_result: dict, arg_secure_result: dict) -> None:
+def print_aggregate_comparison_summary(arg_ctx: dict, arg_manual_result: dict, arg_secure_result: dict) -> None:
     print("\n--- Aggregate Plain vs Secure ---")
     print(
         "Secure aggregate source: "
@@ -520,6 +558,16 @@ def print_aggregate_comparison_summary(arg_manual_result: dict, arg_secure_resul
         "Secure block raw values available: "
         f"{arg_secure_result['n_blocks_available']} / {arg_secure_result['n_blocks_requested']}"
     )
+    if arg_secure_result["n_blocks_available"] == 0:
+        print(
+            "No block-level secure outputs were found under "
+            f"{arg_ctx['run_root'] / 'party1'} "
+            "(expected qBlock_block*.txt and qBurdenBlock_block*.txt)."
+        )
+    elif arg_secure_result["missing_blocks"]:
+        preview = ",".join(str(block) for block in arg_secure_result["missing_blocks"][:8])
+        suffix = "..." if len(arg_secure_result["missing_blocks"]) > 8 else ""
+        print(f"Missing secure block raw outputs for blocks: {preview}{suffix}")
 
     comparisons = [
         ("SKAT", float(arg_manual_result["analysis_skat_q"]), float(arg_secure_result["summary_skat_q"])),
@@ -537,6 +585,7 @@ def print_aggregate_comparison_summary(arg_manual_result: dict, arg_secure_resul
 
 
 def print_compare_summary(
+    arg_ctx: dict,
     arg_manual_result: dict,
     arg_secure_result: dict,
     arg_reference_result: dict,
@@ -551,7 +600,7 @@ def print_compare_summary(
     else:
         print(f"Reference result: {arg_reference_result['skipped_reason']}")
 
-    print_aggregate_comparison_summary(arg_manual_result, arg_secure_result)
+    print_aggregate_comparison_summary(arg_ctx, arg_manual_result, arg_secure_result)
 
     if arg_summary_df.empty:
         print("No finite block-wise pairwise metrics were available to summarize.")
@@ -573,7 +622,7 @@ def print_compare_summary(
 
 def build_context(arg_ns: object) -> dict:
     repo_root = Path(arg_ns.repo_root).resolve()
-    run_root = resolve_run_root(repo_root, arg_ns.run_id)
+    run_root = resolve_run_root_arg(repo_root, getattr(arg_ns, "run_id", None), getattr(arg_ns, "run_root", None))
     run_metadata = read_kv_file(run_root / "run_metadata.txt")
     dataset_info = resolve_dataset(repo_root, run_root, run_metadata, arg_ns.dataset)
     analysis_blocks = parse_block_spec(arg_ns.blocks, dataset_info["n_blocks"])
@@ -606,7 +655,7 @@ def build_context(arg_ns: object) -> dict:
     return {
         "command": arg_ns.command,
         "repo_root": repo_root,
-        "run_id": arg_ns.run_id,
+        "run_id": getattr(arg_ns, "run_id", None) or run_metadata.get("run_id", run_root.name),
         "run_root": run_root,
         "run_metadata": run_metadata,
         "dataset_root": dataset_info["dataset_root"],
@@ -653,7 +702,11 @@ def run_compare(arg_ctx: dict) -> int:
         block_df["secure_skat_q"].to_numpy(dtype=float),
         skat_png_path,
         title="Block-Level SKAT Comparison",
-        subtitle=f"n = {len(block_df)}, corr = {safe_corr(block_df['plain_skat_q'], block_df['secure_skat_q']):.6f}",
+        subtitle=(
+            f"n = {count_finite_pairs(block_df['plain_skat_q'], block_df['secure_skat_q'])}, "
+            f"corr = {safe_corr(block_df['plain_skat_q'], block_df['secure_skat_q']):.6f}, "
+            f"r2 = {safe_r2(block_df['plain_skat_q'], block_df['secure_skat_q']):.6f}"
+        ),
     ):
         png_paths.append(skat_png_path)
     if plotting.draw_scatter_png(
@@ -661,14 +714,18 @@ def run_compare(arg_ctx: dict) -> int:
         block_df["secure_burden_q"].to_numpy(dtype=float),
         burden_png_path,
         title="Block-Level Burden Comparison",
-        subtitle=f"n = {len(block_df)}, corr = {safe_corr(block_df['plain_burden_q'], block_df['secure_burden_q']):.6f}",
+        subtitle=(
+            f"n = {count_finite_pairs(block_df['plain_burden_q'], block_df['secure_burden_q'])}, "
+            f"corr = {safe_corr(block_df['plain_burden_q'], block_df['secure_burden_q']):.6f}, "
+            f"r2 = {safe_r2(block_df['plain_burden_q'], block_df['secure_burden_q']):.6f}"
+        ),
     ):
         png_paths.append(burden_png_path)
 
     # 5) Write the compact summary table and print the final console report.
     summary_path, summary_df = write_summary_csv(arg_ctx, block_df)
     print_block_comparison_summary(block_df, block_csv_path, png_paths)
-    print_compare_summary(manual_result, secure_result, reference_result, summary_df, summary_path, png_paths)
+    print_compare_summary(arg_ctx, manual_result, secure_result, reference_result, summary_df, summary_path, png_paths)
     return 0
 
 

@@ -11,7 +11,9 @@ from .pipeline import build_context, run_compare, run_reference_only
 
 def add_shared_arguments(arg_parser: argparse.ArgumentParser) -> None:
     arg_parser.add_argument("--repo-root", default=".", help="Repository root (default: current directory).")
-    arg_parser.add_argument("--run-id", required=True, help="Secure run id suffix, for example ca92.")
+    run_group = arg_parser.add_mutually_exclusive_group(required=True)
+    run_group.add_argument("--run-id", help="Secure run id suffix, for example ca92.")
+    run_group.add_argument("--run-root", help="Exact secure run output directory.")
     arg_parser.add_argument("--dataset", help="Dataset root. If omitted, infer from run metadata or local datasets.")
     arg_parser.add_argument(
         "--blocks",

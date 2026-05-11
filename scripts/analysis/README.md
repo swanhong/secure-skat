@@ -71,6 +71,13 @@ without the R package reference:
 python3 scripts/analysis/skat_compare.py compare --run-id ca92 --skip-reference
 ```
 
+Compare an exact run directory, useful when `run_example.sh --run-base` writes
+outside the repo-level `out/` directory:
+
+```bash
+python3 scripts/analysis/skat_compare.py compare --run-root datasets/1000g/runs/output_260511_123000_ca92 --skip-reference
+```
+
 Legacy run without `dataset=` metadata; provide the dataset explicitly:
 
 ```bash
@@ -93,6 +100,9 @@ python3 scripts/analysis/skat_compare.py reference --run-id ca92 --dataset .loca
 
 - `--repo-root <path>`
 - `--run-id <id>`
+  - Run id suffix searched under repo-level `out/`.
+- `--run-root <path>`
+  - Exact run output directory. Use this instead of `--run-id` for custom run bases.
 - `--dataset <path>`
 - `--blocks <spec>`
   - Analysis scope. Defaults to all blocks.

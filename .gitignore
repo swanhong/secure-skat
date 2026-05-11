@@ -15,6 +15,7 @@ test_stdout_*.txt
 *.zip
 sfgwas
 *.pyc
+datasets/*
 
 # Vendored Go dependencies must be tracked as-is, even if filenames match
 # generic ignore patterns such as *.txt or *.log.

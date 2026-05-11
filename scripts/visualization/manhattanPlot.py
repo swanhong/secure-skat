@@ -1,19 +1,69 @@
 #!/usr/bin/env python3
 
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
+import argparse
+from pathlib import Path
 
-from qmplot import manhattanplot
-from scipy.stats import chi2
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
+    import tomli as tomllib
 
-# Script Parameters (Modify as Necessary)
-INPUT_FILE = "../out/party1/assoc.txt"  # Path to the input file containing SF-GWAS results
-POS_FILE = "../example_data/party1/snp_pos.txt"  # File with a list of genomic positions for input SNPs
-GKEEP_FILE = "../cache/party1/gkeep.txt"  # Binary vector indicating which variants passed QC for inclusion in the final output
-NUM_INDS = 2000  # Total number of individuals across all parties; required for conversion of statistics
-NUM_COV = 5  # Total number of covariates in the analysis; required for conversion of statistics
-OUTPUT_FILE = "sfgwas_results.jpg"  # Path to save the generated plot figure
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent.parent
+
+DEFAULT_INPUT_FILE = REPO_ROOT / "out/party1/assoc.txt"
+DEFAULT_POS_FILE = REPO_ROOT / "example_data/party1/snp_pos.txt"
+DEFAULT_GKEEP_FILE = REPO_ROOT / "cache/party1/gkeep.txt"
+DEFAULT_OUTPUT_FILE = SCRIPT_DIR / "sfgwas_results.jpg"
+DEFAULT_CONFIG_GLOBAL = REPO_ROOT / "config/configGlobal.toml"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Postprocess SF-GWAS association output and render a Manhattan plot."
+    )
+    parser.add_argument("--input-file", type=Path, default=DEFAULT_INPUT_FILE)
+    parser.add_argument("--pos-file", type=Path, default=DEFAULT_POS_FILE)
+    parser.add_argument("--gkeep-file", type=Path, default=DEFAULT_GKEEP_FILE)
+    parser.add_argument("--output-file", type=Path, default=DEFAULT_OUTPUT_FILE)
+    parser.add_argument(
+        "--config-global",
+        type=Path,
+        default=DEFAULT_CONFIG_GLOBAL,
+        help="Global TOML config used to infer total sample count and covariate count.",
+    )
+    parser.add_argument(
+        "--num-inds",
+        type=int,
+        default=None,
+        help="Override total number of individuals instead of reading it from config.",
+    )
+    parser.add_argument(
+        "--num-cov",
+        type=int,
+        default=None,
+        help="Override total covariate count (including intercept) instead of reading it from config.",
+    )
+    return parser.parse_args()
+
+
+def load_analysis_dimensions(config_global: Path) -> tuple[int, int]:
+    with config_global.open("rb") as handle:
+        config = tomllib.load(handle)
+
+    num_inds = config.get("num_inds")
+    if not isinstance(num_inds, list) or len(num_inds) < 2:
+        raise ValueError(f"Invalid or missing num_inds in {config_global}")
+
+    num_ind_total = sum(int(x) for x in num_inds[1:])
+
+    if "num_covs" not in config:
+        raise ValueError(f"Missing num_covs in {config_global}")
+
+    # SKAT prepends an intercept internally, so the downstream test uses
+    # num_covs + 1 total covariates.
+    num_cov = int(config["num_covs"]) + 1
+    return num_ind_total, num_cov
 
 def postprocess_assoc(
     new_assoc_file: str,
@@ -23,6 +73,9 @@ def postprocess_assoc(
     num_ind_total: int,
     num_cov: int,
 ) -> None:
+    import numpy as np
+    from scipy.stats import chi2
+
     # new_assoc_file: Name of new assoc file (processed)
     # assoc_file: Name of original assoc file
     # pos_file: Path to pos.txt
@@ -59,6 +112,10 @@ def postprocess_assoc(
 
 
 def plot_assoc(plot_file: str, new_assoc_file: str) -> None:
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    from qmplot import manhattanplot
+
     # Load postprocessed assoc file and convert p-values
     tab = pd.read_table(new_assoc_file)
     tab["P"] = 10 ** tab["LOG10P"]
@@ -76,18 +133,24 @@ def plot_assoc(plot_file: str, new_assoc_file: str) -> None:
     plt.savefig(plot_file)
 
 def main():
-    print("Plotting script called...")
-    print(f"SF-GWAS output file: {INPUT_FILE}")
-    print(f"SNP position file: {POS_FILE}")
-    print(f"QC filter file: {GKEEP_FILE}")
-    print(f"Number of individuals: {NUM_INDS}")
-    print(f"Number of covariates: {NUM_COV}")
-    
-    processed_input = INPUT_FILE + ".processed"
-    postprocess_assoc(processed_input, INPUT_FILE, POS_FILE, GKEEP_FILE, NUM_INDS, NUM_COV)
-    plot_assoc(OUTPUT_FILE, processed_input)
+    args = parse_args()
+    num_inds_cfg, num_cov_cfg = load_analysis_dimensions(args.config_global)
+    num_inds = args.num_inds if args.num_inds is not None else num_inds_cfg
+    num_cov = args.num_cov if args.num_cov is not None else num_cov_cfg
 
-    print(f"Plot saved to {OUTPUT_FILE}")
+    print("Plotting script called...")
+    print(f"SF-GWAS output file: {args.input_file}")
+    print(f"SNP position file: {args.pos_file}")
+    print(f"QC filter file: {args.gkeep_file}")
+    print(f"Global config file: {args.config_global}")
+    print(f"Number of individuals: {num_inds}")
+    print(f"Number of covariates: {num_cov}")
+    
+    processed_input = args.input_file.with_name(args.input_file.name + ".processed")
+    postprocess_assoc(processed_input, args.input_file, args.pos_file, args.gkeep_file, num_inds, num_cov)
+    plot_assoc(args.output_file, processed_input)
+
+    print(f"Plot saved to {args.output_file}")
 
 if __name__ == "__main__":
     main()

@@ -26,6 +26,7 @@ SKATO_RHO="0.5"
 DATASET="example_data"
 CONFIG_DIR="config"
 RUN_ROOT=""
+RUN_BASE="${SFGWAS_RUN_BASE:-out}"
 RUN_NAME=""
 RUN_ID=""
 ORIGINAL_ARGS=("$@")
@@ -38,6 +39,7 @@ Options:
   --mode <gwas|skat|burden|skato>
   --dataset <dataset-root>
   --config-dir <config-dir>
+  --run-base <output-parent-dir>
   --skato-rho <0..1>
   --help
 EOF
@@ -56,6 +58,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --config-dir)
       CONFIG_DIR="${2:?missing value for --config-dir}"
+      shift 2
+      ;;
+    --run-base)
+      RUN_BASE="${2:?missing value for --run-base}"
       shift 2
       ;;
     --skato-rho)
@@ -79,10 +85,13 @@ done
 #   - timestamp is in the local timezone
 #   - RAND is a 4-digit random string, in order to enable easy recall
 #   - e.g.) output_251231_235959_a1b2 (later, we can call this result via the RUN_ID "a1b2")
+run_started_epoch="$(date '+%s')"
+run_started_at="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+run_started_at_iso="$(date '+%Y-%m-%dT%H:%M:%S%z')"
 timestamp="$(date '+%y%m%d_%H%M%S')"
 RUN_ID="$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n' | cut -c1-4)"
 RUN_NAME="output_${timestamp}_${RUN_ID}"
-RUN_ROOT="out/${RUN_NAME}"
+RUN_ROOT="${RUN_BASE%/}/${RUN_NAME}"
 mkdir -p "$RUN_ROOT"
 mkdir -p "$RUN_ROOT/cache"
 
@@ -92,13 +101,16 @@ metadata_file="${RUN_ROOT}/run_metadata.txt"
 {
   echo "run_name=${RUN_NAME}"
   echo "run_id=${RUN_ID}"
-  echo "started_at=$(date '+%Y-%m-%d %H:%M:%S %Z')"
+  echo "started_at=${run_started_at}"
+  echo "started_at_iso=${run_started_at_iso}"
+  echo "started_epoch=${run_started_epoch}"
   echo "cwd=$(pwd)"
   echo "command=bash run_example.sh ${ORIGINAL_ARGS[*]}"
   echo "mode=${MODE}"
   echo "dataset=${DATASET}"
   echo "config_dir=${CONFIG_DIR}"
   echo "skato_rho=${SKATO_RHO}"
+  echo "run_base=${RUN_BASE}"
   echo "run_root=${RUN_ROOT}"
   echo "pid_count=$((NUM_MAIN_PARTY + 1))"
   echo "git_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
@@ -179,8 +191,13 @@ for pid in "${pids[@]}"; do
 done
 
 # Append final status so other scripts can inspect the run after completion.
+run_finished_epoch="$(date '+%s')"
+run_finished_at="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+run_finished_at_iso="$(date '+%Y-%m-%dT%H:%M:%S%z')"
 {
-  echo "finished_at=$(date '+%Y-%m-%d %H:%M:%S %Z')"
+  echo "finished_at=${run_finished_at}"
+  echo "finished_at_iso=${run_finished_at_iso}"
+  echo "finished_epoch=${run_finished_epoch}"
   echo "exit_status=${status}"
 } >> "$metadata_file"
 
@@ -189,5 +206,37 @@ echo "Run ID: ${RUN_ID}"
 echo "Dataset: ${DATASET}"
 echo "Config directory: ${CONFIG_DIR}"
 echo "Outputs are under: ${RUN_ROOT}"
+
+timing_summary_file="${RUN_ROOT}/timing_summary.txt"
+if python3 scripts/analysis/summarize_run_timing.py "$RUN_ROOT" | tee "$timing_summary_file"; then
+  echo "Timing summary saved to: ${timing_summary_file}"
+else
+  echo "Timing summary unavailable; inspect ${RUN_ROOT}/stdout_party*.txt directly." >&2
+fi
+
+analysis_dir="${RUN_ROOT}/analysis"
+case "$MODE" in
+  skat|burden|skato)
+    if [[ "$status" -eq 0 ]]; then
+      if python3 scripts/analysis/skat_compare.py compare \
+        --run-root "$RUN_ROOT" \
+        --dataset "$DATASET" \
+        --skip-reference; then
+        echo "Analysis outputs are under: ${analysis_dir}"
+      else
+        echo "Plain-vs-secure analysis unavailable; secure run outputs are still saved under ${RUN_ROOT}." >&2
+      fi
+    else
+      echo "Plain-vs-secure analysis skipped because the secure run failed." >&2
+    fi
+    ;;
+  *)
+    echo "Plain-vs-secure SKAT analysis skipped for mode=${MODE}."
+    ;;
+esac
+
+if [[ -d "$analysis_dir" ]]; then
+  echo "Analysis directory: ${analysis_dir}"
+fi
 
 exit "$status"

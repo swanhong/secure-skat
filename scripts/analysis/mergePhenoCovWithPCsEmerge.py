@@ -3,7 +3,6 @@ import os,sys
 
 def mergePhenoCovWithPCs(phenoCovFile, pcFile, outFile):
     phenoCov = pd.read_csv(phenoCovFile, delim_whitespace=True)
-    print(phenoCov.columns)
     pc = pd.read_csv(pcFile, delim_whitespace=True)
     pc.rename(columns={'#FID': 'FID'}, inplace=True)
     
