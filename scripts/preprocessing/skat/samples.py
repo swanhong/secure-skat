@@ -80,12 +80,13 @@ def read_psam_samples(psam_path: Path) -> list[dict[str, object]]:
                 continue
             toks = line.split()
             iid = toks[iid_idx]
-            fid = toks[fid_idx] if fid_idx is not None else iid
+            fid = toks[fid_idx] if fid_idx is not None else None
             samples.append(
                 {
                     "_psam_order": order,
                     "FID_OUT": fid,
                     "IID_OUT": iid,
+                    "_has_fid": fid_idx is not None,
                 }
             )
     if not samples:
@@ -183,9 +184,16 @@ def resolve_split_cov_cols(args: argparse.Namespace, header: list[str], path: Pa
 
 
 def write_keep_file(path: Path, rows: list[dict[str, object]]) -> None:
+    has_fid = any(bool(row.get("_has_fid")) for row in rows)
     with path.open("w") as fh:
-        for row in rows:
-            fh.write(f"{row['FID_OUT']}\t{row['IID_OUT']}\n")
+        if has_fid:
+            fh.write("#FID\tIID\n")
+            for row in rows:
+                fh.write(f"{row['FID_OUT']}\t{row['IID_OUT']}\n")
+        else:
+            fh.write("#IID\n")
+            for row in rows:
+                fh.write(f"{row['IID_OUT']}\n")
 
 
 def write_pheno_file(path: Path, rows: list[dict[str, object]]) -> None:

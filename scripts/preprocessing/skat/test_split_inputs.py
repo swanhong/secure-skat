@@ -54,6 +54,20 @@ def write_psam(prefix: Path) -> None:
     )
 
 
+def write_iid_only_psam(prefix: Path) -> None:
+    prefix.with_suffix(".psam").write_text(
+        "\n".join(
+            [
+                "#IID SEX",
+                "S1 NA",
+                "S2 NA",
+                "S3 NA",
+            ]
+        )
+        + "\n"
+    )
+
+
 class SplitInputTests(unittest.TestCase):
     def test_split_tables_join_by_first_column_and_use_all_covariates(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -102,6 +116,33 @@ class SplitInputTests(unittest.TestCase):
                 cov_path = out_dataset / party / "cov.txt"
                 for line in cov_path.read_text().splitlines():
                     self.assertEqual(len(line.split("\t")), 3)
+                keep_header = (out_dataset / party / "sample_keep.txt").read_text().splitlines()[0]
+                self.assertEqual(keep_header, "#FID\tIID")
+
+    def test_iid_only_psam_writes_iid_only_keep_files(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            raw_prefix = tmp / "raw"
+            write_iid_only_psam(raw_prefix)
+            (tmp / "phenotype.csv").write_text("person_id,pheno\nS1,1.5\nS3,3.5\n")
+            (tmp / "covariate.csv").write_text("person_id,age\nS1,51\nS3,53\n")
+
+            out_dataset = tmp / "dataset"
+            n_party1, n_party2, _ = quiet_build_sample_files(
+                make_args(tmp),
+                raw_prefix,
+                tmp / "work",
+                out_dataset,
+            )
+
+            self.assertEqual(n_party1 + n_party2, 2)
+            all_keep_header = (tmp / "work" / "sample_keep_all.txt").read_text().splitlines()[0]
+            self.assertEqual(all_keep_header, "#IID")
+            for party in ("party1", "party2"):
+                keep_lines = (out_dataset / party / "sample_keep.txt").read_text().splitlines()
+                self.assertEqual(keep_lines[0], "#IID")
+                for line in keep_lines[1:]:
+                    self.assertEqual(len(line.split()), 1)
 
     def test_split_tables_support_1_based_indices(self) -> None:
         with tempfile.TemporaryDirectory() as td:
