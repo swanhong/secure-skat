@@ -34,6 +34,8 @@ def make_args(tmp: Path, **overrides: object) -> argparse.Namespace:
         "n_samples": 0,
         "party1_frac": 0.5,
         "seed": 7,
+        "normalize_covariates": "none",
+        "normalize_phenotype": "none",
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -167,6 +169,49 @@ class SplitInputTests(unittest.TestCase):
             all_cov_lines = (out_dataset / "party1" / "cov.txt").read_text().splitlines()
             all_cov_lines += (out_dataset / "party2" / "cov.txt").read_text().splitlines()
             self.assertEqual(sorted(all_cov_lines), ["51\t0.2", "53\t0.6"])
+
+    def test_normalization_scales_covariates_min_max_and_phenotype_by_max(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            raw_prefix = tmp / "raw"
+            write_psam(raw_prefix)
+            (tmp / "phenotype.csv").write_text("person_id,pheno\nS1,2\nS3,4\n")
+            (tmp / "covariate.csv").write_text("person_id,age,pc1\nS1,10,-2\nS3,20,4\n")
+
+            out_dataset = tmp / "dataset"
+            quiet_build_sample_files(
+                make_args(tmp, normalize_covariates="max", normalize_phenotype="max"),
+                raw_prefix,
+                tmp / "work",
+                out_dataset,
+            )
+
+            pheno_lines = (out_dataset / "party1" / "pheno.txt").read_text().splitlines()
+            pheno_lines += (out_dataset / "party2" / "pheno.txt").read_text().splitlines()
+            self.assertEqual(sorted(pheno_lines), ["0.5", "1"])
+            all_cov_lines = (out_dataset / "party1" / "cov.txt").read_text().splitlines()
+            all_cov_lines += (out_dataset / "party2" / "cov.txt").read_text().splitlines()
+            self.assertEqual(sorted(all_cov_lines), ["0\t0", "1\t1"])
+
+    def test_min_max_covariate_normalization_constant_column_becomes_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            raw_prefix = tmp / "raw"
+            write_psam(raw_prefix)
+            (tmp / "phenotype.csv").write_text("person_id,pheno\nS1,2\nS3,4\n")
+            (tmp / "covariate.csv").write_text("person_id,age,pc1\nS1,10,4\nS3,20,4\n")
+
+            out_dataset = tmp / "dataset"
+            quiet_build_sample_files(
+                make_args(tmp, normalize_covariates="max"),
+                raw_prefix,
+                tmp / "work",
+                out_dataset,
+            )
+
+            all_cov_lines = (out_dataset / "party1" / "cov.txt").read_text().splitlines()
+            all_cov_lines += (out_dataset / "party2" / "cov.txt").read_text().splitlines()
+            self.assertEqual(sorted(all_cov_lines), ["0\t0", "1\t0"])
 
     def test_split_tables_fail_on_nonnumeric_covariate(self) -> None:
         with tempfile.TemporaryDirectory() as td:

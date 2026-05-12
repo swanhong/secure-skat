@@ -209,6 +209,51 @@ def write_cov_file(path: Path, rows: list[dict[str, object]]) -> None:
             fh.write("\t".join(f"{float(value):.12g}" for value in cov) + "\n")
 
 
+def max_abs(values: list[float]) -> float:
+    return max((abs(float(value)) for value in values), default=0.0)
+
+
+def max_value(values: list[float]) -> float:
+    return max((float(value) for value in values), default=0.0)
+
+
+def normalize_min_max(values: list[float]) -> tuple[list[float], float, float]:
+    min_v = min((float(value) for value in values), default=0.0)
+    max_v = max_value(values)
+    denom = max_v - min_v
+    if denom == 0.0:
+        return [0.0 for _ in values], min_v, max_v
+    return [(float(value) - min_v) / denom for value in values], min_v, max_v
+
+
+def normalize_by_max(values: list[float]) -> tuple[list[float], float]:
+    scale = max_value(values)
+    if scale == 0.0:
+        return values, scale
+    return [float(value) / scale for value in values], scale
+
+
+def normalize_sample_values(rows: list[dict[str, object]], args: argparse.Namespace, num_covs: int) -> None:
+    if args.normalize_phenotype == "max":
+        normalized, min_pheno, max_pheno = normalize_min_max([float(row["phenotype"]) for row in rows])
+        for row, value in zip(rows, normalized):
+            row["phenotype"] = value
+        print(f"Phenotype normalization: min={min_pheno:.12g} max={max_pheno:.12g}")
+
+    if args.normalize_covariates == "max":
+        ranges = []
+        for cov_idx in range(num_covs):
+            cov_values = [float(row["covariates"][cov_idx]) for row in rows]
+            normalized, min_cov, max_cov = normalize_min_max(cov_values)
+            ranges.append((min_cov, max_cov))
+            for row, value in zip(rows, normalized):
+                covariates = list(row["covariates"])
+                covariates[cov_idx] = value
+                row["covariates"] = covariates
+        range_text = ",".join(f"({min_v:.12g},{max_v:.12g})" for min_v, max_v in ranges)
+        print(f"Covariate normalization: min_max ranges=[{range_text}]")
+
+
 def build_sample_files(
     args: argparse.Namespace,
     raw_prefix: Path,
@@ -281,6 +326,8 @@ def build_sample_files(
     if args.n_samples and len(merged) > args.n_samples:
         chosen = np.sort(rng.choice(np.arange(len(merged)), size=args.n_samples, replace=False))
         merged = [merged[int(idx)] for idx in chosen]
+
+    normalize_sample_values(merged, args, num_covs)
 
     party_labels = np.array(["party2"] * len(merged), dtype=object)
     n_party1 = max(1, int(round(len(merged) * args.party1_frac)))

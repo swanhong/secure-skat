@@ -120,6 +120,8 @@ def write_manifest(args: argparse.Namespace, out_dataset: Path, config_out_dir: 
         "cov_sep": args.cov_sep or "",
         "pheno_vector_file": str(resolve_path(args.pheno_vector_file)) if args.pheno_vector_file else "",
         "cov_matrix_file": str(resolve_path(args.cov_matrix_file)) if args.cov_matrix_file else "",
+        "normalize_covariates": args.normalize_covariates,
+        "normalize_phenotype": args.normalize_phenotype,
         "n_samples": str(args.n_samples),
         "party1_frac": str(args.party1_frac),
         "seed": str(args.seed),

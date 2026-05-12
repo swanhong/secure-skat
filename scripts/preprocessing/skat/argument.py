@@ -80,6 +80,24 @@ def parse_args() -> argparse.Namespace:
         help="Covariate matrix already aligned to PSAM row order. Use with --pheno-vector-file.",
     )
     parser.add_argument(
+        "--normalize-covariates",
+        choices=("none", "max"),
+        default="none",
+        help=(
+            "Optional numeric covariate normalization after sample filtering. "
+            "'max' applies min-max scaling to each covariate column so values are in [0, 1]."
+        ),
+    )
+    parser.add_argument(
+        "--normalize-phenotype",
+        choices=("none", "max"),
+        default="none",
+        help=(
+            "Optional phenotype normalization after sample filtering. "
+            "'max' scales by the maximum absolute phenotype value."
+        ),
+    )
+    parser.add_argument(
         "--out-dataset",
         required=True,
         help="Output secure-skat dataset root, e.g. dataset/pgen_chr22_windows.",
