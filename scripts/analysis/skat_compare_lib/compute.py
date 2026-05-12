@@ -56,14 +56,15 @@ def compute_standard_manual_block(arg_G_parts: list[np.ndarray], arg_y_resid: np
     y_resid = np.asarray(arg_y_resid, dtype=float).reshape(-1)
     n_total = int(arg_n_total)
 
-    # Stack party matrices into G in R^(n x m).
+    # Stack party matrices into G in R^(n x m). G is already in the secure
+    # genotype orientation: 2 - ALT dosage for non-missing cells, and 0 for
+    # missing cells, matching GenoFileStream(replaceMissing=true).
     G = np.vstack(G_parts)
     if G.shape[0] != n_total:
         raise RuntimeError("Sample count mismatch while stacking block genotype matrix")
 
-    # Compute alternative-allele counts d in R^m and secure-oriented counts d_bar in R^m.
-    alt_dosage_sum_vec = G.sum(axis=0)
-    secure_dosage_sum_vec = (2.0 * n_total) - alt_dosage_sum_vec
+    # Compute secure-oriented dosage counts d_bar in R^m.
+    secure_dosage_sum_vec = G.sum(axis=0)
 
     # Compute p_bar = d_bar / (2n), p = 1 - p_bar, and w in R^m.
     p_bar_vec = secure_dosage_sum_vec / (2.0 * n_total)
@@ -71,8 +72,8 @@ def compute_standard_manual_block(arg_G_parts: list[np.ndarray], arg_y_resid: np
     beta_base_vec = np.maximum(p_vec, p_bar_vec)
     weight_vec = compute_beta_weight(beta_base_vec)
 
-    # Compute s = -G^T y_resid, dim(s) = m.
-    score_vec = -(G.T @ y_resid)
+    # Compute s = G^T y_resid, dim(s) = m.
+    score_vec = G.T @ y_resid
 
     # Aggregate q_skat_block = sum((w^2) * (s^2)) and q_burden_block = sum(w * s).
     q_skat_block_raw = float(np.sum((weight_vec * weight_vec) * (score_vec * score_vec)))
@@ -134,7 +135,7 @@ def compute_manual_results(arg_ctx: dict, arg_block_inputs: list[dict]) -> dict:
     # all-block and analysis-block raw totals.
     for block_input in arg_block_inputs:
         block_math = compute_manual_block(
-            block_input["local_alt_genotypes_by_party"],
+            block_input["local_secure_genotypes_by_party"],
             y_resid,
             n_total,
             plain_mode,

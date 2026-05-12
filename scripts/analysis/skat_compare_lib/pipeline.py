@@ -301,6 +301,11 @@ def export_block_matrix(arg_party_dir: Path, arg_block_index: int, arg_cache_dir
     }
 
 
+def raw_alt_to_secure_oriented(arg_raw_alt: np.ndarray) -> np.ndarray:
+    raw_alt = np.asarray(arg_raw_alt, dtype=float)
+    return np.where(np.isfinite(raw_alt), 2.0 - raw_alt, 0.0)
+
+
 def load_plain_blocks(arg_ctx: dict) -> list[dict]:
     block_inputs = []
     for block_index in arg_ctx["analysis_blocks"]:
@@ -313,7 +318,9 @@ def load_plain_blocks(arg_ctx: dict) -> list[dict]:
 
         variant_ids = list(party_exports[0]["variant_ids"])
         raw_paths_by_party = [party_export["raw_path"] for party_export in party_exports]
-        local_alt_genotypes_by_party = [np.nan_to_num(party_export["geno"], nan=0.0) for party_export in party_exports]
+        local_secure_genotypes_by_party = [
+            raw_alt_to_secure_oriented(party_export["geno"]) for party_export in party_exports
+        ]
 
         start_idx, end_idx = arg_ctx["block_offsets"][block_index - 1]
         positions = np.asarray(arg_ctx["all_positions"][start_idx:end_idx], dtype=int)
@@ -321,7 +328,7 @@ def load_plain_blocks(arg_ctx: dict) -> list[dict]:
             keep = arg_ctx["secure_qc_filter"][start_idx:end_idx]
             variant_ids = [variant_id for variant_id, keep_flag in zip(variant_ids, keep) if keep_flag]
             positions = positions[keep]
-            local_alt_genotypes_by_party = [G_part[:, keep] for G_part in local_alt_genotypes_by_party]
+            local_secure_genotypes_by_party = [G_part[:, keep] for G_part in local_secure_genotypes_by_party]
 
         block_inputs.append(
             {
@@ -329,7 +336,7 @@ def load_plain_blocks(arg_ctx: dict) -> list[dict]:
                 "raw_paths_by_party": raw_paths_by_party,
                 "variant_ids": variant_ids,
                 "positions": positions,
-                "local_alt_genotypes_by_party": local_alt_genotypes_by_party,
+                "local_secure_genotypes_by_party": local_secure_genotypes_by_party,
             }
         )
 

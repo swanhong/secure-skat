@@ -33,11 +33,11 @@ def compute_local_weight_burden_direct_total_block(
             raise RuntimeError("Residual vector length mismatch while slicing party-local block rows")
         offset += n_local
 
-        secure_dosage_sum_local = (2.0 * n_local) - G_part.sum(axis=0)
+        secure_dosage_sum_local = G_part.sum(axis=0)
         p_bar_local = secure_dosage_sum_local / (2.0 * n_total)
         p_local = 1.0 - p_bar_local
         weight_local = compute_beta_weight(np.maximum(p_local, p_bar_local))
-        score_local = -(G_part.T @ y_local)
+        score_local = G_part.T @ y_local
         burden_local = float(np.sum(weight_local * score_local))
 
         local_burden_terms.append(burden_local)
@@ -86,10 +86,10 @@ def compute_local_weight_burden_product_approx_block(
             raise RuntimeError("Residual vector length mismatch while slicing party-local block rows")
         offset += n_local
 
-        alt_dosage_sum_local = G_part.sum(axis=0)
-        x_local = alt_dosage_sum_local / (2.0 * n_total)
-        factor_local = np.power(1.0 - x_local, 24)
-        score_local = -(G_part.T @ y_local)
+        secure_dosage_sum_local = G_part.sum(axis=0)
+        p_bar_local = secure_dosage_sum_local / (2.0 * n_total)
+        factor_local = np.power(p_bar_local, 24)
+        score_local = G_part.T @ y_local
 
         if local_factor_vec is None:
             local_factor_vec = factor_local.copy()
@@ -103,7 +103,7 @@ def compute_local_weight_burden_product_approx_block(
                 "party_index": party_index,
                 "n_local": n_local,
                 "n_total": n_total,
-                "x_local": x_local,
+                "p_bar_local": p_bar_local,
                 "weight_factor_local": factor_local,
                 "score_local": score_local,
             }
