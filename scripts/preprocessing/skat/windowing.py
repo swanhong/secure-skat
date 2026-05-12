@@ -37,6 +37,7 @@ def read_source_variants(source_prefix: Path) -> list[dict[str, object]]:
         raise ValueError(f"No variants found in {pvar_path}")
 
     maf_by_id: dict[str, float] = {}
+    nonfinite_freq = 0
     with freq_path.open() as fh:
         header = None
         for line in fh:
@@ -59,6 +60,9 @@ def read_source_variants(source_prefix: Path) -> list[dict[str, object]]:
             if math.isfinite(af):
                 af = min(max(af, 0.0), 1.0)
                 maf_by_id[toks[id_idx]] = min(af, 1.0 - af)
+            else:
+                nonfinite_freq += 1
+                maf_by_id[toks[id_idx]] = float("nan")
 
     missing = 0
     for row in variants:
@@ -69,7 +73,15 @@ def read_source_variants(source_prefix: Path) -> list[dict[str, object]]:
         else:
             row["maf"] = maf
     if missing:
-        raise ValueError(f"PVAR/AFREQ variant ID mismatch for {missing} variants")
+        if missing == len(variants):
+            raise ValueError(f"PVAR/AFREQ variant ID mismatch for all {missing} variants")
+        print(
+            f"Warning: {missing} variants were absent from AFREQ and will be excluded from rare-variant selection"
+        )
+    if nonfinite_freq:
+        print(
+            f"Warning: {nonfinite_freq} variants had non-finite AFREQ values and will be excluded from rare-variant selection"
+        )
     return variants
 
 
