@@ -1,113 +1,24 @@
-package frand // import "lukechampine.com/frand"
+package frand
 
 import (
-	"crypto/rand"
+	crand "crypto/rand"
 	"encoding/binary"
 	"math"
 	"math/big"
+	"math/rand/v2"
 	"strconv"
 	"sync"
-
-	"github.com/aead/chacha20/chacha"
 )
-
-func erase(b []byte) {
-	// compiles to memclr
-	for i := range b {
-		b[i] = 0
-	}
-}
-
-func copyAndErase(dst, src []byte) int {
-	n := copy(dst, src)
-	erase(src[:n])
-	return n
-}
 
 // An RNG is a cryptographically-strong RNG constructed from the ChaCha stream
 // cipher.
 type RNG struct {
-	buf    []byte
-	n      int
-	rounds int
-	prev   []byte // Previous key used to fill in the current buffer (for caching purposes)
-}
-
-func (r *RNG) Marshal() []byte {
-	dat := make([]byte, chacha.KeySize+8) // prev + n + rounds
-
-	copy(dat, r.prev)
-	binary.LittleEndian.PutUint32(dat[chacha.KeySize:], uint32(r.n))
-	binary.LittleEndian.PutUint32(dat[chacha.KeySize+4:], uint32(r.rounds))
-
-	return dat
-}
-
-func Unmarshal(dat []byte, bufSize int) *RNG {
-	size := len(dat)
-
-	if size != chacha.KeySize+8 {
-		panic("frand: data provided to Unmarshal has invalid size")
-	}
-
-	seed := dat[:chacha.KeySize]
-	n := binary.LittleEndian.Uint32(dat[chacha.KeySize : chacha.KeySize+4])
-	rounds := binary.LittleEndian.Uint32(dat[chacha.KeySize+4:])
-
-	r := NewCustom(seed, bufSize, int(rounds))
-	r.Skip(int(n) - chacha.KeySize)
-
-	return r
+	r *rand.ChaCha8
 }
 
 // Read fills b with random data. It always returns len(b), nil.
-//
-// For performance reasons, calling Read once on a "large" buffer (larger than
-// the RNG's internal buffer) will produce different output than calling Read
-// multiple times on smaller buffers. If deterministic output is required,
-// clients should call Read in a loop; when copying to an io.Writer, use
-// io.CopyBuffer instead of io.Copy. Callers should also be aware that b is
-// xored with random data, not directly overwritten; this means that the new
-// contents of b depend on its previous contents.
 func (r *RNG) Read(b []byte) (int, error) {
-	if len(b) <= len(r.buf[r.n:]) {
-		// can fill b entirely from buffer
-		r.n += copyAndErase(b, r.buf[r.n:])
-	} else if len(b) <= len(r.buf[r.n:])+len(r.buf[chacha.KeySize:]) {
-		// b is larger than current buffer, but can be filled after a reseed
-		n := copy(b, r.buf[r.n:])
-		copy(r.prev, r.buf[:chacha.KeySize])
-		chacha.XORKeyStream(r.buf, r.buf, make([]byte, chacha.NonceSize), r.buf[:chacha.KeySize], r.rounds)
-		r.n = chacha.KeySize + copyAndErase(b[n:], r.buf[chacha.KeySize:])
-	} else {
-		// filling b would require multiple reseeds; instead, generate a
-		// temporary key, then write directly into b using that key
-		tmpKey := make([]byte, chacha.KeySize)
-		r.Read(tmpKey)
-		chacha.XORKeyStream(b, b, make([]byte, chacha.NonceSize), tmpKey, r.rounds)
-		erase(tmpKey)
-	}
-	return len(b), nil
-}
-
-// Same buffering behavior as Read but does not copy data
-func (r *RNG) Skip(nBytes int) (int, error) {
-	if nBytes <= len(r.buf[r.n:]) {
-		// can fill b entirely from buffer
-		r.n += nBytes
-	} else if nBytes <= len(r.buf[r.n:])+len(r.buf[chacha.KeySize:]) {
-		// b is larger than current buffer, but can be filled after a reseed
-		n := len(r.buf[r.n:])
-		copy(r.prev, r.buf[:chacha.KeySize])
-		chacha.XORKeyStream(r.buf, r.buf, make([]byte, chacha.NonceSize), r.buf[:chacha.KeySize], r.rounds)
-		r.n = chacha.KeySize + nBytes - n
-	} else {
-		// filling b would require multiple reseeds; instead, generate a
-		// temporary key, then write directly into b using that key
-		r.Skip(chacha.KeySize)
-	}
-
-	return nBytes, nil
+	return r.r.Read(b)
 }
 
 // Bytes is a helper function that allocates and returns n bytes of random data.
@@ -146,10 +57,8 @@ func (r *RNG) Uint64n(n uint64) uint64 {
 	//    n = math.MaxUint64/2 + 1 -> max = math.MaxUint64 - math.MaxUint64/2
 	// This gives an expected 2 tries before choosing a value < max.
 	max := math.MaxUint64 - math.MaxUint64%n
-	b := make([]byte, 8)
 again:
-	r.Read(b)
-	i := binary.LittleEndian.Uint64(b)
+	i := r.r.Uint64()
 	if i >= max {
 		goto again
 	}
@@ -169,7 +78,7 @@ func (r *RNG) Intn(n int) int {
 
 // BigIntn returns a uniform random *big.Int in [0,n). It panics if n <= 0.
 func (r *RNG) BigIntn(n *big.Int) *big.Int {
-	i, _ := rand.Int(r, n)
+	i, _ := crand.Int(r, n)
 	return i
 }
 
@@ -197,37 +106,24 @@ func (r *RNG) Shuffle(n int, swap func(i, j int)) {
 	}
 }
 
-// NewCustom returns a new RNG instance seeded with the provided entropy and
-// using the specified buffer size and number of ChaCha rounds. It panics if
-// len(seed) != 32, bufsize < 32, or rounds != 8, 12 or 20.
+// NewCustom returns a new RNG instance seeded with the provided entropy. It
+// panics if len(seed) != 32. The bufsize and rounds parameters are ignored.
 func NewCustom(seed []byte, bufsize int, rounds int) *RNG {
-	if len(seed) != chacha.KeySize {
+	if len(seed) != 32 {
 		panic("frand: invalid seed size")
-	} else if bufsize < chacha.KeySize {
-		panic("frand: bufsize must be at least 32")
-	} else if !(rounds == 8 || rounds == 12 || rounds == 20) {
-		panic("frand: rounds must be 8, 12, or 20")
 	}
-	buf := make([]byte, chacha.KeySize+bufsize)
-	chacha.XORKeyStream(buf, buf, make([]byte, chacha.NonceSize), seed, rounds)
-	return &RNG{
-		buf:    buf,
-		n:      chacha.KeySize,
-		rounds: rounds,
-		prev:   seed,
-	}
+	return &RNG{rand.NewChaCha8(([32]byte)(seed))}
 }
 
 // "master" RNG, seeded from crypto/rand; RNGs returned by New derive their seed
 // from this RNG. This means we only ever need to read system entropy a single
 // time, at startup.
 var masterRNG = func() *RNG {
-	seed := make([]byte, chacha.KeySize)
-	n, err := rand.Read(seed)
-	if err != nil || n != len(seed) {
+	var seed [32]byte
+	if _, err := crand.Read(seed[:]); err != nil {
 		panic("not enough system entropy to seed master RNG")
 	}
-	return NewCustom(seed, 1024, 12)
+	return &RNG{rand.NewChaCha8(seed)}
 }()
 var masterMu sync.Mutex
 
@@ -238,7 +134,7 @@ var masterMu sync.Mutex
 func New() *RNG {
 	masterMu.Lock()
 	defer masterMu.Unlock()
-	return NewCustom(masterRNG.Bytes(32), 1024, 12)
+	return &RNG{rand.NewChaCha8(masterRNG.Entropy256())}
 }
 
 // Global versions of each RNG method, leveraging a pool of RNGs.
@@ -334,3 +230,37 @@ var Reader rngReader
 type rngReader struct{}
 
 func (rngReader) Read(b []byte) (int, error) { return Read(b) }
+
+// A Source is a math/rand-compatible source of entropy. It is safe for
+// concurrent use by multiple goroutines.
+type Source struct {
+	rng *RNG
+	mu  sync.Mutex
+}
+
+// Seed uses the provided seed value to initialize the Source to a
+// deterministic state.
+func (s *Source) Seed(i int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var seed [32]byte
+	binary.LittleEndian.PutUint64(seed[:], uint64(i))
+	s.rng.r.Seed(seed)
+}
+
+// Int63 returns a non-negative random 63-bit integer as an int64.
+func (s *Source) Int63() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return int64(s.rng.Uint64n(1 << 63))
+}
+
+// Uint64 returns a random 64-bit integer.
+func (s *Source) Uint64() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rng.Uint64n(math.MaxUint64)
+}
+
+// NewSource returns a source for use with the math/rand package.
+func NewSource() *Source { return &Source{rng: New()} }

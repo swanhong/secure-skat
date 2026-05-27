@@ -10,7 +10,7 @@ import (
 	"github.com/hhcho/sfgwas/crypto"
 
 	"github.com/hhcho/sfgwas/mpc"
-	"github.com/ldsec/lattigo/v2/ckks"
+	"github.com/tuneinsight/lattigo/v6/core/rlwe"
 	"go.dedis.ch/onet/v3/log"
 
 	"gonum.org/v1/gonum/mat"
@@ -95,7 +95,7 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 		}
 
 		// Compute Householder vector from the current first column
-		var z, zloc *ckks.Ciphertext
+		var z, zloc *rlwe.Ciphertext
 		var uvec crypto.CipherVector
 
 		// Compute zloc and aggregate to get z
@@ -116,7 +116,7 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 
 		zSqrtSS, _ := mpcObj.SqrtAndSqrtInverse(zSS, useBoolean)
 
-		var ssIn *ckks.Ciphertext
+		var ssIn *rlwe.Ciphertext
 		if pid > 0 && upid == pid {
 			ssIn = uvec[ctid]
 		}
@@ -201,14 +201,10 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 			vvTA := DCMatMulAAtB(cryptoParams, mpcObj, vMat, A, nrowsAll, ncolCurr, fn)
 
 			// fmt.Println("Finished matrix multiplication")
-			cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-				for c := range A {
-					for ci := range A[c] {
-						eval.MultByConstAndAdd(vvTA[c][ci], -2*invN, A[c][ci])
-					}
-				}
-				return nil
-			})
+			for c := range A {
+				scaled := crypto.CMultConstRescale(cryptoParams, vvTA[c], -2*invN, false)
+				A[c] = crypto.CAdd(cryptoParams, A[c], scaled)
+			}
 
 			A = mpcObj.Network.BootstrapMatAll(cryptoParams, A)
 
@@ -303,12 +299,8 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 					} else {
 						scalar = invN
 					}
-					cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-						for ci := range vvTQ[c] {
-							eval.MultByConstAndAdd(vvTQ[c][ci], -2*scalar, Q[j+c][ci])
-						}
-						return nil
-					})
+					scaled := crypto.CMultConstRescale(cryptoParams, vvTQ[c], -2*scalar, false)
+					Q[j+c] = crypto.CAdd(cryptoParams, Q[j+c], scaled)
 				}
 			}
 

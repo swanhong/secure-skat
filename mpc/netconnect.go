@@ -12,9 +12,7 @@ import (
 
 	"github.com/aead/chacha20/chacha"
 	"github.com/hhcho/frand"
-	"github.com/ldsec/lattigo/v2/ckks"
-	"github.com/ldsec/lattigo/v2/dckks"
-	"github.com/ldsec/lattigo/v2/ring"
+	ckksv6 "github.com/tuneinsight/lattigo/v6/schemes/ckks"
 )
 
 type Network struct {
@@ -22,9 +20,7 @@ type Network struct {
 	hubPid     int
 	NumParties int
 
-	crpGen       *ring.UniformSampler
-	dckksContext *dckks.Context
-	Rand         *Random
+	Rand *Random
 
 	// Paralellization: socket between every machine, thread pair
 
@@ -171,6 +167,10 @@ func InitializeParallelPRG(sharedKeysPath string, network []*Network, pid int, n
 	}
 }
 
+// SetMHEParams is kept as a compatibility hook for the existing initialization
+// flow. The v6 MHE path no longer needs a precomputed v2-style context here.
+func (netObj *Network) SetMHEParams(_ *ckksv6.Parameters) {}
+
 func initNetworkForThread(bindingIP string, servers map[string]Server, pid int, nparties, thread int) *Network {
 	conns := make(map[int]net.Conn)
 	listeners := make(map[int]net.Listener)
@@ -230,22 +230,6 @@ func initNetworkForThread(bindingIP string, servers map[string]Server, pid int, 
 		loggingActive: true,
 	}
 
-}
-
-func (netObj *Network) SetMHEParams(params *ckks.Parameters) {
-	dckksContext := dckks.NewContext(params)
-
-	seed := make([]byte, chacha.KeySize)
-	netObj.Rand.SwitchPRG(-1)
-	netObj.Rand.RandRead(seed)
-	netObj.Rand.RestorePRG()
-
-	seedPrng := frand.NewCustom(seed, bufferSize, 20)
-
-	crpGen := ring.NewUniformSamplerWithBasePrng(seedPrng, dckksContext.RingQP)
-
-	netObj.crpGen = crpGen
-	netObj.dckksContext = dckksContext
 }
 
 /* Reading and writing from channel */
@@ -408,8 +392,4 @@ func (netObj *Network) SetNParty(np int) {
 
 func (netObj *Network) GetNParty() int {
 	return netObj.NumParties
-}
-
-func (netObj *Network) GetCRPGen() *ring.UniformSampler {
-	return netObj.crpGen
 }

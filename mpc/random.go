@@ -92,11 +92,11 @@ func (rand *Random) CurPRG() *frand.RNG {
 }
 
 func (rand *Random) ExportPRG() []byte {
-	return rand.curPRG.Marshal()
+	return nil
 }
 
 func (rand *Random) ImportPRG(buf []byte, prgId int) {
-	rand.prgTable[prgId] = frand.Unmarshal(buf, bufferSize)
+	panic("ImportPRG is not supported with the current frand version")
 }
 
 func (rand *Random) RandRead(buf []byte) {

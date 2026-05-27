@@ -413,16 +413,16 @@ func TestSKATBasicOperations(t *testing.T) {
 		os.MkdirAll(prot.GetConfig().CacheDir, 0755)
 		// We deliberately don't remove this dir automatically
 
-			assocTest := prot.InitAssociationTests(nil)
-			ynew := assocTest.ComputeSKATStep1Residuals()
-			Y := crypto.CipherMatrix{ynew[0]}
-			if pid == 0 {
-				Y = crypto.CipherMatrix{nil}
-			}
-			blockData := assocTest.ComputeSKATStep2LoadBlockScore(0, Y)
-			S_out := blockData.ScoreVec
+		assocTest := prot.InitAssociationTests(nil)
+		ynew := assocTest.ComputeSKATStep1Residuals()
+		Y := crypto.CipherMatrix{ynew[0]}
+		if pid == 0 {
+			Y = crypto.CipherMatrix{nil}
+		}
+		blockData := assocTest.ComputeSKATStep2LoadBlockScore(0, Y)
+		S_out := blockData.ScoreVec
 
-			if pid == 1 {
+		if pid == 1 {
 			// Decrypt and compare score vector for the first block
 			var qr mat.QR
 			qr.Factorize(fullX)
@@ -442,8 +442,8 @@ func TestSKATBasicOperations(t *testing.T) {
 
 			// Assuming GenoBlockMult processes the full dataset here in the plain
 			// However, S_out[0] is aggregated across parties via MPC.
-				pv_s0 := mpcObj.Network.CollectiveDecryptVec(cps, S_out, 1)
-				pt_s0 := crypto.DecodeFloatVector(cps, pv_s0)
+			pv_s0 := mpcObj.Network.CollectiveDecryptVec(cps, S_out, 1)
+			pt_s0 := crypto.DecodeFloatVector(cps, pv_s0)
 
 			// We skip the exact math check for S_out since it depends on the plain genotype matrix,
 			// which we haven't loaded in plain here. The goal is to ensure it runs without panics
@@ -452,11 +452,11 @@ func TestSKATBasicOperations(t *testing.T) {
 			if pt_s0[0] != 0 {
 				fmt.Println("TestSKAT_Step1_ScoreVector verified.")
 			}
-			} else if pid > 0 {
-				if S_out != nil {
-					mpcObj.Network.CollectiveDecryptVec(cps, S_out, 1)
-				}
-			} else {
+		} else if pid > 0 {
+			if S_out != nil {
+				mpcObj.Network.CollectiveDecryptVec(cps, S_out, 1)
+			}
+		} else {
 			// Party 0 must participate in collective decryption
 			mpcObj.Network.CollectiveDecryptVec(cps, nil, 1)
 		}
@@ -510,8 +510,20 @@ func TestSecureSKATEndToEnd(t *testing.T) {
 	prot.SKAT()
 
 	// Print final confirmation
-	if prot.GetConfig().NumMainParties > 0 {
+	if pid > 0 {
 		outPath := prot.OutPath("skat_out.txt")
+		data, err := os.ReadFile(outPath)
+		if err != nil {
+			t.Fatalf("failed to read SKAT output %s: %v", outPath, err)
+		}
+		var skatQ float64
+		if _, err := fmt.Sscanf(string(data), "%f", &skatQ); err != nil {
+			t.Fatalf("failed to parse SKAT output %s: %v", outPath, err)
+		}
+		if math.IsNaN(skatQ) || math.IsInf(skatQ, 0) || skatQ < 0 {
+			t.Fatalf("invalid SKAT Q statistic: %e", skatQ)
+		}
+
 		fmt.Printf("\n======================================================\n")
 		fmt.Printf("Secure SKAT End-to-End verified!\n")
 		fmt.Printf("Final output is saved in: %s\n", outPath)

@@ -14,7 +14,7 @@ import (
 
 	"github.com/hhcho/sfgwas/crypto"
 	"github.com/hhcho/sfgwas/mpc"
-	"github.com/ldsec/lattigo/v2/ckks"
+	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 	"gonum.org/v1/gonum/mat"
 )
 
@@ -436,9 +436,13 @@ func SaveMatrixComplexPartsToFile(cps *crypto.CryptoParams, mpcObj *mpc.MPC, cm 
 	imagM := mat.NewDense(len(cm), nElemCol, nil)
 	for i := range pm {
 		var vals []complex128
-		cps.WithEncoder(func(encoder ckks.Encoder) error {
+		cps.WithEncoder(func(encoder *ckks.Encoder) error {
 			for _, plaintext := range pm[i] {
-				vals = append(vals, encoder.Decode(plaintext, cps.Params.LogSlots())...)
+				decoded := make([]complex128, cps.GetSlots())
+				if err := encoder.Decode(plaintext, decoded); err != nil {
+					return err
+				}
+				vals = append(vals, decoded...)
 			}
 			return nil
 		})

@@ -9,8 +9,7 @@ import (
 
 	mpc_core "github.com/hhcho/mpc-core"
 	"github.com/hhcho/sfgwas/crypto"
-
-	"github.com/ldsec/lattigo/v2/ckks"
+	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 )
 
 type PCA struct {
@@ -259,13 +258,27 @@ func (pca *PCA) DistributedPCA() crypto.CipherMatrix {
 					meanWeight := 2*int(posCount[b]) - int(bucketCount[b])
 
 					// Compute (Q * (1/bucketCount) - XMean) * XStdInv
-					cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+					cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
 						for i := range Q[b] {
-							eval.MultByConstAndAdd(XMean[i], -meanWeight, Q[b][i])
-							eval.MulRelin(Q[b][i], pt[0], Q[b][i])
-							eval.Rescale(Q[b][i], cryptoParams.Params.Scale(), Q[b][i])
-							eval.MulRelin(Q[b][i], XStdInv[i], Q[b][i])
-							eval.Rescale(Q[b][i], cryptoParams.Params.Scale(), Q[b][i])
+							tmp, err := eval.MulNew(XMean[i], -meanWeight)
+							if err != nil {
+								return err
+							}
+							if err := eval.Add(Q[b][i], tmp, Q[b][i]); err != nil {
+								return err
+							}
+							if err := eval.MulRelin(Q[b][i], pt[0], Q[b][i]); err != nil {
+								return err
+							}
+							if err := eval.Rescale(Q[b][i], Q[b][i]); err != nil {
+								return err
+							}
+							if err := eval.MulRelin(Q[b][i], XStdInv[i], Q[b][i]); err != nil {
+								return err
+							}
+							if err := eval.Rescale(Q[b][i], Q[b][i]); err != nil {
+								return err
+							}
 						}
 						return nil
 					})
@@ -413,9 +426,8 @@ func (pca *PCA) DistributedPCA() crypto.CipherMatrix {
 
 					ct := crypto.Mask(cryptoParams, iprod, slotid, false)
 
-					cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-						eval.Add(ct, Zloc[ctid], Zloc[ctid])
-						return nil
+					cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+						return eval.Add(ct, Zloc[ctid], Zloc[ctid])
 					})
 
 					if i == j {
@@ -478,9 +490,11 @@ func (pca *PCA) DistributedPCA() crypto.CipherMatrix {
 
 				cv := crypto.CMultScalar(cryptoParams, Q[c], elem)
 
-				cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+				cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
 					for i := range cv {
-						eval.Add(cv[i], Qpc[r][i], Qpc[r][i])
+						if err := eval.Add(cv[i], Qpc[r][i], Qpc[r][i]); err != nil {
+							return err
+						}
 					}
 					return nil
 				})

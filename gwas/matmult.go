@@ -11,13 +11,13 @@ import (
 	"go.dedis.ch/onet/v3/log"
 
 	"github.com/hhcho/sfgwas/crypto"
-	"github.com/ldsec/lattigo/v2/ring"
 
 	"math"
 
 	"github.com/hhcho/sfgwas/mpc"
-	"github.com/ldsec/lattigo/v2/ckks"
-
+	"github.com/tuneinsight/lattigo/v6/core/rlwe"
+	"github.com/tuneinsight/lattigo/v6/ring"
+	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 	"gonum.org/v1/gonum/mat"
 )
 
@@ -51,9 +51,11 @@ func QXLazyNormStream(cps *crypto.CryptoParams, mpcObj *mpc.MPC, Q crypto.Cipher
 
 	// Compute (Q * S) * X - ((Q * S) * m) * 1^T
 	for i := range QS {
-		cps.WithEvaluator(func(eval ckks.Evaluator) error {
+		cps.WithEvaluator(func(eval *ckks.Evaluator) error {
 			for j := range out[i] {
-				eval.Sub(out[i][j], QSm[i], out[i][j])
+				if err := eval.Sub(out[i][j], QSm[i], out[i][j]); err != nil {
+					return err
+				}
 			}
 			return nil
 		})
@@ -97,9 +99,11 @@ func QXtLazyNormStream(cps *crypto.CryptoParams, mpcObj *mpc.MPC, Q crypto.Ciphe
 
 		Q1m := crypto.CMultScalar(cps, XMean, rowSum)
 
-		cps.WithEvaluator(func(eval ckks.Evaluator) error {
+		cps.WithEvaluator(func(eval *ckks.Evaluator) error {
 			for j := range out[i] {
-				eval.Sub(out[i][j], Q1m[j], out[i][j])
+				if err := eval.Sub(out[i][j], Q1m[j], out[i][j]); err != nil {
+					return err
+				}
 			}
 			return nil
 		})
@@ -168,7 +172,7 @@ func DCMatMulAAtBPlain(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A cry
 	// Initialize out with correct scale for subsequent additions
 	for i := range out {
 		for j := range out[i] {
-			out[i][j].SetScale(cryptoParams.Params.Scale())
+			out[i][j].Scale = cryptoParams.Params.DefaultScale()
 		}
 	}
 
@@ -194,7 +198,7 @@ func DCMatMulAAtBPlain(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A cry
 			}
 			levelA := A[c][0].Level()
 			if cTQ[col].Level() > levelA {
-				cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+				cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
 					eval.DropLevel(cTQ[col], cTQ[col].Level()-levelA)
 					return nil
 				})
@@ -213,8 +217,8 @@ func DCMatMulAAtBPlain(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A cry
 						continue
 					}
 					if ct.Level() > ctq.Level() {
-						ctCopy := ct.CopyNew().Ciphertext()
-						cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+						ctCopy := ct.CopyNew()
+						cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
 							eval.DropLevel(ctCopy, ctCopy.Level()-ctq.Level())
 							return nil
 						})
@@ -247,7 +251,7 @@ func DCMatMulAAtBPlainWithIntmd(cryptoParams *crypto.CryptoParams, mpcObj *mpc.M
 	// Initialize out with correct scale for subsequent additions
 	for i := range out {
 		for j := range out[i] {
-			out[i][j].SetScale(cryptoParams.Params.Scale())
+			out[i][j].Scale = cryptoParams.Params.DefaultScale()
 		}
 	}
 
@@ -287,7 +291,7 @@ func DCMatMulAAtBPlainWithIntmd(cryptoParams *crypto.CryptoParams, mpcObj *mpc.M
 			}
 			levelA := A[c][0].Level()
 			if cTQ[col].Level() > levelA {
-				cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+				cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
 					eval.DropLevel(cTQ[col], cTQ[col].Level()-levelA)
 					return nil
 				})
@@ -306,8 +310,8 @@ func DCMatMulAAtBPlainWithIntmd(cryptoParams *crypto.CryptoParams, mpcObj *mpc.M
 						continue
 					}
 					if ct.Level() > ctq.Level() {
-						ctCopy := ct.CopyNew().Ciphertext()
-						cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+						ctCopy := ct.CopyNew()
+						cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
 							eval.DropLevel(ctCopy, ctCopy.Level()-ctq.Level())
 							return nil
 						})
@@ -459,15 +463,16 @@ func ReduceAndAddUint128(in []uint128, out []uint64, qInv, q uint64) {
 
 func ModularReduceV1(cryptoParams *crypto.CryptoParams, cva CipherVectorAccV1, outScale float64) crypto.CipherVector {
 	N := cryptoParams.Params.N()
-	ringQ, _ := ring.NewRing(N, cryptoParams.Params.Qi())
+	ringQ, _ := ring.NewRing(N, cryptoParams.Params.Q())
 
 	out := make(crypto.CipherVector, len(cva))
 	for i := range out {
-		ct := ckks.NewCiphertext(cryptoParams.Params, 1, 1, outScale)
-		ReduceAndAddUint128(cva[i].acc00, ct.Value()[0].Coeffs[0], ringQ.MredParams[0], ringQ.Modulus[0])
-		ReduceAndAddUint128(cva[i].acc01, ct.Value()[1].Coeffs[0], ringQ.MredParams[0], ringQ.Modulus[0])
-		ReduceAndAddUint128(cva[i].acc10, ct.Value()[0].Coeffs[1], ringQ.MredParams[1], ringQ.Modulus[1])
-		ReduceAndAddUint128(cva[i].acc11, ct.Value()[1].Coeffs[1], ringQ.MredParams[1], ringQ.Modulus[1])
+		ct := ckks.NewCiphertext(cryptoParams.Params, 1, 1)
+		ct.Scale = rlwe.NewScale(outScale)
+		ReduceAndAddUint128(cva[i].acc00, ct.Value[0].Coeffs[0], ringQ.SubRings[0].MRedConstant, ringQ.SubRings[0].Modulus)
+		ReduceAndAddUint128(cva[i].acc01, ct.Value[1].Coeffs[0], ringQ.SubRings[0].MRedConstant, ringQ.SubRings[0].Modulus)
+		ReduceAndAddUint128(cva[i].acc10, ct.Value[0].Coeffs[1], ringQ.SubRings[1].MRedConstant, ringQ.SubRings[1].Modulus)
+		ReduceAndAddUint128(cva[i].acc11, ct.Value[1].Coeffs[1], ringQ.SubRings[1].MRedConstant, ringQ.SubRings[1].Modulus)
 		out[i] = ct
 	}
 
@@ -476,24 +481,21 @@ func ModularReduceV1(cryptoParams *crypto.CryptoParams, cva CipherVectorAccV1, o
 
 func ModularReduceV2(cryptoParams *crypto.CryptoParams, cva CipherVectorAccV2, outScale float64) crypto.CipherVector {
 	N := cryptoParams.Params.N()
-	ringQ, _ := ring.NewRing(N, cryptoParams.Params.Qi())
+	ringQ, _ := ring.NewRing(N, cryptoParams.Params.Q())
 	level := len(cva.val[0].acc0)
 
 	out := make(crypto.CipherVector, len(cva.val))
 	for i := range out {
-		ct := ckks.NewCiphertext(cryptoParams.Params, 1, level-1, outScale)
+		ct := ckks.NewCiphertext(cryptoParams.Params, 1, level-1)
+		ct.Scale = rlwe.NewScale(outScale)
 		for l := 0; l < level; l++ {
-			mredParams := ringQ.MredParams[l]
-			qi := ringQ.Modulus[l]
-			ReduceAndAddUint128(cva.val[i].acc0[l], ct.Value()[0].Coeffs[l], mredParams, qi)
-			ReduceAndAddUint128(cva.val[i].acc1[l], ct.Value()[1].Coeffs[l], mredParams, qi)
+			mredParams := ringQ.SubRings[l].MRedConstant
+			qi := ringQ.SubRings[l].Modulus
+			ReduceAndAddUint128(cva.val[i].acc0[l], ct.Value[0].Coeffs[l], mredParams, qi)
+			ReduceAndAddUint128(cva.val[i].acc1[l], ct.Value[1].Coeffs[l], mredParams, qi)
 		}
-		err := cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-			return eval.Reduce(ct, ct)
-		})
-		if err != nil {
-			panic(err)
-		}
+		ringQ.AtLevel(level-1).Reduce(ct.Value[0], ct.Value[0])
+		ringQ.AtLevel(level-1).Reduce(ct.Value[1], ct.Value[1])
 		out[i] = ct
 	}
 	return out
@@ -503,10 +505,10 @@ func ModularReduceV2(cryptoParams *crypto.CryptoParams, cva CipherVectorAccV2, o
 func CPMultAccWithoutMRedV1(cryptoParams *crypto.CryptoParams, X crypto.CipherVector, Y crypto.PlainVector, Acc CipherVectorAccV1) {
 	for i := range X {
 		if X[i] != nil && Y[i] != nil {
-			MulCoeffsAndAdd128(X[i].Value()[0].Coeffs[0], Y[i].Value()[0].Coeffs[0], Acc[i].acc00)
-			MulCoeffsAndAdd128(X[i].Value()[1].Coeffs[0], Y[i].Value()[0].Coeffs[0], Acc[i].acc01)
-			MulCoeffsAndAdd128(X[i].Value()[0].Coeffs[1], Y[i].Value()[0].Coeffs[1], Acc[i].acc10)
-			MulCoeffsAndAdd128(X[i].Value()[1].Coeffs[1], Y[i].Value()[0].Coeffs[1], Acc[i].acc11)
+			MulCoeffsAndAdd128(X[i].Value[0].Coeffs[0], Y[i].Value.Coeffs[0], Acc[i].acc00)
+			MulCoeffsAndAdd128(X[i].Value[1].Coeffs[0], Y[i].Value.Coeffs[0], Acc[i].acc01)
+			MulCoeffsAndAdd128(X[i].Value[0].Coeffs[1], Y[i].Value.Coeffs[1], Acc[i].acc10)
+			MulCoeffsAndAdd128(X[i].Value[1].Coeffs[1], Y[i].Value.Coeffs[1], Acc[i].acc11)
 		}
 	}
 }
@@ -525,8 +527,8 @@ func CPMultAccWithoutMRedV2(X crypto.CipherVector, Y crypto.PlainVector, Acc Cip
 
 		if X[xi] != nil && Y[yi] != nil {
 			for l := 0; l < len(Acc.val[i].acc0); l++ {
-				MulCoeffsAndAdd128(X[xi].Value()[0].Coeffs[l], Y[yi].Value()[0].Coeffs[l], Acc.val[i].acc0[l])
-				MulCoeffsAndAdd128(X[xi].Value()[1].Coeffs[l], Y[yi].Value()[0].Coeffs[l], Acc.val[i].acc1[l])
+				MulCoeffsAndAdd128(X[xi].Value[0].Coeffs[l], Y[yi].Value.Coeffs[l], Acc.val[i].acc0[l])
+				MulCoeffsAndAdd128(X[xi].Value[1].Coeffs[l], Y[yi].Value.Coeffs[l], Acc.val[i].acc1[l])
 			}
 		}
 	}
@@ -534,20 +536,20 @@ func CPMultAccWithoutMRedV2(X crypto.CipherVector, Y crypto.PlainVector, Acc Cip
 
 func ToMontgomeryForm(cryptoParams *crypto.CryptoParams, pt crypto.PlainVector) {
 	N := cryptoParams.Params.N()
-	ringQ, _ := ring.NewRing(N, cryptoParams.Params.Qi())
+	ringQ, _ := ring.NewRing(N, cryptoParams.Params.Q())
 	for i := range pt {
 		if pt[i] != nil {
-			MFormLvl(ringQ, pt[i].Level(), pt[i].Value()[0], pt[i].Value()[0])
+			MFormLvl(ringQ, pt[i].Level(), pt[i].Value, pt[i].Value)
 		}
 	}
 }
 
-func MFormLvl(r *ring.Ring, level int, p1, p2 *ring.Poly) {
+func MFormLvl(r *ring.Ring, level int, p1, p2 ring.Poly) {
 	for i := 0; i < level+1; i++ {
-		qi := r.Modulus[i]
-		bredParams := r.BredParams[i]
+		qi := r.SubRings[i].Modulus
+		bredParams := r.SubRings[i].BRedConstant
 		p1tmp, p2tmp := p1.Coeffs[i], p2.Coeffs[i]
-		for j := 0; j < r.N; j = j + 8 {
+		for j := 0; j < r.N(); j = j + 8 {
 
 			x := (*[8]uint64)(unsafe.Pointer(&p1tmp[j]))
 			z := (*[8]uint64)(unsafe.Pointer(&p2tmp[j]))
@@ -564,7 +566,7 @@ func MFormLvl(r *ring.Ring, level int, p1, p2 *ring.Poly) {
 	}
 }
 
-func MForm(a, q uint64, u []uint64) (r uint64) {
+func MForm(a, q uint64, u [2]uint64) (r uint64) {
 	mhi, _ := bits.Mul64(a, u[1])
 	r = -(a*u[0] + mhi) * q
 	if r >= q {
@@ -689,7 +691,7 @@ func CPMatMult2F(cryptoParams *crypto.CryptoParams, A crypto.CipherMatrix, B *ma
 				cipherVec[k] = ct
 			}
 
-			outScale = ct.Scale() * plainVec[0].Scale()
+			outScale = ct.Scale.Float64() * plainVec[0].Scale.Float64()
 
 			CPMultAccWithoutMRedV1(cryptoParams, cipherVec, plainVec, accCache[i])
 		}
@@ -699,7 +701,7 @@ func CPMatMult2F(cryptoParams *crypto.CryptoParams, A crypto.CipherMatrix, B *ma
 	for i := range out {
 		out[i] = ModularReduceV1(cryptoParams, accCache[i], outScale)
 	}
-	fmt.Println("Out Scale (log2)", math.Log2(out[0][0].Scale()), "Out Level", out[0][0].Level())
+	fmt.Println("Out Scale (log2)", math.Log2(out[0][0].Scale.Float64()), "Out Level", out[0][0].Level())
 
 	return out
 }
@@ -828,10 +830,10 @@ func EncodeDiag(cryptoParams *crypto.CryptoParams, X BlockVector, index int, nro
 		success := GetDiag(buf, X[i], slots, index)
 		if success {
 			anyFlag = true
-			plaintext := ckks.NewPlaintext(cryptoParams.Params, level, cryptoParams.Params.Scale())
-			cryptoParams.WithEncoder(func(encoder ckks.Encoder) error {
-				encoder.EncodeNTT(plaintext, convertToComplex128WithRot(buf, nrot), cryptoParams.Params.LogSlots())
-				return nil
+			plaintext := ckks.NewPlaintext(cryptoParams.Params, level)
+			plaintext.Scale = cryptoParams.Params.DefaultScale()
+			cryptoParams.WithEncoder(func(encoder *ckks.Encoder) error {
+				return encoder.Encode(convertToComplex128WithRot(buf, nrot), plaintext)
 			})
 			out[i] = plaintext
 		} else {
@@ -842,7 +844,7 @@ func EncodeDiag(cryptoParams *crypto.CryptoParams, X BlockVector, index int, nro
 	return out, anyFlag
 }
 
-func EncodeDiagWithEncoder(cryptoParams *crypto.CryptoParams, X BlockVector, index int, nrot int, level int, enc ckks.Encoder) (crypto.PlainVector, bool) {
+func EncodeDiagWithEncoder(cryptoParams *crypto.CryptoParams, X BlockVector, index int, nrot int, level int, enc *ckks.Encoder) (crypto.PlainVector, bool) {
 	slots := cryptoParams.GetSlots()
 
 	buf := make([]float64, slots)
@@ -853,8 +855,11 @@ func EncodeDiagWithEncoder(cryptoParams *crypto.CryptoParams, X BlockVector, ind
 		success := GetDiag(buf, X[i], slots, index)
 		if success {
 			anyFlag = true
-			plaintext := ckks.NewPlaintext(cryptoParams.Params, level, cryptoParams.Params.Scale())
-			enc.EncodeNTT(plaintext, convertToComplex128WithRot(buf, nrot), cryptoParams.Params.LogSlots())
+			plaintext := ckks.NewPlaintext(cryptoParams.Params, level)
+			plaintext.Scale = cryptoParams.Params.DefaultScale()
+			if err := enc.Encode(convertToComplex128WithRot(buf, nrot), plaintext); err != nil {
+				panic(err)
+			}
 			out[i] = plaintext
 		} else {
 			out[i] = nil
@@ -945,7 +950,7 @@ func CPMatMult3(cryptoParams *crypto.CryptoParams, A crypto.CipherMatrix, B *mat
 	}
 
 	out := make(crypto.CipherMatrix, s)
-	outScale := A[0][0].Scale() * cryptoParams.Params.Scale()
+	outScale := A[0][0].Scale.Float64() * cryptoParams.Params.DefaultScale().Float64()
 	for i := range out {
 		out[i] = ModularReduceV1(cryptoParams, accCache[i], outScale)
 	}
@@ -956,7 +961,7 @@ func CPMatMult3(cryptoParams *crypto.CryptoParams, A crypto.CipherMatrix, B *mat
 func CPMatMult4(cryptoParams *crypto.CryptoParams, A crypto.CipherMatrix, B *mat.Dense, maxLevel int) crypto.CipherMatrix {
 
 	s := len(A)
-	outScale := A[0][0].Scale() * cryptoParams.Params.Scale()
+	outScale := A[0][0].Scale.Float64() * cryptoParams.Params.DefaultScale().Float64()
 	slots := cryptoParams.GetSlots()
 	d := int(math.Ceil(math.Sqrt(float64(slots))))
 	blockB := ToBlockMatrix(B, slots)
@@ -1150,7 +1155,7 @@ func MatMult4StreamPreprocess(cryptoParams *crypto.CryptoParams, gfs *GenoFileSt
 			go func(thread int) {
 				defer encoderGroup.Done()
 
-				enc := ckks.NewEncoderBig(cryptoParams.Params, cryptoParams.GetPrec())
+				enc := ckks.NewEncoder(cryptoParams.Params, cryptoParams.GetPrec())
 
 				for shift := range jobChannels[thread] {
 					_, giant := shift%d, shift/d
@@ -1176,7 +1181,7 @@ func MatMult4StreamPreprocess(cryptoParams *crypto.CryptoParams, gfs *GenoFileSt
 
 func MatMult4StreamCompute(cryptoParams *crypto.CryptoParams, A crypto.CipherMatrix, maxLevel int, cacheFilePrefix string) crypto.CipherMatrix {
 	s := len(A)
-	outScale := A[0][0].Scale() * cryptoParams.Params.Scale()
+	outScale := A[0][0].Scale.Float64() * cryptoParams.Params.DefaultScale().Float64()
 	slots := cryptoParams.GetSlots()
 	d := int(math.Ceil(math.Sqrt(float64(slots))))
 	nproc := runtime.GOMAXPROCS(0)
@@ -1241,7 +1246,7 @@ func MatMult4StreamCompute(cryptoParams *crypto.CryptoParams, A crypto.CipherMat
 			go func(thread int) {
 				defer workerGroup.Done()
 
-				eva := ckks.NewEvaluator(cryptoParams.Params, ckks.EvaluationKey{Rlk: cryptoParams.Rlk, Rtks: cryptoParams.RotKs})
+				eva := ckks.NewEvaluator(cryptoParams.Params, rlwe.NewMemEvaluationKeySet(cryptoParams.Rlk, cryptoParams.RotKs...))
 
 				for baby := range jobChannels[thread] {
 					for i := range A {
@@ -1331,7 +1336,7 @@ func MatMult4StreamCompute(cryptoParams *crypto.CryptoParams, A crypto.CipherMat
 			go func(thread int) {
 				defer wg.Done()
 
-				eva := ckks.NewEvaluator(cryptoParams.Params, ckks.EvaluationKey{Rlk: cryptoParams.Rlk, Rtks: cryptoParams.RotKs})
+				eva := ckks.NewEvaluator(cryptoParams.Params, rlwe.NewMemEvaluationKeySet(cryptoParams.Rlk, cryptoParams.RotKs...))
 
 				for l := range jobChannels[thread] {
 					cv := ModularReduceV2(cryptoParams, accCache[i][l], outScale)
@@ -1352,7 +1357,7 @@ func MatMult4StreamCompute(cryptoParams *crypto.CryptoParams, A crypto.CipherMat
 		go func() {
 			defer aggGroup.Done()
 
-			eva := ckks.NewEvaluator(cryptoParams.Params, ckks.EvaluationKey{Rlk: cryptoParams.Rlk, Rtks: cryptoParams.RotKs})
+			eva := ckks.NewEvaluator(cryptoParams.Params, rlwe.NewMemEvaluationKeySet(cryptoParams.Rlk, cryptoParams.RotKs...))
 
 			for cv := range aggChannel {
 				for j := range cv {
@@ -1378,7 +1383,7 @@ func MatMult4Stream(cryptoParams *crypto.CryptoParams, A crypto.CipherMatrix, gf
 	}
 
 	s := len(A)
-	outScale := A[0][0].Scale() * cryptoParams.Params.Scale()
+	outScale := A[0][0].Scale.Float64() * cryptoParams.Params.DefaultScale().Float64()
 	slots := cryptoParams.GetSlots()
 	d := int(math.Ceil(math.Sqrt(float64(slots))))
 
@@ -1502,7 +1507,7 @@ func MatMult4Stream(cryptoParams *crypto.CryptoParams, A crypto.CipherMatrix, gf
 			go func(thread int) {
 				defer workerGroup.Done()
 
-				eva := ckks.NewEvaluator(cryptoParams.Params, ckks.EvaluationKey{Rlk: cryptoParams.Rlk, Rtks: cryptoParams.RotKs})
+				eva := ckks.NewEvaluator(cryptoParams.Params, rlwe.NewMemEvaluationKeySet(cryptoParams.Rlk, cryptoParams.RotKs...))
 
 				for baby := range jobChannels[thread] {
 					for i := range A {
@@ -1552,7 +1557,7 @@ func MatMult4Stream(cryptoParams *crypto.CryptoParams, A crypto.CipherMatrix, gf
 			go func(thread int) {
 				defer workerGroup.Done()
 
-				enc := ckks.NewEncoderBig(cryptoParams.Params, cryptoParams.GetPrec())
+				enc := ckks.NewEncoder(cryptoParams.Params, cryptoParams.GetPrec())
 
 				for shift := range shiftChannels[thread] {
 					baby, giant := shift%d, shift/d
@@ -1600,7 +1605,7 @@ func MatMult4Stream(cryptoParams *crypto.CryptoParams, A crypto.CipherMatrix, gf
 			go func(thread int) {
 				defer wg.Done()
 
-				eva := ckks.NewEvaluator(cryptoParams.Params, ckks.EvaluationKey{Rlk: cryptoParams.Rlk, Rtks: cryptoParams.RotKs})
+				eva := ckks.NewEvaluator(cryptoParams.Params, rlwe.NewMemEvaluationKeySet(cryptoParams.Rlk, cryptoParams.RotKs...))
 
 				for l := range jobChannels[thread] {
 					cv := ModularReduceV2(cryptoParams, accCache[i][l], outScale)
@@ -1621,7 +1626,7 @@ func MatMult4Stream(cryptoParams *crypto.CryptoParams, A crypto.CipherMatrix, gf
 		go func() {
 			defer aggGroup.Done()
 
-			eva := ckks.NewEvaluator(cryptoParams.Params, ckks.EvaluationKey{Rlk: cryptoParams.Rlk, Rtks: cryptoParams.RotKs})
+			eva := ckks.NewEvaluator(cryptoParams.Params, rlwe.NewMemEvaluationKeySet(cryptoParams.Rlk, cryptoParams.RotKs...))
 
 			for cv := range aggChannel {
 				for j := range cv {
@@ -1718,7 +1723,7 @@ func CPMatMult4CachedB(cryptoParams *crypto.CryptoParams, A crypto.CipherMatrix,
 	fmt.Println("A level:", A[0][0].Level())
 
 	out := make(crypto.CipherMatrix, s)
-	outScale := A[0][0].Scale() * cryptoParams.Params.Scale()
+	outScale := A[0][0].Scale.Float64() * cryptoParams.Params.DefaultScale().Float64()
 
 	//rotCount := 1
 
@@ -1799,7 +1804,7 @@ func CPMatMult4V2CachedB(cryptoParams *crypto.CryptoParams, A crypto.CipherMatri
 	fmt.Println("CPMatMult4V2CachedB, A level", A[0][0].Level())
 
 	out := make(crypto.CipherMatrix, s)
-	outScale := A[0][0].Scale() * cryptoParams.Params.Scale()
+	outScale := A[0][0].Scale.Float64() * cryptoParams.Params.DefaultScale().Float64()
 
 	for i := range A {
 
@@ -1871,7 +1876,7 @@ func CPMatMult4V2CachedBParallel(cryptoParams *crypto.CryptoParams, A crypto.Cip
 	fmt.Println("CPMatMult4V2CachedBParallel, A level", A[0][0].Level())
 
 	out := make(crypto.CipherMatrix, s)
-	outScale := A[0][0].Scale() * cryptoParams.Params.Scale()
+	outScale := A[0][0].Scale.Float64() * cryptoParams.Params.DefaultScale().Float64()
 
 	type dataItem struct {
 		shift    int
@@ -1929,7 +1934,7 @@ func CPMatMult4V2CachedBParallel(cryptoParams *crypto.CryptoParams, A crypto.Cip
 				go func(thread int) {
 					defer workerGroup.Done()
 
-					eva := ckks.NewEvaluator(cryptoParams.Params, ckks.EvaluationKey{Rlk: cryptoParams.Rlk, Rtks: cryptoParams.RotKs})
+					eva := ckks.NewEvaluator(cryptoParams.Params, rlwe.NewMemEvaluationKeySet(cryptoParams.Rlk, cryptoParams.RotKs...))
 
 					for baby := range rotJobChannels[thread] {
 						// No need for a nil check since we know each `baby` value is submitted only once`
@@ -2010,7 +2015,7 @@ func CPMatMult4V2CachedBParallel(cryptoParams *crypto.CryptoParams, A crypto.Cip
 			go func(thread int) {
 				defer wg.Done()
 
-				eva := ckks.NewEvaluator(cryptoParams.Params, ckks.EvaluationKey{Rlk: cryptoParams.Rlk, Rtks: cryptoParams.RotKs})
+				eva := ckks.NewEvaluator(cryptoParams.Params, rlwe.NewMemEvaluationKeySet(cryptoParams.Rlk, cryptoParams.RotKs...))
 
 				for l := range jobChannels[thread] {
 					cv := ModularReduceV2(cryptoParams, accCache[l], outScale)
@@ -2031,7 +2036,7 @@ func CPMatMult4V2CachedBParallel(cryptoParams *crypto.CryptoParams, A crypto.Cip
 		go func() {
 			defer aggGroup.Done()
 
-			eva := ckks.NewEvaluator(cryptoParams.Params, ckks.EvaluationKey{Rlk: cryptoParams.Rlk, Rtks: cryptoParams.RotKs})
+			eva := ckks.NewEvaluator(cryptoParams.Params, rlwe.NewMemEvaluationKeySet(cryptoParams.Rlk, cryptoParams.RotKs...))
 
 			for cv := range aggChannel {
 				for j := range cv {
@@ -2144,7 +2149,7 @@ func CMultMatColTimesColToCol(cryptoParams *crypto.CryptoParams, M, N crypto.Cip
 					elemRepCiph := crypto.InnerSumAll(cryptoParams, elemRep)
 					elemRepNew := make(crypto.CipherVector, len(M[k+iT]))
 					for j := range elemRepNew {
-						elemRepNew[j] = elemRepCiph.CopyNew().Ciphertext()
+						elemRepNew[j] = elemRepCiph.CopyNew()
 					}
 					multi := crypto.CMult(cryptoParams, elemRepNew, M[k+iT])
 					mutex.Lock()
@@ -2185,7 +2190,7 @@ func CMultMatColTimesRowToCol(cryptoParams *crypto.CryptoParams, M, N crypto.Cip
 					elemRepCiph := crypto.InnerSumAll(cryptoParams, elemRep)
 					elemRepNew := make(crypto.CipherVector, len(M[k+iT]))
 					for j := range elemRepNew {
-						elemRepNew[j] = elemRepCiph.CopyNew().Ciphertext()
+						elemRepNew[j] = elemRepCiph.CopyNew()
 					}
 					multi := crypto.CMult(cryptoParams, elemRepNew, M[k+iT])
 					mutex.Lock()

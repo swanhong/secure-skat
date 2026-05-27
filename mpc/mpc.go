@@ -10,8 +10,6 @@ import (
 	"go.dedis.ch/onet/v3/log"
 
 	mpc_core "github.com/hhcho/mpc-core"
-	"github.com/ldsec/lattigo/v2/dckks"
-	"github.com/ldsec/lattigo/v2/ring"
 
 	"sync"
 )
@@ -225,14 +223,6 @@ func (mpcObj *MPC) SetFracBits(f int) {
 
 func (mpcObj *MPC) GetRType() mpc_core.RElem {
 	return mpcObj.rtype
-}
-
-func (mpcObj *MPC) GetMHEContext() *dckks.Context {
-	return mpcObj.Network.dckksContext
-}
-
-func (mpcObj *MPC) GetCRPGen() *ring.UniformSampler {
-	return mpcObj.Network.crpGen
 }
 
 func (mpcObj *MPC) InitLagrangeCache() {

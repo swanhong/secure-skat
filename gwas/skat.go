@@ -8,7 +8,7 @@ import (
 
 	mpc_core "github.com/hhcho/mpc-core"
 	"github.com/hhcho/sfgwas/crypto"
-	"github.com/ldsec/lattigo/v2/ckks"
+	"github.com/tuneinsight/lattigo/v6/core/rlwe"
 	"go.dedis.ch/onet/v3/log"
 )
 
@@ -53,7 +53,7 @@ func (ast *AssocTest) computeEncryptedResidualRSS(ynew crypto.CipherMatrix) cryp
 		return nil
 	}
 
-	var rssLocal *ckks.Ciphertext
+	var rssLocal *rlwe.Ciphertext
 	if pid > 0 && len(ynew) > 0 && ynew[0] != nil {
 		ynewSq := crypto.CMult(cryptoParams, ynew[0], ynew[0])
 		rssLocal = crypto.InnerSumAll(cryptoParams, ynewSq)
@@ -135,7 +135,7 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 	}
 
 	mmplainfn := func(cp *crypto.CryptoParams, a crypto.CipherVector, B crypto.PlainMatrix, j int) crypto.CipherVector {
-		return crypto.CRescale(cp, crypto.CPMult(cp, a, B[j]))
+		return crypto.CPMult(cp, a, B[j])
 	}
 
 	var ynew crypto.CipherMatrix
@@ -194,8 +194,7 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 	// ynew[0] = mpcObj.Network.BootstrapVecAll(cryptoParams, ynew[0])
 
 	if pid > 0 {
-		ynew[0] = crypto.CMultConst(cryptoParams, ynew[0], -1.0, true)
-		ynew[0] = crypto.CPAdd(cryptoParams, ynew[0], ast.pheno)
+		ynew[0] = crypto.CPSubOther(cryptoParams, ast.pheno, ynew[0])
 	}
 
 	if ast.general.config.Debug {
@@ -370,7 +369,13 @@ func (ast *AssocTest) ComputeSKATStep2LoadBlockScore(block int, Y crypto.CipherM
 	}
 
 	SBlockAggr := mpcObj.Network.AggregateCMat(cryptoParams, SBlock)
-	SBlockAggr = mpcObj.Network.CollectiveBootstrapMat(cryptoParams, SBlockAggr, -1)
+	if pid > 0 && len(SBlockAggr) > 0 && len(SBlockAggr[0]) > 0 {
+		if mpcObj.Network.CanCollectiveBootstrap(cryptoParams, SBlockAggr[0][0].Level()) {
+			SBlockAggr = mpcObj.Network.CollectiveBootstrapMat(cryptoParams, SBlockAggr, -1)
+		} else {
+			log.LLvl1(time.Now().Format(time.RFC3339), "SKAT Step 2/4: skipping score bootstrap at level", SBlockAggr[0][0].Level())
+		}
+	}
 
 	blockData := SKATBlockData{
 		NumSnps:   nsnpsBlock,
@@ -479,11 +484,21 @@ func (ast *AssocTest) ComputeSKATStep4BlockStatistics(block int, blockData SKATB
 	return qBlockRes, qBurdenBlockRes
 }
 
+func (ast *AssocTest) scalarCiphertextToShares(stat crypto.CipherVector) mpc_core.RVec {
+	mpcObj := ast.general.mpcObj[0]
+	rtype := mpcObj.GetRType()
+	if stat == nil || len(stat) == 0 || stat[0] == nil {
+		return mpc_core.InitRVec(rtype.Zero(), 1)
+	}
+	return mpcObj.CiphertextToSS(ast.general.cps, rtype, stat[0], -1, 1)
+}
+
 // ComputeSKATStatistics returns the final secure SKAT and Burden statistics.
 func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurden crypto.CipherVector) {
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
 	cryptoParams := ast.general.cps
+	rtype := mpcObj.GetRType()
 
 	ynew := ast.ComputeSKATStep1Residuals()
 	nullRSS := ast.computeEncryptedResidualRSS(ynew)
@@ -492,8 +507,8 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 		Y = crypto.CipherMatrix{nil}
 	}
 
-	var finalQStat crypto.CipherVector
-	var finalBurdenStat crypto.CipherVector
+	finalQSS := mpc_core.InitRVec(rtype.Zero(), 1)
+	finalBurdenSS := mpc_core.InitRVec(rtype.Zero(), 1)
 	numBlocks := ast.general.config.GenoNumBlocks
 
 	for block := 0; block < numBlocks; block++ {
@@ -505,28 +520,21 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 		ast.saveSKATStep3Outputs(block, blockData)
 
 		qBlockRes, qBurdenBlockRes := ast.ComputeSKATStep4BlockStatistics(block, blockData)
-		if pid == 0 {
-			continue
-		}
-
-		if finalQStat == nil {
-			finalQStat = qBlockRes
-			finalBurdenStat = qBurdenBlockRes
-		} else {
-			finalQStat = crypto.CAdd(cryptoParams, finalQStat, qBlockRes)
-			finalBurdenStat = crypto.CAdd(cryptoParams, finalBurdenStat, qBurdenBlockRes)
-		}
+		finalQSS.Add(ast.scalarCiphertextToShares(qBlockRes))
+		finalBurdenSS.Add(ast.scalarCiphertextToShares(qBurdenBlockRes))
 	}
 
-	if pid > 0 && finalBurdenStat != nil {
-		finalBurdenStat = crypto.CMult(cryptoParams, finalBurdenStat, finalBurdenStat)
-	}
+	finalBurdenSS = mpcObj.SSSquareElemVec(finalBurdenSS)
+	finalBurdenSS = mpcObj.TruncVec(finalBurdenSS, mpcObj.GetDataBits(), mpcObj.GetFracBits())
 
-	scaleCt, scaleOK := ast.general.rareVariantScaleCipher(nullRSS)
+	scaleSS, scaleOK := ast.general.rareVariantScaleShares(nullRSS)
 	if scaleOK {
-		finalQStat = ast.general.scaleRareVariantCipherStat(finalQStat, scaleCt)
-		finalBurdenStat = ast.general.scaleRareVariantCipherStat(finalBurdenStat, scaleCt)
+		finalQSS = ast.general.scaleRareVariantShareStat(finalQSS, scaleSS)
+		finalBurdenSS = ast.general.scaleRareVariantShareStat(finalBurdenSS, scaleSS)
 	}
+
+	finalQStat := mpcObj.SSToCVec(cryptoParams, finalQSS)
+	finalBurdenStat := mpcObj.SSToCVec(cryptoParams, finalBurdenSS)
 
 	return finalQStat, finalBurdenStat
 }

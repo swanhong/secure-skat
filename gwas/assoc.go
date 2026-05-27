@@ -11,7 +11,8 @@ import (
 	"github.com/hhcho/sfgwas/mpc"
 
 	mpc_core "github.com/hhcho/mpc-core"
-	"github.com/ldsec/lattigo/v2/ckks"
+	"github.com/tuneinsight/lattigo/v6/core/rlwe"
+	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 	"go.dedis.ch/onet/v3/log"
 
 	"github.com/hhcho/sfgwas/crypto"
@@ -663,8 +664,7 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherVector, []bool) {
 			}
 
 			ynew[0] = mpcObj.Network.BootstrapVecAll(cryptoParams, ynew[0])
-			ynew[0] = crypto.CMultConst(cryptoParams, ynew[0], -1.0, true)
-			ynew[0] = crypto.CPAdd(cryptoParams, ynew[0], y)
+			ynew[0] = crypto.CPSubOther(cryptoParams, y, ynew[0])
 
 			log.LLvl1(time.Now().Format(time.RFC3339), "ynew computed")
 
@@ -774,15 +774,21 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherVector, []bool) {
 					sx2 = crypto.CMultConstRescale(cryptoParams, sx2, math.Sqrt(nrowsTotalInv), true)
 
 					if pid == mpcObj.GetHubPid() {
-						cryptoParams.WithEvaluator(func(evaluator ckks.Evaluator) error {
+						cryptoParams.WithEvaluator(func(evaluator *ckks.Evaluator) error {
 							for c := range B {
 								for j := range sxxBlocks[b][0] {
-									tmp := evaluator.MulRelinNew(B[c][j], B[c][j])
+									tmp, err := evaluator.MulRelinNew(B[c][j], B[c][j])
+									if err != nil {
+										return err
+									}
 									evaluator.Sub(sxxBlocks[b][0][j], tmp, sxxBlocks[b][0][j])
 								}
 							}
 							for j := range sxxBlocks[b][0] {
-								tmp := evaluator.MulRelinNew(sx2[j], sx2[j])
+								tmp, err := evaluator.MulRelinNew(sx2[j], sx2[j])
+								if err != nil {
+									return err
+								}
 								evaluator.Sub(sxxBlocks[b][0][j], tmp, sxxBlocks[b][0][j])
 							}
 							return nil
@@ -906,7 +912,7 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherVector, []bool) {
 }
 
 // Returns stdinvx and stdinvy
-func (ast *AssocTest) computeStdInv(varx, vary crypto.CipherVector, nsnps int, filter []bool) (crypto.CipherVector, *ckks.Ciphertext) {
+func (ast *AssocTest) computeStdInv(varx, vary crypto.CipherVector, nsnps int, filter []bool) (crypto.CipherVector, *rlwe.Ciphertext) {
 	debug := ast.general.config.Debug
 
 	cryptoParams := ast.general.cps
@@ -1054,7 +1060,7 @@ func (ast *AssocTest) computeGradAndInvHessian(C crypto.CipherMatrix, CScaledUp 
 		if f < len(covIntercept) {
 			covInterceptPadded[f] = covIntercept[f]
 		} else {
-			covInterceptPadded[f] = covIntercept[0].CopyNew().Ciphertext()
+			covInterceptPadded[f] = covIntercept[0].CopyNew()
 		}
 
 	}
@@ -1166,7 +1172,7 @@ func (ast *AssocTest) computeGradAndInvHessian(C crypto.CipherMatrix, CScaledUp 
 	for i := 0; i < len(C); i++ {
 		maskClear[i] = 1
 	}
-	maskEnc, _ := crypto.EncodeFloatVectorWithScale(cryptoParams, maskClear, float64(ast.general.cps.Params.Qi()[BT[0][0].Level()]))
+	maskEnc, _ := crypto.EncodeFloatVectorWithScale(cryptoParams, maskClear, float64(ast.general.cps.Params.Q()[BT[0][0].Level()]))
 	for i := range BT {
 		BT[i] = crypto.CPMult(cryptoParams, BT[i], maskEnc)
 	}

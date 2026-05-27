@@ -52,6 +52,14 @@ so a fresh clone can go straight to:
 bash run_example.sh
 ```
 
+Note that, if the local `matrix_ckks` repo from the previous steps is cloned to a different location,
+update the following line in `sfgwas/go.mod` to point to the correct folder. The path is relative,
+starting from the root directory of the `sfgwas` repo where the `go.mod` file is located.
+
+```
+replace github.com/tuneinsight/lattigo/v6 => ../matrix_ckks
+```
+
 Vendoring only covers Go dependencies. Python packages and `plink2` still need to
 be installed separately as described above.
 

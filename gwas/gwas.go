@@ -13,10 +13,11 @@ import (
 
 	mpc_core "github.com/hhcho/mpc-core"
 
-	"github.com/ldsec/lattigo/v2/ckks"
-
 	"github.com/hhcho/sfgwas/crypto"
 	"github.com/hhcho/sfgwas/mpc"
+	"github.com/tuneinsight/lattigo/v6/core/rlwe"
+	"github.com/tuneinsight/lattigo/v6/examples"
+	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 	"gonum.org/v1/gonum/mat"
 )
 
@@ -168,32 +169,37 @@ func (prot *ProtocolInfo) GetGenoBlocks() []*GenoFileStream {
 }
 
 func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *ProtocolInfo) {
-	var chosen int
+	var params ckks.Parameters
 	if !mpcOnly {
+		var paramsLiteral ckks.ParametersLiteral
 		switch config.CkksParams {
 		case "PN12QP109":
-			chosen = ckks.PN12QP109
+			paramsLiteral = examples.CKKSComplexParamsN12QP109
 		case "PN13QP218":
-			chosen = ckks.PN13QP218
+			paramsLiteral = examples.CKKSComplexParamsN13QP218
 		case "PN14QP438":
-			chosen = ckks.PN14QP438
+			paramsLiteral = examples.CKKSComplexParamsN14QP438
 		case "PN15QP880":
-			chosen = ckks.PN15QP880
+			paramsLiteral = examples.CKKSComplexParamsN15QP881
 		case "PN16QP1761":
-			chosen = ckks.PN16QP1761
+			paramsLiteral = examples.CKKSComplexParamsPN16QP1761
 		default:
 			panic("Undefined value of CKKS params in config")
+		}
+
+		var err error
+		params, err = ckks.NewParametersFromLiteral(paramsLiteral)
+		if err != nil {
+			panic(err)
 		}
 	}
 
 	prec := uint(config.MpcFieldSize)
 	networks := mpc.ParallelNetworks(mpc.InitCommunication(config.BindingIP, config.Servers, pid, config.NumMainParties+1, config.MpcNumThreads, config.SharedKeysPath))
 
-	var params *ckks.Parameters
 	if !mpcOnly {
-		params = ckks.DefaultParams[chosen]
 		for thread := range networks {
-			networks[thread].SetMHEParams(params)
+			networks[thread].SetMHEParams(&params)
 		}
 	}
 
@@ -218,7 +224,7 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 
 	var cps *crypto.CryptoParams
 	if !mpcOnly {
-		cps = networks.CollectiveInit(params, prec)
+		cps = networks.CollectiveInit(&params, prec)
 	}
 
 	var pheno, cov *mat.Dense
@@ -429,12 +435,14 @@ func (g *ProtocolInfo) decryptRareVariantScalar(stat crypto.CipherVector) []floa
 	return []float64{out[0]}
 }
 
-func (g *ProtocolInfo) rareVariantScaleCipher(rssEnc crypto.CipherVector) (*ckks.Ciphertext, bool) {
+func (g *ProtocolInfo) rareVariantScaleShares(rssEnc crypto.CipherVector) (mpc_core.RVec, bool) {
 	mpcObj := g.mpcObj[0]
 	pid := mpcObj.GetPid()
+	rtype := mpcObj.GetRType()
+	scaleSS := mpc_core.InitRVec(rtype.Zero(), 1)
 	sourcePid := mpcObj.GetHubPid()
 	if rssEnc == nil && pid > 0 && pid != sourcePid {
-		return nil, false
+		return scaleSS, false
 	}
 
 	nrowsAll := g.gwasParams.FiltNumInds()
@@ -449,38 +457,30 @@ func (g *ProtocolInfo) rareVariantScaleCipher(rssEnc crypto.CipherVector) (*ckks
 
 	dof := totalInds - (g.gwasParams.NumCov() + 1)
 	if dof <= 0 {
-		return nil, false
+		return scaleSS, false
 	}
 
-	rtype := mpcObj.GetRType()
-	fracBits := mpcObj.GetFracBits()
-
-	var rssCt *ckks.Ciphertext
-	if pid == sourcePid && rssEnc != nil {
+	var rssCt *rlwe.Ciphertext
+	if pid == sourcePid && rssEnc != nil && len(rssEnc) > 0 {
 		rssCt = rssEnc[0]
 	}
 	rssSS := mpcObj.CiphertextToSS(g.cps, rtype, rssCt, sourcePid, 1)
 
 	numerSS := mpc_core.InitRVec(rtype.Zero(), 1)
-	if pid == mpcObj.GetHubPid() {
-		numerSS[0] = rtype.FromFloat64(float64(dof)/2.0, fracBits)
+	if pid == sourcePid {
+		numerSS[0] = rtype.FromFloat64(float64(dof)/2.0, mpcObj.GetFracBits())
 	}
 
-	alphaSS := mpcObj.Divide(numerSS, rssSS, false)
-
-	alphaSlotsSS := mpc_core.InitRVec(rtype.Zero(), g.cps.GetSlots())
-	for i := range alphaSlotsSS {
-		alphaSlotsSS[i] = alphaSS[0]
-	}
-
-	return mpcObj.SStoCiphertext(g.cps, alphaSlotsSS), true
+	return mpcObj.Divide(numerSS, rssSS, false), true
 }
 
-func (g *ProtocolInfo) scaleRareVariantCipherStat(stat crypto.CipherVector, scaleCt *ckks.Ciphertext) crypto.CipherVector {
-	if stat == nil || scaleCt == nil {
+func (g *ProtocolInfo) scaleRareVariantShareStat(stat, scale mpc_core.RVec) mpc_core.RVec {
+	if len(stat) == 0 || len(scale) == 0 {
 		return stat
 	}
-	return crypto.CMultScalar(g.cps, stat, scaleCt)
+	mpcObj := g.mpcObj[0]
+	out := mpcObj.SSMultElemVec(stat, scale)
+	return mpcObj.TruncVec(out, mpcObj.GetDataBits(), mpcObj.GetFracBits())
 }
 
 func (g *ProtocolInfo) saveRareVariantScalar(filename string, stat crypto.CipherVector) {
@@ -631,7 +631,7 @@ func (g *ProtocolInfo) Test() {
 		x[i] = 1.0
 	}
 	cv, _ := crypto.EncryptFloatVector(params, x)
-	d := cv[0].Value()[0].Coeffs
+	d := cv[0].Value[0].Coeffs
 	log.LLvl1(time.Now().Format(time.RFC3339), "Enc check2:", d[0][0], d[1][1], d[2][2])
 
 	start := time.Now()
@@ -644,7 +644,7 @@ func (g *ProtocolInfo) Test() {
 	if g.mpcObj[0].GetPid() == 2 {
 		out, _, _ = MatMult4Stream(params, crypto.CipherMatrix{cv}, gfs, 5, true, false, 0)
 
-		d = out[0][0].Value()[0].Coeffs
+		d = out[0][0].Value[0].Coeffs
 		log.LLvl1(time.Now().Format(time.RFC3339), "Out check:", d[0][0], d[1][1], d[2][2])
 	}
 	//out, _ := MatMult4Stream(params, crypto.CipherMatrix{cv}, g.genoBlocks[0], 5, true)
