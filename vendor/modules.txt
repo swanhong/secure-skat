@@ -70,7 +70,7 @@ github.com/raulk/go-watchdog
 ## explicit; go 1.13
 github.com/stretchr/testify/assert
 github.com/stretchr/testify/require
-# github.com/tuneinsight/lattigo/v6 v6.1.1 => ../matrix_ckks
+# github.com/tuneinsight/lattigo/v6 v6.1.1
 ## explicit; go 1.21
 github.com/tuneinsight/lattigo/v6/core/rlwe
 github.com/tuneinsight/lattigo/v6/examples
@@ -125,5 +125,4 @@ gonum.org/v1/gonum/mat
 # gopkg.in/yaml.v3 v3.0.1
 ## explicit
 gopkg.in/yaml.v3
-# github.com/tuneinsight/lattigo/v6 => ../matrix_ckks
 # github.com/hhcho/frand => lukechampine.com/frand v1.5.1

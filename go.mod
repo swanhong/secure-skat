@@ -37,6 +37,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/tuneinsight/lattigo/v6 => ../matrix_ckks
-
 replace github.com/hhcho/frand => lukechampine.com/frand v1.5.1
