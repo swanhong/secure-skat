@@ -318,7 +318,11 @@ func (ast *AssocTest) ComputeSKATStep1Residuals() crypto.CipherMatrix {
 	return ast.computeResidual()
 }
 
-func (ast *AssocTest) skatBlockNumSnps(block int) int {
+// syncBlockNumSnps shares a block's SNP count from the hub to party 0: party 0
+// receives the count, the hub computes it via computeLocal and sends it, and
+// other data parties return their local count. The network ordering (party-0
+// receive, hub send) is identical to the original per-path implementations.
+func (ast *AssocTest) syncBlockNumSnps(computeLocal func() int) int {
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
 	hubPid := mpcObj.GetHubPid()
@@ -326,43 +330,34 @@ func (ast *AssocTest) skatBlockNumSnps(block int) int {
 		return mpcObj.Network.ReceiveInt(hubPid)
 	}
 
-	var nsnpsBlock int
-	isPgen := ast.general.IsPgen()
-	blockSize := ast.general.genoBlockSizes[block]
-	shift := uint64(0)
-	for i := 0; i < block; i++ {
-		shift += uint64(ast.general.genoBlockSizes[i])
-	}
-
-	if isPgen {
-		if ast.general.gwasParams.snpFilt == nil {
-			nsnpsBlock = blockSize
-		} else {
-			nsnpsBlock = SumBool(ast.general.gwasParams.snpFilt[shift : shift+uint64(blockSize)])
-		}
-	} else {
-		nsnpsBlock = int(ast.general.genoBlocks[block].NumColsToKeep())
-	}
-
+	nsnpsBlock := computeLocal()
 	if pid == hubPid {
 		mpcObj.Network.SendInt(nsnpsBlock, 0)
 	}
 	return nsnpsBlock
 }
 
-func (ast *AssocTest) hiddenBlockNumSnps(block int) int {
-	mpcObj := ast.general.mpcObj[0]
-	pid := mpcObj.GetPid()
-	hubPid := mpcObj.GetHubPid()
-	if pid == 0 {
-		return mpcObj.Network.ReceiveInt(hubPid)
-	}
+func (ast *AssocTest) skatBlockNumSnps(block int) int {
+	return ast.syncBlockNumSnps(func() int {
+		blockSize := ast.general.genoBlockSizes[block]
+		if !ast.general.IsPgen() {
+			return int(ast.general.genoBlocks[block].NumColsToKeep())
+		}
+		if ast.general.gwasParams.snpFilt == nil {
+			return blockSize
+		}
+		shift := uint64(0)
+		for i := 0; i < block; i++ {
+			shift += uint64(ast.general.genoBlockSizes[i])
+		}
+		return SumBool(ast.general.gwasParams.snpFilt[shift : shift+uint64(blockSize)])
+	})
+}
 
-	nsnpsBlock := ast.general.hiddenGenoBlockSizes[block]
-	if pid == hubPid {
-		mpcObj.Network.SendInt(nsnpsBlock, 0)
-	}
-	return nsnpsBlock
+func (ast *AssocTest) hiddenBlockNumSnps(block int) int {
+	return ast.syncBlockNumSnps(func() int {
+		return ast.general.hiddenGenoBlockSizes[block]
+	})
 }
 
 func (ast *AssocTest) hiddenNumCtx(nsnps int) int {
@@ -488,6 +483,36 @@ func (ast *AssocTest) hiddenPgenBlockMultSKAT(block int, Y crypto.CipherMatrix, 
 	return matOut, dosageSum
 }
 
+// aggregateSKATBlockScore aggregates a block's per-party score ciphertext across
+// parties, collectively bootstraps it when the level permits, and packages it
+// into SKATBlockData. It is the shared tail of the normal and hidden Step-2
+// loaders; callers prepare SBlock/dosageSum for their own genotype source. The
+// logic, level handling, and bootstrap condition are identical to the previous
+// per-path implementations; only logTag differs.
+func (ast *AssocTest) aggregateSKATBlockScore(SBlock crypto.CipherMatrix, dosageSum []float64, nsnpsBlock int, logTag string) SKATBlockData {
+	mpcObj := ast.general.mpcObj[0]
+	pid := mpcObj.GetPid()
+	cryptoParams := ast.general.cps
+
+	SBlockAggr := mpcObj.Network.AggregateCMat(cryptoParams, SBlock)
+	if pid > 0 && len(SBlockAggr) > 0 && len(SBlockAggr[0]) > 0 {
+		if mpcObj.Network.CanCollectiveBootstrap(cryptoParams, SBlockAggr[0][0].Level()) {
+			SBlockAggr = mpcObj.Network.CollectiveBootstrapMat(cryptoParams, SBlockAggr, -1)
+		} else {
+			log.LLvl1(time.Now().Format(time.RFC3339), logTag+": skipping score bootstrap at level", SBlockAggr[0][0].Level())
+		}
+	}
+
+	blockData := SKATBlockData{
+		NumSnps:   nsnpsBlock,
+		DosageSum: dosageSum,
+	}
+	if pid > 0 {
+		blockData.ScoreVec = SBlockAggr[0]
+	}
+	return blockData
+}
+
 func (ast *AssocTest) ComputeSKATHiddenStep2LoadBlockScore(block int, Y crypto.CipherMatrix, nsnpsBlock int) SKATBlockData {
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
@@ -519,29 +544,12 @@ func (ast *AssocTest) ComputeSKATHiddenStep2LoadBlockScore(block int, Y crypto.C
 		dosageSum = make([]float64, nsnpsBlock)
 	}
 
-	SBlockAggr := mpcObj.Network.AggregateCMat(cryptoParams, SBlock)
-	if pid > 0 && len(SBlockAggr) > 0 && len(SBlockAggr[0]) > 0 {
-		if mpcObj.Network.CanCollectiveBootstrap(cryptoParams, SBlockAggr[0][0].Level()) {
-			SBlockAggr = mpcObj.Network.CollectiveBootstrapMat(cryptoParams, SBlockAggr, -1)
-		} else {
-			log.LLvl1(time.Now().Format(time.RFC3339), "SKAT hidden Step 2/4: skipping score bootstrap at level", SBlockAggr[0][0].Level())
-		}
-	}
-
-	blockData := SKATBlockData{
-		NumSnps:   nsnpsBlock,
-		DosageSum: dosageSum,
-	}
-	if pid > 0 {
-		blockData.ScoreVec = SBlockAggr[0]
-	}
-	return blockData
+	return ast.aggregateSKATBlockScore(SBlock, dosageSum, nsnpsBlock, "SKAT hidden Step 2/4")
 }
 
 func (ast *AssocTest) ComputeSKATStep2LoadBlockScore(block int, Y crypto.CipherMatrix) SKATBlockData {
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
-	cryptoParams := ast.general.cps
 	numBlocks := ast.general.config.GenoNumBlocks
 
 	nsnpsBlock := ast.skatBlockNumSnps(block)
@@ -552,27 +560,10 @@ func (ast *AssocTest) ComputeSKATStep2LoadBlockScore(block int, Y crypto.CipherM
 	if pid > 0 {
 		SBlock, dosageSum, _, _ = ast.GenoBlockMultSKAT(block, Y, false)
 	} else {
-		SBlock = nil
 		dosageSum = make([]float64, nsnpsBlock)
 	}
 
-	SBlockAggr := mpcObj.Network.AggregateCMat(cryptoParams, SBlock)
-	if pid > 0 && len(SBlockAggr) > 0 && len(SBlockAggr[0]) > 0 {
-		if mpcObj.Network.CanCollectiveBootstrap(cryptoParams, SBlockAggr[0][0].Level()) {
-			SBlockAggr = mpcObj.Network.CollectiveBootstrapMat(cryptoParams, SBlockAggr, -1)
-		} else {
-			log.LLvl1(time.Now().Format(time.RFC3339), "SKAT Step 2/4: skipping score bootstrap at level", SBlockAggr[0][0].Level())
-		}
-	}
-
-	blockData := SKATBlockData{
-		NumSnps:   nsnpsBlock,
-		DosageSum: dosageSum,
-	}
-	if pid > 0 {
-		blockData.ScoreVec = SBlockAggr[0]
-	}
-	return blockData
+	return ast.aggregateSKATBlockScore(SBlock, dosageSum, nsnpsBlock, "SKAT Step 2/4")
 }
 
 func (ast *AssocTest) ComputeSKATStep3BlockWeights(blockData *SKATBlockData) {
@@ -631,20 +622,30 @@ func (ast *AssocTest) saveSKATStep3Outputs(block int, blockData SKATBlockData) {
 	)
 }
 
-func (ast *AssocTest) ComputeSKATStep4BlockStatistics(block int, blockData SKATBlockData) (crypto.CipherVector, crypto.CipherVector) {
+// computeSKATBlockStatistics runs ScoreCalculation for one block and saves the
+// per-block Q and burden ciphertexts. namePrefix selects normal ("") vs hidden
+// ("Hidden") output filenames and the log tag; saveDebugParts gates the extra
+// intermediate dumps (normal path only, and still under config.Debug). The
+// ScoreCalculation call and outputs are identical to the previous two functions.
+func (ast *AssocTest) computeSKATBlockStatistics(block int, blockData SKATBlockData, namePrefix string, saveDebugParts bool) (crypto.CipherVector, crypto.CipherVector) {
 	cryptoParams := ast.general.cps
 	mpcObj := ast.general.mpcObj[0]
 	if mpcObj.GetPid() == 0 {
 		return nil, nil
 	}
 
-	log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("SKAT Step 4/4: block statistic aggregation (%d SNPs)", blockData.NumSnps))
+	logTag := "SKAT Step 4/4"
+	if namePrefix != "" {
+		logTag = "SKAT hidden Step 4/4"
+	}
+	log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("%s: block statistic aggregation (%d SNPs)", logTag, blockData.NumSnps))
+
 	qBlockRes, qBurdenBlockRes, S2, w2, w2S2, wS := ast.ScoreCalculation(blockData.ScoreVec, blockData.WeightEnc)
 
-	SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qBlock_block%d.txt", block)))
-	SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBurdenBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qBurdenBlock_block%d.txt", block)))
+	SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("q%sBlock_block%d.txt", namePrefix, block)))
+	SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBurdenBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("q%sBurdenBlock_block%d.txt", namePrefix, block)))
 
-	if ast.general.config.Debug {
+	if saveDebugParts && ast.general.config.Debug {
 		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{S2}, blockData.NumSnps, -1, ast.general.OutPath(fmt.Sprintf("S2_block%d.txt", block)))
 		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{w2}, blockData.NumSnps, -1, ast.general.OutPath(fmt.Sprintf("w2_block%d.txt", block)))
 		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{w2S2}, blockData.NumSnps, -1, ast.general.OutPath(fmt.Sprintf("w2S2_block%d.txt", block)))
@@ -672,22 +673,6 @@ func (ast *AssocTest) ComputeSKATStep4BlockStatistics(block int, blockData SKATB
 	return qBlockRes, qBurdenBlockRes
 }
 
-func (ast *AssocTest) ComputeSKATHiddenStep4BlockStatistics(block int, blockData SKATBlockData) (crypto.CipherVector, crypto.CipherVector) {
-	cryptoParams := ast.general.cps
-	mpcObj := ast.general.mpcObj[0]
-	if mpcObj.GetPid() == 0 {
-		return nil, nil
-	}
-
-	log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("SKAT hidden Step 4/4: block statistic aggregation (%d SNPs)", blockData.NumSnps))
-	qBlockRes, qBurdenBlockRes, _, _, _, _ := ast.ScoreCalculation(blockData.ScoreVec, blockData.WeightEnc)
-
-	SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qHiddenBlock_block%d.txt", block)))
-	SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBurdenBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qHiddenBurdenBlock_block%d.txt", block)))
-
-	return qBlockRes, qBurdenBlockRes
-}
-
 func (ast *AssocTest) ComputeSKATHiddenBlockStatistics(block int, Y crypto.CipherMatrix) (mpc_core.RVec, mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
@@ -702,7 +687,7 @@ func (ast *AssocTest) ComputeSKATHiddenBlockStatistics(block int, Y crypto.Ciphe
 	blockData := ast.ComputeSKATHiddenStep2LoadBlockScore(block, Y, nsnpsBlock)
 	ast.ComputeSKATStep3BlockWeights(&blockData)
 
-	qBlockRes, qBurdenBlockRes := ast.ComputeSKATHiddenStep4BlockStatistics(block, blockData)
+	qBlockRes, qBurdenBlockRes := ast.computeSKATBlockStatistics(block, blockData, "Hidden", false)
 	return ast.scalarCiphertextToShares(qBlockRes), ast.scalarCiphertextToShares(qBurdenBlockRes)
 }
 
@@ -741,7 +726,7 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 		ast.ComputeSKATStep3BlockWeights(&blockData)
 		ast.saveSKATStep3Outputs(block, blockData)
 
-		qBlockRes, qBurdenBlockRes := ast.ComputeSKATStep4BlockStatistics(block, blockData)
+		qBlockRes, qBurdenBlockRes := ast.computeSKATBlockStatistics(block, blockData, "", true)
 		finalQSS.Add(ast.scalarCiphertextToShares(qBlockRes))
 		finalBurdenSS.Add(ast.scalarCiphertextToShares(qBurdenBlockRes))
 	}
