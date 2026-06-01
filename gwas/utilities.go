@@ -210,10 +210,6 @@ func MergeBlockFiles(inputBlockFilePrefix string, nrows int, ncolsPerBlock []int
 	}
 }
 
-func matPrint(X mat.Matrix) {
-	fa := mat.Formatted(X, mat.Prefix(""), mat.Squeeze())
-	fmt.Printf("%v\n", fa)
-}
 func Max(x, y int) int {
 	if x <= y {
 		return y

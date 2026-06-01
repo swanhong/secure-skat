@@ -1,7 +1,6 @@
 package gwas
 
 import (
-	"fmt"
 	"math/bits"
 	"runtime"
 	"sync"
@@ -1032,10 +1031,8 @@ func MatMult4Stream(cryptoParams *crypto.CryptoParams, A crypto.CipherMatrix, gf
 	numBlockRows := ((nrow - 1) / uint64(slots)) + 1
 
 	if A[0][0].Level() > maxLevel {
-		fmt.Println("Dropping level. Input:", A[0][0].Level())
 		A = crypto.DropLevel(cryptoParams, A, maxLevel)
 	}
-	fmt.Println("A level:", A[0][0].Level())
 
 	accCache := make([][]CipherVectorAccV2, s)
 	accCacheMux := make([][]sync.Mutex, s)

@@ -102,11 +102,6 @@ func NewDiagCacheStream(cryptoParams *crypto.CryptoParams, filePrefix string, bl
 			giantTable[i] = tableBuf[d+i] != 0
 		}
 
-		fmt.Println("DiagCacheStream header:")
-		fmt.Println(vectorLen, level, scale, n, numModuli, rowSize)
-		fmt.Println(d, babyTable[:10])
-		fmt.Println(d, giantTable[:10])
-
 		resetPosition = len(headerBuf) + len(tableBuf)
 
 		buf = make([]byte, rowSize)
@@ -190,11 +185,6 @@ func (dcs *DiagCacheStream) WriteDiag(pv crypto.PlainVector, shift uint32) {
 		if err != nil {
 			log.Fatal(err)
 		}
-
-		fmt.Println("Written DiagCacheStream header:")
-		fmt.Println(dcs.vectorLen, dcs.level, dcs.scale, dcs.n, dcs.numModuli, dcs.rowSize)
-		fmt.Println(len(dcs.babyTable), dcs.babyTable[:10])
-		fmt.Println(len(dcs.giantTable), dcs.giantTable[:10])
 
 		dcs.buf = make([]byte, dcs.rowSize)
 		dcs.atHead = false
