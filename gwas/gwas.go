@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.dedis.ch/onet/v3/log"
@@ -27,11 +28,12 @@ type ProtocolInfo struct {
 	cpsPar []*crypto.CryptoParams // One per thread
 
 	// Input files
-	genoBlocks     []*GenoFileStream
-	genoBlockSizes []int
-	pheno          *mat.Dense
-	cov            *mat.Dense
-	pos            []uint64
+	genoBlocks           []*GenoFileStream
+	genoBlockSizes       []int
+	hiddenGenoBlockSizes []int
+	pheno                *mat.Dense
+	cov                  *mat.Dense
+	pos                  []uint64
 
 	gwasParams *GWASParams
 
@@ -45,6 +47,13 @@ const (
 	RareVariantModeSKAT   RareVariantMode = "skat"
 	RareVariantModeBurden RareVariantMode = "burden"
 	RareVariantModeSKATO  RareVariantMode = "skato"
+)
+
+type RareVariantSetMode string
+
+const (
+	RareVariantSetModeShared         RareVariantSetMode = "shared"
+	RareVariantSetModeMVPPublicUnion RareVariantSetMode = "mvp_public_union"
 )
 
 type Config struct {
@@ -92,6 +101,17 @@ type Config struct {
 	GenoNumBlocks     int    `toml:"geno_num_blocks"`
 	GenoBlockSizeFile string `toml:"geno_block_size_file"`
 
+	RareVariantSetMode      string `toml:"rare_variant_set_mode"`
+	PublicVariantPartyID    int    `toml:"public_variant_party_id"`
+	PrivateVariantPartyID   int    `toml:"private_variant_party_id"`
+	HiddenGenoFileFormat    string `toml:"hidden_geno_file_format"`
+	HiddenGenoFilePrefix    string `toml:"hidden_geno_binary_file_prefix"`
+	HiddenGenoNumBlocks     int    `toml:"hidden_geno_num_blocks"`
+	HiddenGenoBlockSizeFile string `toml:"hidden_geno_block_size_file"`
+	HiddenSnpIdsFile        string `toml:"hidden_snp_ids_file"`
+	HiddenSnpPosFile        string `toml:"hidden_snp_position_file"`
+	HiddenSampleKeepFile    string `toml:"hidden_sample_keep_file"`
+
 	PhenoFile  string `toml:"pheno_file"`
 	CovFile    string `toml:"covar_file"`
 	SnpPosFile string `toml:"snp_position_file"`
@@ -124,6 +144,118 @@ type Config struct {
 	Debug          bool  `toml:"debug"`
 	BlocksForAssoc []int `toml:"blocks_for_assoc_test"`
 	PgenBatchSize  int   `toml:"pgen_batch_nsnp"`
+}
+
+func (config *Config) VariantSetMode() RareVariantSetMode {
+	mode := strings.TrimSpace(strings.ToLower(config.RareVariantSetMode))
+	if mode == "" {
+		return RareVariantSetModeShared
+	}
+	return RareVariantSetMode(mode)
+}
+
+func (config *Config) IsMVPPublicUnionMode() bool {
+	return config.VariantSetMode() == RareVariantSetModeMVPPublicUnion
+}
+
+func (prot *ProtocolInfo) VariantSetMode() RareVariantSetMode {
+	return prot.config.VariantSetMode()
+}
+
+func (prot *ProtocolInfo) IsMVPPublicUnionMode() bool {
+	return prot.config.IsMVPPublicUnionMode()
+}
+
+func readBlockSizesFile(filename string, expectedBlocks int) []int {
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Fatalf("failed to open: %v", filename)
+	}
+	defer file.Close()
+
+	var sizes []int
+	scanner := bufio.NewScanner(file)
+	scanner.Split(bufio.ScanLines)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		size, err := strconv.Atoi(line)
+		if err != nil {
+			log.Fatalf("parse error: %v", filename)
+		}
+		sizes = append(sizes, size)
+	}
+	if err := scanner.Err(); err != nil {
+		log.Fatalf("scan error: %v", filename)
+	}
+
+	if expectedBlocks > 0 && len(sizes) != expectedBlocks {
+		log.Fatalf("block count mismatch in %v: expected %d, got %d", filename, expectedBlocks, len(sizes))
+	}
+	return sizes
+}
+
+func readSampleKeepIIDs(filename string) []string {
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Fatalf("failed to open sample keep file: %v", filename)
+	}
+	defer file.Close()
+
+	var out []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) >= 2 {
+			out = append(out, fields[1])
+		} else {
+			out = append(out, fields[0])
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		log.Fatalf("scan error: %v", filename)
+	}
+	return out
+}
+
+func assertSameSampleOrder(leftPath, rightPath string) {
+	left := readSampleKeepIIDs(leftPath)
+	right := readSampleKeepIIDs(rightPath)
+	if len(left) != len(right) {
+		log.Fatalf("sample keep order mismatch: %s has %d samples, %s has %d samples", leftPath, len(left), rightPath, len(right))
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			log.Fatalf("sample keep order mismatch at row %d: %s has %q, %s has %q", i+1, leftPath, left[i], rightPath, right[i])
+		}
+	}
+}
+
+func validateMVPPublicUnionConfig(config *Config, pid int) {
+	if !config.IsMVPPublicUnionMode() {
+		return
+	}
+	if config.NumMainParties != 2 {
+		log.Fatalf("mvp_public_union v1 supports exactly two data parties, got %d", config.NumMainParties)
+	}
+	if config.PrivateVariantPartyID != 1 || config.PublicVariantPartyID != 2 {
+		log.Fatalf("mvp_public_union v1 requires private_variant_party_id=1 (AoU) and public_variant_party_id=2 (MVP)")
+	}
+	if config.HiddenGenoFileFormat != "pgen" {
+		log.Fatalf("mvp_public_union v1 supports hidden_geno_file_format=\"pgen\" only")
+	}
+	if config.HiddenGenoFilePrefix == "" || config.HiddenGenoBlockSizeFile == "" ||
+		config.HiddenSnpIdsFile == "" || config.HiddenSampleKeepFile == "" {
+		log.Fatalf("mvp_public_union requires hidden genotype prefix, block size file, SNP ids file, and sample keep file")
+	}
+	if pid == config.PrivateVariantPartyID {
+		assertSameSampleOrder(config.SampleKeepFile, config.HiddenSampleKeepFile)
+	}
 }
 
 func (prot *ProtocolInfo) IsBlockForAssocTest(blockId int) bool {
@@ -231,38 +363,17 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 	var pos []uint64
 	var genofs []*GenoFileStream
 	var genoBlockSizes []int
+	var hiddenGenoBlockSizes []int
 
 	isPgen := config.GenoFileFormat == "pgen"
+	validateMVPPublicUnionConfig(config, pid)
 
 	genofs = make([]*GenoFileStream, config.GenoNumBlocks)
 	genoBlockSizes = make([]int, config.GenoNumBlocks)
 
 	if pid > 0 {
 		// Read geno block size file
-		file, err := os.Open(config.GenoBlockSizeFile)
-
-		if err != nil {
-			log.Fatalf("failed to open: %v", config.GenoBlockSizeFile)
-		}
-		scanner := bufio.NewScanner(file)
-		scanner.Split(bufio.ScanLines)
-
-		for i := 0; i < config.GenoNumBlocks; i++ {
-			if !scanner.Scan() {
-				log.Fatalf("not enough lines in %v", config.GenoBlockSizeFile)
-			}
-
-			genoBlockSizes[i], err = strconv.Atoi(scanner.Text())
-			if err != nil {
-				log.Fatalf("parse error: %v", config.GenoBlockSizeFile)
-			}
-		}
-
-		if scanner.Scan() {
-			log.Fatalf("too many lines in %v", config.GenoBlockSizeFile)
-		}
-
-		file.Close()
+		genoBlockSizes = readBlockSizesFile(config.GenoBlockSizeFile, config.GenoNumBlocks)
 
 		totalSize := 0
 		for _, v := range genoBlockSizes {
@@ -288,17 +399,23 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 		log.LLvl1(time.Now().Format(time.RFC3339), "First few SNP positions:", pos[:5])
 	}
 
+	if config.IsMVPPublicUnionMode() {
+		hiddenGenoBlockSizes = readBlockSizesFile(config.HiddenGenoBlockSizeFile, config.HiddenGenoNumBlocks)
+		config.HiddenGenoNumBlocks = len(hiddenGenoBlockSizes)
+	}
+
 	gwasParams := InitGWASParams(config.NumInds, config.NumSnps, config.NumCovs, config.NumPCs, config.SnpDistThres)
 
 	return &ProtocolInfo{
 		mpcObj: mpcEnv, // One MPC object for each thread
 		cps:    cps,
 
-		genoBlocks:     genofs,
-		genoBlockSizes: genoBlockSizes,
-		pheno:          pheno,
-		cov:            cov,
-		pos:            pos,
+		genoBlocks:           genofs,
+		genoBlockSizes:       genoBlockSizes,
+		hiddenGenoBlockSizes: hiddenGenoBlockSizes,
+		pheno:                pheno,
+		cov:                  cov,
+		pos:                  pos,
 
 		gwasParams: gwasParams,
 		config:     config,
@@ -441,9 +558,6 @@ func (g *ProtocolInfo) rareVariantScaleShares(rssEnc crypto.CipherVector) (mpc_c
 	rtype := mpcObj.GetRType()
 	scaleSS := mpc_core.InitRVec(rtype.Zero(), 1)
 	sourcePid := mpcObj.GetHubPid()
-	if rssEnc == nil && pid > 0 && pid != sourcePid {
-		return scaleSS, false
-	}
 
 	nrowsAll := g.gwasParams.FiltNumInds()
 	if len(nrowsAll) != g.config.NumMainParties+1 {
@@ -490,6 +604,10 @@ func (g *ProtocolInfo) saveRareVariantScalar(filename string, stat crypto.Cipher
 }
 
 func (g *ProtocolInfo) combineSKATOStatistic(skat, burden crypto.CipherVector, rho float64) crypto.CipherVector {
+	if g.mpcObj[0].GetPid() == 0 || skat == nil || burden == nil || len(skat) == 0 || len(burden) == 0 || skat[0] == nil || burden[0] == nil {
+		return crypto.CipherVector{nil}
+	}
+
 	cryptoParams := g.cps
 
 	skatPart := crypto.CMultConstRescale(cryptoParams, skat, 1.0-rho, false)
@@ -710,7 +828,7 @@ func (g *ProtocolInfo) GeneratePCAInput(numSnpsPCA int, snpFiltPCA []bool, isPge
 				m := g.genoBlockSizes[chr]
 				numSnpsPCAPerBlock[chr] = SumBool(snpFiltPCA[shift : shift+m])
 
-				FilterMatrixFilePgen(pgenPrefix, numIndsPCA, numSnpsPCAPerBlock[chr], g.config.SampleKeepFile, g.config.SnpIdsFile, shift, snpFiltPCA[shift:shift+m], outFile)
+				FilterMatrixFilePgen(pgenPrefix, numIndsPCA, numSnpsPCAPerBlock[chr], g.config.SampleKeepFile, g.config.SnpIdsFile, shift, snpFiltPCA[shift:shift+m], outFile, false)
 
 				shift += m
 			}

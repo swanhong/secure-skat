@@ -1,6 +1,8 @@
 package mpc
 
 import (
+	"fmt"
+
 	"github.com/hhcho/sfgwas/crypto"
 	"github.com/tuneinsight/lattigo/v6/core/rlwe"
 	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
@@ -15,20 +17,33 @@ func (netObj *Network) AggregateCText(cryptoParams *crypto.CryptoParams, val *rl
 	if pid == netObj.GetHubPid() {
 		// receive and add
 		out = val.CopyNew()
-		cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+		var addErr error
+		if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
 			for p := 1; p < netObj.GetNParty(); p++ {
 				if p != pid {
 					other := netObj.ReceiveCiphertext(cryptoParams, p)
-					eval.Add(other, out, out)
+					if other == nil {
+						return fmt.Errorf("AggregateCText: received nil ciphertext from party %d", p)
+					}
+					if err := eval.Add(other, out, out); err != nil {
+						return err
+					}
 				}
 			}
 			return nil
-		})
+		}); err != nil {
+			addErr = err
+		}
 
+		// Always send to non-hub parties before panicking to prevent deadlock.
 		for p := 1; p < netObj.GetNParty(); p++ {
 			if p != pid {
 				netObj.SendCiphertext(out, p)
 			}
+		}
+
+		if addErr != nil {
+			panic(addErr)
 		}
 	} else {
 		netObj.SendCiphertext(val, netObj.GetHubPid())
@@ -105,24 +120,37 @@ func (netObj *Network) AggregateCMat(cryptoParams *crypto.CryptoParams, mat cryp
 	if pid == netObj.GetHubPid() {
 		// receive and add
 		out = crypto.CopyEncryptedMatrix(mat)
-		cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+		var addErr error
+		if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
 			for p := 1; p < netObj.GetNParty(); p++ {
 				if p != pid {
 					other := netObj.ReceiveCipherMatrix(cryptoParams, len(out), len(out[0]), p)
 					for i := range other {
 						for j := range other[i] {
-							eval.Add(other[i][j], out[i][j], out[i][j])
+							if other[i][j] == nil {
+								return fmt.Errorf("AggregateCMat: received nil ciphertext from party %d at [%d][%d]", p, i, j)
+							}
+							if err := eval.Add(other[i][j], out[i][j], out[i][j]); err != nil {
+								return err
+							}
 						}
 					}
 				}
 			}
 			return nil
-		})
+		}); err != nil {
+			addErr = err
+		}
 
+		// Always send to non-hub parties before panicking to prevent deadlock.
 		for p := 1; p < netObj.GetNParty(); p++ {
 			if p != pid {
 				netObj.SendCipherMatrix(out, p)
 			}
+		}
+
+		if addErr != nil {
+			panic(addErr)
 		}
 	} else {
 		netObj.SendCipherMatrix(mat, netObj.GetHubPid())

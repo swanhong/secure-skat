@@ -401,7 +401,7 @@ func (ast *AssocTest) genoBlockMult(b int, mat crypto.CipherMatrix, square bool,
 
 						batchFilt := snpFilt[startIndex : idx+1]
 						gfsTempFile := ast.general.CachePath(fmt.Sprintf("pgen_gfs.%d.tmp", threadId))
-						FilterMatrixFilePgen(pgenFile, numInd, counter, ast.general.config.SampleKeepFile, ast.general.config.SnpIdsFile, shift+startIndex, batchFilt, gfsTempFile)
+						FilterMatrixFilePgen(pgenFile, numInd, counter, ast.general.config.SampleKeepFile, ast.general.config.SnpIdsFile, shift+startIndex, batchFilt, gfsTempFile, cacheNamespace == "skat")
 
 						X := NewGenoFileStream(gfsTempFile, uint64(numInd), uint64(counter), true)
 

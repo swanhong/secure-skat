@@ -132,7 +132,9 @@ filter_terminal_output() {
     /Starting GWAS protocol/ ||
     /Finished QC/ ||
     /SKAT Step [1-4]\/4:/ ||
+    /SKAT hidden Step [1-4]\/4:/ ||
     /SKAT Progress:/ ||
+    /SKAT Hidden Progress:/ ||
     /Finished rare-variant statistic computation/ ||
     /Output collectively decrypted and saved to:/ ||
     /MatMult: block [0-9]+ \/ [0-9]+ elapsed time/ ||
@@ -148,6 +150,11 @@ filter_terminal_output() {
       fflush()
     }
   '
+}
+
+is_mvp_public_union_config() {
+  local global_config="${CONFIG_DIR%/}/configGlobal.toml"
+  [[ -f "$global_config" ]] && grep -Eq '^[[:space:]]*rare_variant_set_mode[[:space:]]*=[[:space:]]*"mvp_public_union"' "$global_config"
 }
 
 # ==========================================
@@ -218,13 +225,25 @@ analysis_dir="${RUN_ROOT}/analysis"
 case "$MODE" in
   skat|burden|skato)
     if [[ "$status" -eq 0 ]]; then
-      if python3 scripts/analysis/skat_compare.py compare \
-        --run-root "$RUN_ROOT" \
-        --dataset "$DATASET" \
-        --skip-reference; then
-        echo "Analysis outputs are under: ${analysis_dir}"
+      if is_mvp_public_union_config; then
+        if python3 scripts/analysis/compare_mvp_public_2party.py \
+          --run-root "$RUN_ROOT" \
+          --dataset "$DATASET" \
+          --mode "$MODE" \
+          --skato-rho "$SKATO_RHO"; then
+          echo "2-party analysis outputs are under: ${RUN_ROOT}/analysis_2party"
+        else
+          echo "2-party full-union analysis failed; secure run outputs are still saved under ${RUN_ROOT}." >&2
+        fi
       else
-        echo "Plain-vs-secure analysis unavailable; secure run outputs are still saved under ${RUN_ROOT}." >&2
+        if python3 scripts/analysis/skat_compare.py compare \
+          --run-root "$RUN_ROOT" \
+          --dataset "$DATASET" \
+          --skip-reference; then
+          echo "Analysis outputs are under: ${analysis_dir}"
+        else
+          echo "Plain-vs-secure analysis unavailable; secure run outputs are still saved under ${RUN_ROOT}." >&2
+        fi
       fi
     else
       echo "Plain-vs-secure analysis skipped because the secure run failed." >&2

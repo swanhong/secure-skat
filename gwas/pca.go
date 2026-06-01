@@ -258,7 +258,7 @@ func (pca *PCA) DistributedPCA() crypto.CipherMatrix {
 					meanWeight := 2*int(posCount[b]) - int(bucketCount[b])
 
 					// Compute (Q * (1/bucketCount) - XMean) * XStdInv
-					cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+					if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
 						for i := range Q[b] {
 							tmp, err := eval.MulNew(XMean[i], -meanWeight)
 							if err != nil {
@@ -281,7 +281,9 @@ func (pca *PCA) DistributedPCA() crypto.CipherMatrix {
 							}
 						}
 						return nil
-					})
+					}); err != nil {
+						panic(err)
+					}
 				}
 			} else {
 				Q = make(crypto.CipherMatrix, kp)
@@ -426,9 +428,11 @@ func (pca *PCA) DistributedPCA() crypto.CipherMatrix {
 
 					ct := crypto.Mask(cryptoParams, iprod, slotid, false)
 
-					cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+					if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
 						return eval.Add(ct, Zloc[ctid], Zloc[ctid])
-					})
+					}); err != nil {
+						panic(err)
+					}
 
 					if i == j {
 						break
@@ -490,14 +494,16 @@ func (pca *PCA) DistributedPCA() crypto.CipherMatrix {
 
 				cv := crypto.CMultScalar(cryptoParams, Q[c], elem)
 
-				cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+				if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
 					for i := range cv {
 						if err := eval.Add(cv[i], Qpc[r][i], Qpc[r][i]); err != nil {
 							return err
 						}
 					}
 					return nil
-				})
+				}); err != nil {
+					panic(err)
+				}
 			}
 		}
 	}

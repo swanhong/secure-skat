@@ -74,6 +74,11 @@ func InitProtocol(configPath string) *gwas.ProtocolInfo {
 		config.GenoCountFile = overrideExampleDataPath(config.GenoCountFile, datasetRoot)
 		config.SampleKeepFile = overrideExampleDataPath(config.SampleKeepFile, datasetRoot)
 		config.SnpIdsFile = overrideExampleDataPath(config.SnpIdsFile, datasetRoot)
+		config.HiddenGenoFilePrefix = overrideExampleDataPath(config.HiddenGenoFilePrefix, datasetRoot)
+		config.HiddenGenoBlockSizeFile = overrideExampleDataPath(config.HiddenGenoBlockSizeFile, datasetRoot)
+		config.HiddenSnpIdsFile = overrideExampleDataPath(config.HiddenSnpIdsFile, datasetRoot)
+		config.HiddenSnpPosFile = overrideExampleDataPath(config.HiddenSnpPosFile, datasetRoot)
+		config.HiddenSampleKeepFile = overrideExampleDataPath(config.HiddenSampleKeepFile, datasetRoot)
 	}
 
 	if runRoot := strings.TrimSpace(os.Getenv("SFGWAS_RUN_ROOT")); runRoot != "" {

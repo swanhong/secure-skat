@@ -139,7 +139,7 @@ func writeFilterToFile(filename string, filter []bool, isBinary bool) {
 	writer.Flush()
 }
 
-func FilterMatrixFilePgen(pgenPrefix string, nrows, ncols int, rowFiltFile, colNamesFile string, colStartPos int, colFilt []bool, outputFile string) {
+func FilterMatrixFilePgen(pgenPrefix string, nrows, ncols int, rowFiltFile, colNamesFile string, colStartPos int, colFilt []bool, outputFile string, secureOrientation bool) {
 	colFiltFile := outputFile + ".colFilter.bin"
 
 	writeFilterToFile(colFiltFile, colFilt, true)
@@ -149,7 +149,12 @@ func FilterMatrixFilePgen(pgenPrefix string, nrows, ncols int, rowFiltFile, colN
 		scriptPath = "scripts/filterMatrixPgenVzs.sh"
 	}
 
-	cmd := exec.Command("/bin/sh", scriptPath, pgenPrefix, strconv.Itoa(nrows), strconv.Itoa(ncols), rowFiltFile, colFiltFile, colNamesFile, strconv.Itoa(colStartPos), outputFile)
+	secureOrientationArg := "false"
+	if secureOrientation {
+		secureOrientationArg = "true"
+	}
+
+	cmd := exec.Command("/bin/sh", scriptPath, pgenPrefix, strconv.Itoa(nrows), strconv.Itoa(ncols), rowFiltFile, colFiltFile, colNamesFile, strconv.Itoa(colStartPos), outputFile, secureOrientationArg)
 	cout, e := cmd.CombinedOutput()
 	fmt.Print(string(cout))
 	if e != nil {

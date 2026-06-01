@@ -350,6 +350,194 @@ func (ast *AssocTest) skatBlockNumSnps(block int) int {
 	return nsnpsBlock
 }
 
+func (ast *AssocTest) hiddenBlockNumSnps(block int) int {
+	mpcObj := ast.general.mpcObj[0]
+	pid := mpcObj.GetPid()
+	hubPid := mpcObj.GetHubPid()
+	if pid == 0 {
+		return mpcObj.Network.ReceiveInt(hubPid)
+	}
+
+	nsnpsBlock := ast.general.hiddenGenoBlockSizes[block]
+	if pid == hubPid {
+		mpcObj.Network.SendInt(nsnpsBlock, 0)
+	}
+	return nsnpsBlock
+}
+
+func (ast *AssocTest) hiddenNumCtx(nsnps int) int {
+	if nsnps == 0 {
+		return 0
+	}
+	return 1 + (nsnps-1)/ast.general.cps.GetSlots()
+}
+
+func minCipherVectorLevel(vec crypto.CipherVector) int {
+	if len(vec) == 0 || vec[0] == nil {
+		return 0
+	}
+	minLevel := vec[0].Level()
+	for _, ct := range vec {
+		if ct != nil && ct.Level() < minLevel {
+			minLevel = ct.Level()
+		}
+	}
+	return minLevel
+}
+
+func dropCipherVectorToLevel(cp *crypto.CryptoParams, vec crypto.CipherVector, level int) crypto.CipherVector {
+	return crypto.DropLevel(cp, crypto.CipherMatrix{vec}, level)[0]
+}
+
+func alignCipherVectorLevels(cp *crypto.CryptoParams, left, right crypto.CipherVector) (crypto.CipherVector, crypto.CipherVector) {
+	leftLevel := minCipherVectorLevel(left)
+	rightLevel := minCipherVectorLevel(right)
+	targetLevel := leftLevel
+	if rightLevel < targetLevel {
+		targetLevel = rightLevel
+	}
+	if leftLevel != targetLevel {
+		left = dropCipherVectorToLevel(cp, left, targetLevel)
+	}
+	if rightLevel != targetLevel {
+		right = dropCipherVectorToLevel(cp, right, targetLevel)
+	}
+	return left, right
+}
+
+func (ast *AssocTest) applyHiddenScoreCorrection(score crypto.CipherVector, Y crypto.CipherMatrix) crypto.CipherVector {
+	if len(score) == 0 || len(Y) == 0 || len(Y[0]) == 0 || Y[0][0] == nil {
+		return score
+	}
+
+	cryptoParams := ast.general.cps
+	sumA := crypto.InnerSumAll(cryptoParams, Y[0])
+	correction := crypto.CMultConst(cryptoParams, crypto.CipherVector{sumA}, 2.0, false)
+	score, correction = alignCipherVectorLevels(cryptoParams, score, correction)
+	return crypto.CSub(cryptoParams, score, correction)
+}
+
+func (ast *AssocTest) broadcastHiddenOwnerScoreLevel(localLevel int) int {
+	mpcObj := ast.general.mpcObj[0]
+	pid := mpcObj.GetPid()
+	ownerPid := ast.general.config.PrivateVariantPartyID
+	if pid == 0 {
+		return localLevel
+	}
+	if pid == ownerPid {
+		for p := 1; p <= ast.general.config.NumMainParties; p++ {
+			if p != ownerPid {
+				mpcObj.Network.SendInt(localLevel, p)
+			}
+		}
+		return localLevel
+	}
+	return mpcObj.Network.ReceiveInt(ownerPid)
+}
+
+func (ast *AssocTest) hiddenReferenceNumInds() int {
+	nrowsAll := ast.skatNumInds()
+	total := 0
+	for p := 1; p <= ast.general.config.NumMainParties; p++ {
+		if p != ast.general.config.PrivateVariantPartyID {
+			total += nrowsAll[p]
+		}
+	}
+	return total
+}
+
+func (ast *AssocTest) hiddenPgenBlockMultSKAT(block int, Y crypto.CipherMatrix, nsnpsBlock int) (crypto.CipherMatrix, []float64) {
+	cryptoParams := ast.general.cps
+	mpcObj := ast.general.mpcObj[0]
+	pid := mpcObj.GetPid()
+
+	blockSize := ast.general.hiddenGenoBlockSizes[block]
+	shift := uint64(0)
+	for i := 0; i < block; i++ {
+		shift += uint64(ast.general.hiddenGenoBlockSizes[i])
+	}
+
+	pgenFile := fmt.Sprintf(ast.general.config.HiddenGenoFilePrefix, block+1)
+	numInd := ast.general.gwasParams.numFiltInds[pid]
+	blockFilt := OnesBool(blockSize)
+	gfsTempFile := ast.general.CachePath(fmt.Sprintf("hidden_pgen_gfs.%d.tmp", block))
+
+	FilterMatrixFilePgen(
+		pgenFile,
+		numInd,
+		nsnpsBlock,
+		ast.general.config.HiddenSampleKeepFile,
+		ast.general.config.HiddenSnpIdsFile,
+		int(shift),
+		blockFilt,
+		gfsTempFile,
+		true,
+	)
+
+	X := NewGenoFileStream(gfsTempFile, uint64(numInd), uint64(nsnpsBlock), true)
+	matOut, dosageSum, _ := MatMult4Stream(cryptoParams, Y, X, 5, true, false, 0)
+	if len(matOut) > 0 {
+		matOut[0] = ast.applyHiddenScoreCorrection(matOut[0], Y)
+	}
+
+	referenceNumInds := ast.hiddenReferenceNumInds()
+	for j := 0; j < nsnpsBlock; j++ {
+		dosageSum[j] += float64(2 * referenceNumInds)
+	}
+
+	return matOut, dosageSum
+}
+
+func (ast *AssocTest) ComputeSKATHiddenStep2LoadBlockScore(block int, Y crypto.CipherMatrix, nsnpsBlock int) SKATBlockData {
+	mpcObj := ast.general.mpcObj[0]
+	pid := mpcObj.GetPid()
+	cryptoParams := ast.general.cps
+	numBlocks := ast.general.config.HiddenGenoNumBlocks
+	ownerPid := ast.general.config.PrivateVariantPartyID
+	numCtx := ast.hiddenNumCtx(nsnpsBlock)
+
+	log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("SKAT hidden Step 2/4: block %d/%d score loading (%d SNPs)", block+1, numBlocks, nsnpsBlock))
+
+	var SBlock crypto.CipherMatrix
+	var dosageSum []float64
+	if pid == ownerPid {
+		SBlock, dosageSum = ast.hiddenPgenBlockMultSKAT(block, Y, nsnpsBlock)
+		ownerLevel := 0
+		if len(SBlock) > 0 {
+			ownerLevel = minCipherVectorLevel(SBlock[0])
+		}
+		ast.broadcastHiddenOwnerScoreLevel(ownerLevel)
+	} else if pid > 0 {
+		ownerLevel := ast.broadcastHiddenOwnerScoreLevel(0)
+		SBlock = crypto.CZeroMat(cryptoParams, numCtx, 1)
+		if len(SBlock) > 0 && len(SBlock[0]) > 0 && SBlock[0][0].Level() != ownerLevel {
+			SBlock = crypto.DropLevel(cryptoParams, SBlock, ownerLevel)
+		}
+		dosageSum = make([]float64, nsnpsBlock)
+	} else {
+		SBlock = nil
+		dosageSum = make([]float64, nsnpsBlock)
+	}
+
+	SBlockAggr := mpcObj.Network.AggregateCMat(cryptoParams, SBlock)
+	if pid > 0 && len(SBlockAggr) > 0 && len(SBlockAggr[0]) > 0 {
+		if mpcObj.Network.CanCollectiveBootstrap(cryptoParams, SBlockAggr[0][0].Level()) {
+			SBlockAggr = mpcObj.Network.CollectiveBootstrapMat(cryptoParams, SBlockAggr, -1)
+		} else {
+			log.LLvl1(time.Now().Format(time.RFC3339), "SKAT hidden Step 2/4: skipping score bootstrap at level", SBlockAggr[0][0].Level())
+		}
+	}
+
+	blockData := SKATBlockData{
+		NumSnps:   nsnpsBlock,
+		DosageSum: dosageSum,
+	}
+	if pid > 0 {
+		blockData.ScoreVec = SBlockAggr[0]
+	}
+	return blockData
+}
+
 func (ast *AssocTest) ComputeSKATStep2LoadBlockScore(block int, Y crypto.CipherMatrix) SKATBlockData {
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
@@ -484,6 +672,40 @@ func (ast *AssocTest) ComputeSKATStep4BlockStatistics(block int, blockData SKATB
 	return qBlockRes, qBurdenBlockRes
 }
 
+func (ast *AssocTest) ComputeSKATHiddenStep4BlockStatistics(block int, blockData SKATBlockData) (crypto.CipherVector, crypto.CipherVector) {
+	cryptoParams := ast.general.cps
+	mpcObj := ast.general.mpcObj[0]
+	if mpcObj.GetPid() == 0 {
+		return nil, nil
+	}
+
+	log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("SKAT hidden Step 4/4: block statistic aggregation (%d SNPs)", blockData.NumSnps))
+	qBlockRes, qBurdenBlockRes, _, _, _, _ := ast.ScoreCalculation(blockData.ScoreVec, blockData.WeightEnc)
+
+	SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qHiddenBlock_block%d.txt", block)))
+	SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBurdenBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qHiddenBurdenBlock_block%d.txt", block)))
+
+	return qBlockRes, qBurdenBlockRes
+}
+
+func (ast *AssocTest) ComputeSKATHiddenBlockStatistics(block int, Y crypto.CipherMatrix) (mpc_core.RVec, mpc_core.RVec) {
+	mpcObj := ast.general.mpcObj[0]
+	rtype := mpcObj.GetRType()
+	zero := mpc_core.InitRVec(rtype.Zero(), 1)
+
+	nsnpsBlock := ast.hiddenBlockNumSnps(block)
+	if nsnpsBlock == 0 {
+		log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("SKAT hidden block %d skipped (empty)", block+1))
+		return zero.Copy(), zero.Copy()
+	}
+
+	blockData := ast.ComputeSKATHiddenStep2LoadBlockScore(block, Y, nsnpsBlock)
+	ast.ComputeSKATStep3BlockWeights(&blockData)
+
+	qBlockRes, qBurdenBlockRes := ast.ComputeSKATHiddenStep4BlockStatistics(block, blockData)
+	return ast.scalarCiphertextToShares(qBlockRes), ast.scalarCiphertextToShares(qBurdenBlockRes)
+}
+
 func (ast *AssocTest) scalarCiphertextToShares(stat crypto.CipherVector) mpc_core.RVec {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
@@ -522,6 +744,16 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 		qBlockRes, qBurdenBlockRes := ast.ComputeSKATStep4BlockStatistics(block, blockData)
 		finalQSS.Add(ast.scalarCiphertextToShares(qBlockRes))
 		finalBurdenSS.Add(ast.scalarCiphertextToShares(qBurdenBlockRes))
+	}
+
+	if ast.general.IsMVPPublicUnionMode() {
+		hiddenNumBlocks := ast.general.config.HiddenGenoNumBlocks
+		for block := 0; block < hiddenNumBlocks; block++ {
+			qHiddenSS, burdenHiddenSS := ast.ComputeSKATHiddenBlockStatistics(block, Y)
+			finalQSS.Add(qHiddenSS)
+			finalBurdenSS.Add(burdenHiddenSS)
+			log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("SKAT Hidden Progress: block %d/%d (%.1f%%)", block+1, hiddenNumBlocks, 100.0*float64(block+1)/float64(hiddenNumBlocks)))
+		}
 	}
 
 	finalBurdenSS = mpcObj.SSSquareElemVec(finalBurdenSS)
