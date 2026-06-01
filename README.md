@@ -109,7 +109,10 @@ An example script `run_example.sh` shows how to run SF-GWAS.
 
 The script spawns 3 processes on the same machine---one for each of the two data-contributing parties (`PID=1` and `PID=2`)and the third for the auxiliary party coordinating the computation (`PID=0`). In practice, each party runs their process on their own machine and provides the IP addresses of other parties in the configuration for network communication. 
 
-We also provide `stop.sh` for terminating the jobs launched by `run_example.sh`.
+To terminate the jobs launched by `run_example.sh`, kill the running `sfgwas` processes, for example:
+```
+ps -a | grep sfgwas | awk '{print $1}' | xargs -I job kill job
+```
 
 ### Output format
 
