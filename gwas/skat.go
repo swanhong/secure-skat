@@ -65,22 +65,40 @@ func (ast *AssocTest) computeEncryptedResidualRSS(ynew crypto.CipherMatrix) cryp
 }
 
 // computeResidual performs QR and projects covariates out to get the null model residual
+// computeResidual builds the SKAT null-model residuals y - (I - QQ')y/N by
+// (1) prepending the intercept covariate, (2) forming the orthonormal null-model
+// basis Q (with the exact intercept override), and (3) projecting the covariates
+// out of the phenotype. The three steps run in this exact order; in particular
+// the Q[0] intercept override happens inside computeNullModelBasis, immediately
+// before the projection consumes Q.
 func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 	cryptoParams := ast.general.cps
 	mpcObj := ast.general.mpcObj[0]
-	pid := mpcObj.GetPid()
 
 	nrowsAll := ast.skatNumInds()
-	nrowsTotal := 0
-	for p := 1; p <= ast.general.config.NumMainParties; p++ {
-		nrowsTotal += nrowsAll[p]
+
+	C := ast.prependSKATInterceptCovariate(nrowsAll)
+	Q := ast.computeNullModelBasis(C, nrowsAll)
+
+	if ast.general.config.Debug {
+		// Save vertically partitioned arrays by iterating individually to avoid
+		// MPC extracting ciphertexts composed of independent data halves (-1).
+		for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
+			SaveMatrixToFile(cryptoParams, mpcObj, Q, nrowsAll[p], p, ast.general.OutPath("Qcomb.txt"))
+		}
 	}
-	nrowsTotalInv := 1.0 / float64(nrowsTotal)
 
-	// covAllOnes specifies whether the input covariates already contain an all-ones column.
-	// For SKAT, we assume it does NOT locally, so we explicitly prepend it.
+	return ast.projectOutCovariates(Q, nrowsAll)
+}
+
+// prependSKATInterceptCovariate prepends the all-ones intercept column to the
+// input covariates. SKAT assumes the covariates do not locally contain an
+// all-ones column, so it is added explicitly here.
+func (ast *AssocTest) prependSKATInterceptCovariate(nrowsAll []int) crypto.PlainMatrix {
+	cryptoParams := ast.general.cps
+	pid := ast.general.mpcObj[0].GetPid()
+
 	C := ast.inputCov
-
 	log.LLvl1("Adding an all-ones covariate for SKAT Null Model")
 	if pid > 0 { // Party 0 doesn't encode data
 		arr := make([]float64, nrowsAll[pid])
@@ -93,10 +111,19 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 		// Keep one zero-filled ciphertext so distributed QR sees aligned local shapes.
 		C = append([]crypto.PlainVector{ast.zeroPlainVectorForNonDataParty()}, C...)
 	}
+	return C
+}
+
+// computeNullModelBasis runs the joint distributed QR over the covariates and
+// overrides Q[0] with an exact all-ones intercept column, eliminating the
+// NetDQRenc Goldschmidt approximation noise. The override must stay here, right
+// before the projection step that consumes Q.
+func (ast *AssocTest) computeNullModelBasis(C crypto.PlainMatrix, nrowsAll []int) crypto.CipherMatrix {
+	cryptoParams := ast.general.cps
+	pid := ast.general.mpcObj[0].GetPid()
 
 	// Joint QR (NetDQRenc inside requires Party 0)
 	// SKAT runs without PCA covariates, passing nil
-
 	Q := ast.computeCombinedQV2(C, nil)
 
 	// In SKAT, the first covariate is ALWAYS the identically precise intercept.
@@ -117,14 +144,22 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 		Q[0] = QFirst
 		Q, _ = crypto.FlattenLevels(cryptoParams, Q)
 	}
+	return Q
+}
 
-	if ast.general.config.Debug {
-		// Save vertically partitioned arrays by iterating individually to avoid
-		// MPC extracting ciphertexts composed of independent data halves (-1).
-		for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
-			SaveMatrixToFile(cryptoParams, mpcObj, Q, nrowsAll[p], p, ast.general.OutPath("Qcomb.txt"))
-		}
+// projectOutCovariates computes the residual ynew = pheno - (I - QQ')*pheno/N,
+// where N is the total number of individuals. Only data parties (pid > 0)
+// participate in the distributed projection.
+func (ast *AssocTest) projectOutCovariates(Q crypto.CipherMatrix, nrowsAll []int) crypto.CipherMatrix {
+	cryptoParams := ast.general.cps
+	mpcObj := ast.general.mpcObj[0]
+	pid := mpcObj.GetPid()
+
+	nrowsTotal := 0
+	for p := 1; p <= ast.general.config.NumMainParties; p++ {
+		nrowsTotal += nrowsAll[p]
 	}
+	nrowsTotalInv := 1.0 / float64(nrowsTotal)
 
 	// Project covariates out of y: ynew = (I - Q*Q')*y
 	ymat := make(crypto.PlainMatrix, 1)
@@ -258,18 +293,19 @@ func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (
 	majorDelta = mpcObj.TruncVec(majorDelta, mpcObj.GetDataBits(), mpcObj.GetFracBits())
 	betaBase.Add(majorDelta)
 
-	w2 := mpcObj.SSMultElemVec(betaBase, betaBase)
-	w2 = mpcObj.TruncVec(w2, mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	// Each secure multiply must be followed by a truncation to preserve the
+	// fixed-point scale; squareTrunc keeps that multiply-then-truncate cadence.
+	squareTrunc := func(v mpc_core.RVec) mpc_core.RVec {
+		sq := mpcObj.SSMultElemVec(v, v)
+		return mpcObj.TruncVec(sq, mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	}
 
-	w4 := mpcObj.SSMultElemVec(w2, w2)
-	w4 = mpcObj.TruncVec(w4, mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	w2 := squareTrunc(betaBase)
+	w4 := squareTrunc(w2)
+	w8 := squareTrunc(w4)
+	w16 := squareTrunc(w8)
 
-	w8 := mpcObj.SSMultElemVec(w4, w4)
-	w8 = mpcObj.TruncVec(w8, mpcObj.GetDataBits(), mpcObj.GetFracBits())
-
-	w16 := mpcObj.SSMultElemVec(w8, w8)
-	w16 = mpcObj.TruncVec(w16, mpcObj.GetDataBits(), mpcObj.GetFracBits())
-
+	// w24 = w16 * w8 (= base^24); not a squaring, so kept explicit.
 	w24 := mpcObj.SSMultElemVec(w16, w8)
 	w24 = mpcObj.TruncVec(w24, mpcObj.GetDataBits(), mpcObj.GetFracBits())
 
