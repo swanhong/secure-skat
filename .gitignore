@@ -18,6 +18,8 @@ sfgwas
 datasets/*
 CLAUDE.md
 .DS_Store
+.claude/scheduled_tasks.lock
+.venv-skatcompare/
 
 # Vendored Go dependencies must be tracked as-is, even if filenames match
 # generic ignore patterns such as *.txt or *.log.

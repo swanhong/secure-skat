@@ -58,7 +58,7 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 		// Determine who has the current first row of A and their local indices
 		upid, ctid, slotid := crypto.GlobalToPartyIndex(cryptoParams, nrowsAll, col, nparty)
 
-		if true {
+		if debug {
 			log.LLvl1(time.Now().Format(time.RFC3339), "check location: upid, ctid, slotid", upid, ctid, slotid)
 		}
 
@@ -122,7 +122,7 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 		zNewSqrtInv := mpcObj.SStoCiphertext(cryptoParams, mpc_core.RVec{zNewSqrtInvSS[0]})
 		zNewSqrtInv = crypto.Rebalance(cryptoParams, zNewSqrtInv)
 
-		if debug || col <= 2 {
+		if debug {
 			log.LLvl1(time.Now().Format(time.RFC3339), "col", col,
 				"zSS", mpcObj.RevealSym(zSS[0]).Float64(fracBits),
 				"zSqrtSS", mpcObj.RevealSym(zSqrtSS[0]).Float64(fracBits),
