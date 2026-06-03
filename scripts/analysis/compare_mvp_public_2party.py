@@ -386,6 +386,21 @@ def main(argv: list[str] | None = None) -> int:
         )
     print(f"  JSON: {out_path}")
 
+    # Paper Section 7: the AoU-private hidden tail must release only the encrypted
+    # aggregate (Q_H, B_H). Per-block hidden decrypt artifacts would be a privacy
+    # leak; fail the comparison if any are present (regression guard for the gate
+    # in gwas/skat.go computeSKATBlockStatistics).
+    hidden_decrypt_files = sorted(
+        str(p) for p in Path(result["run_root"]).rglob("*")
+        if p.name.startswith(("qHiddenBlock_block", "qHiddenBurdenBlock_block"))
+    )
+    if hidden_decrypt_files:
+        print(f"  hidden aggregate-only: FAIL ({len(hidden_decrypt_files)} per-block hidden decrypt files leaked)")
+        for f in hidden_decrypt_files[:5]:
+            print(f"    {f}")
+        return 1
+    print("  hidden aggregate-only: PASS (no per-block hidden decrypt files)")
+
     if not result["raw"]["ok"]:
         return 1
     if args.mode in {"skat", "skato"} and not result["scaled"]["skat_ok"]:
