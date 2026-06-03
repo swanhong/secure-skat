@@ -20,15 +20,23 @@ def test_vep_functional_derivation():
         "22_400_T/C\tmissense_variant\tlincRNA\tNO",                            # drop (non protein_coding)
         "22_500_A/T\tsplice_donor_variant&intron_variant\tprotein_coding\tYES",  # keep (combo term)
         "chr22_600_A/G\tframeshift_variant\tprotein_coding\tNO",                # keep (chr prefix)
+        # multi-transcript X: canonical synonymous (best by rank) + non-canonical missense
+        "22_700_A/G\tsynonymous_variant\tprotein_coding\tYES",
+        "22_700_A/G\tmissense_variant\tprotein_coding\tNO",
     ]
     with tempfile.NamedTemporaryFile("w", suffix=".tab", delete=False) as f:
         f.write("\n".join(rows) + "\n")
         path = Path(f.name)
     try:
-        got = functional_variants_from_vep(path)
+        canon = functional_variants_from_vep(path, rule="canonical")
+        anyf = functional_variants_from_vep(path, rule="any")
     finally:
         path.unlink()
-    assert got == {"22:100:A:G", "22:200:C:T", "22:500:A:T", "22:600:A:G"}, got
+    base = {"22:100:A:G", "22:200:C:T", "22:500:A:T", "22:600:A:G"}
+    # canonical: X(700) dropped because its best-ranked (canonical) annotation is synonymous.
+    assert canon == base, canon
+    # any: X(700) kept because a non-canonical transcript is missense.
+    assert anyf == base | {"22:700:A:G"}, anyf
     assert normalize_uploaded_variation("22_100_A/G") == "22:100:A:G"
     assert normalize_uploaded_variation("bad") is None
 
