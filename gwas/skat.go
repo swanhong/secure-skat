@@ -678,8 +678,15 @@ func (ast *AssocTest) computeSKATBlockStatistics(block int, blockData SKATBlockD
 
 	qBlockRes, qBurdenBlockRes, S2, w2, w2S2, wS := ast.ScoreCalculation(blockData.ScoreVec, blockData.WeightEnc)
 
-	SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("q%sBlock_block%d.txt", namePrefix, block)))
-	SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBurdenBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("q%sBurdenBlock_block%d.txt", namePrefix, block)))
+	// Per paper Section 7, the AoU-private hidden tail contributes only the encrypted
+	// aggregate (Q_H, B_H); it must not release per-block decrypted values. So skip the
+	// per-block decrypt-and-save for the hidden path (namePrefix != ""). The masked
+	// ciphertext-to-secret-share accumulation in the caller is unaffected. Public V_M
+	// blocks are public, so their per-block save is retained.
+	if namePrefix == "" {
+		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("q%sBlock_block%d.txt", namePrefix, block)))
+		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBurdenBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("q%sBurdenBlock_block%d.txt", namePrefix, block)))
+	}
 
 	if saveDebugParts && ast.general.config.Debug {
 		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{S2}, blockData.NumSnps, -1, ast.general.OutPath(fmt.Sprintf("S2_block%d.txt", block)))
