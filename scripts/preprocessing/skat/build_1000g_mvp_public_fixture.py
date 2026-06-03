@@ -216,30 +216,70 @@ def read_alt_counts(acount_path: Path) -> dict[str, int]:
     return out
 
 
+def maf_from_count(count: int, total_alleles: int) -> float:
+    """Minor allele frequency min(p, 1-p) for an ALT allele count over total_alleles.
+
+    Orientation-invariant, matching paper Section 7's weight which uses min{p, 1-p}.
+    """
+    if total_alleles <= 0:
+        return 0.0
+    p = count / total_alleles
+    return min(p, 1.0 - p)
+
+
+def load_annotation_set(path: Path | None) -> set[str] | None:
+    """Load a public functional-annotation variant set (e.g. VEP LoF/missense IDs).
+
+    One variant ID per line (blank/`#` lines ignored). Returns None when no file is
+    given, in which case the annotation pre-filter passes every variant. This is a
+    placeholder hook: a real deployment plugs in AoU/MVP public consequence
+    annotations here without changing the selection logic.
+    """
+    if path is None:
+        return None
+    out: set[str] = set()
+    for line in path.read_text().splitlines():
+        s = line.strip()
+        if s and not s.startswith("#"):
+            out.add(s.split()[0])
+    return out
+
+
 def choose_blocks(
     variants: dict[str, Variant],
     ac_a: dict[str, int],
     ac_m: dict[str, int],
-    rare_ac_max: int,
+    total_alleles: int,
+    maf_ub: float,
+    annotation_set: set[str] | None,
     window_bp: int,
     num_blocks: int,
     max_overlap: int,
     max_mvp_only: int,
     max_aou_hidden: int,
 ) -> list[SelectedBlock]:
+    # Paper Section 7 (all-reference private-tail): the AoU-private hidden tail
+    # H = V_A \ V_M is selected using ONLY AoU's own allele count over the pooled
+    # denominator 2N (MVP contributes all-reference), plus a public annotation
+    # pre-filter and exclusion of the public MVP list V_M. MVP's count ac_m is used
+    # ONLY to define the public list V_M (m_rare), never to decide H membership.
+    def annotation_ok(vid: str) -> bool:
+        return annotation_set is None or vid in annotation_set
+
     windows: dict[int, dict[str, list[Variant]]] = {}
     for vid, variant in variants.items():
-        a_rare = 1 <= ac_a.get(vid, 0) <= rare_ac_max
-        m_rare = 1 <= ac_m.get(vid, 0) <= rare_ac_max
+        # require >=1 ALT allele so an absent variant (count 0, MAF 0) is not "rare".
+        a_rare = ac_a.get(vid, 0) >= 1 and maf_from_count(ac_a.get(vid, 0), total_alleles) < maf_ub
+        m_rare = ac_m.get(vid, 0) >= 1 and maf_from_count(ac_m.get(vid, 0), total_alleles) < maf_ub
         if not (a_rare or m_rare):
             continue
         window_id = variant.pos // window_bp
         bucket = windows.setdefault(window_id, {"overlap": [], "mvp_only": [], "aou_hidden": []})
-        if a_rare and m_rare:
-            bucket["overlap"].append(variant)
-        elif m_rare:
-            bucket["mvp_only"].append(variant)
-        else:
+        if m_rare:
+            # in the public MVP list V_M (overlap if AoU also has it rare).
+            bucket["overlap" if a_rare else "mvp_only"].append(variant)
+        elif a_rare and annotation_ok(vid):
+            # H = AoU-rare (a_A/2N MAF) AND not in V_M AND passes public annotation.
             bucket["aou_hidden"].append(variant)
 
     candidates: list[tuple[int, int, int, int, int]] = []
@@ -643,7 +683,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=260530)
     parser.add_argument("--num-blocks", type=int, default=2)
     parser.add_argument("--window-bp", type=int, default=50_000)
-    parser.add_argument("--rare-ac-max", type=int, default=6)
+    parser.add_argument("--maf-ub", type=float, default=0.01,
+                        help="Rare-variant MAF upper bound tau (min(p,1-p) over pooled 2N). Paper Section 7 rule.")
+    parser.add_argument("--annotation-file", default=None,
+                        help="Optional public functional-annotation variant ID list (VEP LoF/missense). "
+                             "When omitted, the annotation pre-filter passes all variants (placeholder).")
+    parser.add_argument("--rare-ac-max", type=int, default=6,
+                        help="Deprecated: legacy allele-count threshold, no longer used for selection (kept for compat).")
     parser.add_argument("--max-overlap", type=int, default=16)
     parser.add_argument("--max-mvp-only", type=int, default=16)
     parser.add_argument("--max-aou-hidden", type=int, default=16)
@@ -697,11 +743,16 @@ def main() -> None:
     if not pvar_path.exists():
         pvar_path = pfile_path(source_prefix, ".pvar")
     variants = {variant.vid: variant for variant in iter_pvar_records(pvar_path)}
+    # Pooled denominator 2N (AoU + MVP samples); MVP contributes all-reference for H.
+    total_alleles = 2 * (len(aou_samples) + len(mvp_samples))
+    annotation_set = load_annotation_set(resolve_path(args.annotation_file) if args.annotation_file else None)
     blocks = choose_blocks(
         variants,
         ac_a,
         ac_m,
-        args.rare_ac_max,
+        total_alleles,
+        args.maf_ub,
+        annotation_set,
         args.window_bp,
         args.num_blocks,
         args.max_overlap,
@@ -870,7 +921,9 @@ def main() -> None:
         "out_root": str(out_root),
         "seed": args.seed,
         "n_per_party": args.n_per_party,
-        "rare_ac_max": args.rare_ac_max,
+        "maf_ub": args.maf_ub,
+        "annotation_file": args.annotation_file,
+        "total_alleles_2N": 2 * (len(aou_samples) + len(mvp_samples)),
         "window_bp": args.window_bp,
         "num_blocks": args.num_blocks,
         "max_overlap": args.max_overlap,
