@@ -1,4 +1,5 @@
 .local/*
+.claude/*
 *.txt
 !scripts/analysis/requirements-skat-compare.txt
 *.log
