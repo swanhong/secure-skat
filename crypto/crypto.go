@@ -82,28 +82,6 @@ func NewCryptoParams(params ckks.Parameters, sk, aggregateSk *rlwe.SecretKey, pk
 	return cp
 }
 
-func NewCryptoParamsForNetwork(params ckks.Parameters, nbrNodes int, prec uint) []*CryptoParams {
-	kgen := ckks.NewKeyGenerator(params)
-	aggregateSk := rlwe.NewSecretKey(params)
-	skList := make([]*rlwe.SecretKey, nbrNodes)
-	ringQP := params.RingQP()
-
-	for i := 0; i < nbrNodes; i++ {
-		skList[i] = kgen.GenSecretKeyNew()
-		ringQP.Add(aggregateSk.Value, skList[i].Value, aggregateSk.Value)
-	}
-
-	pk := kgen.GenPublicKeyNew(aggregateSk)
-	rlk := kgen.GenRelinearizationKeyNew(aggregateSk)
-
-	out := make([]*CryptoParams, nbrNodes)
-	for i := range out {
-		out[i] = NewCryptoParams(params, skList[i], aggregateSk.CopyNew(), pk.CopyNew(), rlk.CopyNew(), prec, runtime.GOMAXPROCS(0))
-	}
-
-	return out
-}
-
 func (cp *CryptoParams) rebuildPools() {
 	cp.encoders = make(chan *ckks.Encoder, cp.numThreads)
 	cp.encryptors = make(chan *rlwe.Encryptor, cp.numThreads)
@@ -294,23 +272,6 @@ func EncodeFloatVectorWithScale(cryptoParams *CryptoParams, f []float64, scale f
 	}
 
 	return plainArr, elementsEncoded
-}
-
-func EncodeFloatMatrixRow(cryptoParams *CryptoParams, matrix [][]float64) (PlainMatrix, int, int, error) {
-	if len(matrix) == 0 {
-		return nil, 0, 0, nil
-	}
-	nbrRows := len(matrix)
-	d := len(matrix[0])
-	matrixEnc := make(PlainMatrix, 0, nbrRows)
-	for _, row := range matrix {
-		if d != len(row) {
-			return nil, 0, 0, errors.New("this is not a matrix (expected " + strconv.Itoa(d) + " dimensions but got " + strconv.Itoa(len(row)) + ")")
-		}
-		rowEnc, _ := EncodeFloatVector(cryptoParams, row)
-		matrixEnc = append(matrixEnc, rowEnc)
-	}
-	return matrixEnc, nbrRows, d, nil
 }
 
 func DecryptMultipleFloat(cryptoParams *CryptoParams, cipher *rlwe.Ciphertext, nbrEl int) []float64 {

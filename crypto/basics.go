@@ -62,13 +62,6 @@ func EncryptPlaintextMatrix(cryptoParams *CryptoParams, pm PlainMatrix) CipherMa
 	return cm
 }
 
-func DummyBootstrapMatrix(cryptoParams *CryptoParams, ap CipherMatrix) CipherMatrix {
-	for i := range ap {
-		ap[i].DummyBootstrapping("", cryptoParams)
-	}
-	return ap
-}
-
 func GlobalToPartyIndex(cryptoParams *CryptoParams, Arowdims []int, col, nparty int) (int, int, int) {
 	pid := 0
 	ctid := 0
@@ -83,21 +76,6 @@ func GlobalToPartyIndex(cryptoParams *CryptoParams, Arowdims []int, col, nparty 
 		slotid -= Arowdims[i]
 	}
 	return pid, ctid, slotid
-}
-
-func DCopyEncrypted(a []CipherMatrix) []CipherMatrix {
-	acopy := make([]CipherMatrix, len(a))
-	for p := range a {
-		acopy[p] = CopyEncryptedMatrix(a[p])
-	}
-	return acopy
-}
-
-func GetCTsize(vecsize, ctind, slots int) int {
-	if (ctind+1)*slots <= vecsize {
-		return slots
-	}
-	return vecsize % slots
 }
 
 func MaskTrunc(cryptoParams *CryptoParams, ct *rlwe.Ciphertext, n int) *rlwe.Ciphertext {
@@ -206,18 +184,6 @@ func Add(cryptoParams *CryptoParams, ct1 *rlwe.Ciphertext, ct2 *rlwe.Ciphertext)
 	return newct
 }
 
-func AddPlain(cryptoParams *CryptoParams, ct1 *rlwe.Ciphertext, ct2 *rlwe.Plaintext) *rlwe.Ciphertext {
-	var newct *rlwe.Ciphertext
-	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
-		var err error
-		newct, err = eval.AddNew(ct1, ct2)
-		return err
-	}); err != nil {
-		panic(err)
-	}
-	return newct
-}
-
 func AddConst(cryptoParams *CryptoParams, ct *rlwe.Ciphertext, constant interface{}) *rlwe.Ciphertext {
 	var out *rlwe.Ciphertext
 	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
@@ -270,21 +236,6 @@ func RotateRight(cryptoParams *CryptoParams, ct *rlwe.Ciphertext, nrot int) *rlw
 	return out
 }
 
-func Mult(cryptoParams *CryptoParams, ct1 *rlwe.Ciphertext, ct2 *rlwe.Ciphertext) *rlwe.Ciphertext {
-	var res *rlwe.Ciphertext
-	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
-		var err error
-		res, err = eval.MulRelinNew(ct1, ct2)
-		if err != nil {
-			return err
-		}
-		return eval.Rescale(res, res)
-	}); err != nil {
-		panic(err)
-	}
-	return res
-}
-
 func RotateAndAdd(cryptoParams *CryptoParams, ct *rlwe.Ciphertext, size int) *rlwe.Ciphertext {
 	ctOut := ct.CopyNew()
 	for rotate := 1; rotate < size; rotate *= 2 {
@@ -308,22 +259,6 @@ func Rebalance(cryptoParams *CryptoParams, ct *rlwe.Ciphertext) *rlwe.Ciphertext
 	return InnerSumAll(cryptoParams, CipherVector{ct})
 }
 
-func InnerSum(cryptoParams *CryptoParams, X CipherVector, Xsize int) *rlwe.Ciphertext {
-	if len(X) == 1 {
-		return RotateAndAdd(cryptoParams, X[0], Xsize)
-	}
-
-	vecsum := X[0].CopyNew()
-	for i := 1; i < len(X); i++ {
-		if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
-			return eval.Add(vecsum, X[i], vecsum)
-		}); err != nil {
-			panic(err)
-		}
-	}
-	return RotateAndAdd(cryptoParams, vecsum, cryptoParams.GetSlots())
-}
-
 func InnerProd(cryptoParams *CryptoParams, X, Y CipherVector) *rlwe.Ciphertext {
 	return InnerSumAll(cryptoParams, CMult(cryptoParams, X, Y))
 }
@@ -341,75 +276,6 @@ func InnerSumAll(cryptoParams *CryptoParams, X CipherVector) *rlwe.Ciphertext {
 		}
 	}
 	return RotateAndAdd(cryptoParams, vecsum, slots)
-}
-
-func RotateAndPlace(cryptoParams *CryptoParams, ct *rlwe.Ciphertext, size, place int, duplicate bool) *rlwe.Ciphertext {
-	out := ct.CopyNew()
-	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
-		if !duplicate {
-			if place != 0 {
-				var err error
-				out, err = eval.RotateNew(out, cryptoParams.GetSlots()-place)
-				return err
-			}
-			return nil
-		}
-
-		maxnrot := intCeilLog2(size)
-		rotate := 1
-		for j := 0; j < maxnrot; j++ {
-			tmp, err := eval.RotateNew(out, cryptoParams.GetSlots()-rotate)
-			if err != nil {
-				return err
-			}
-			next, err := eval.AddNew(out, tmp)
-			if err != nil {
-				return err
-			}
-			out = next
-			rotate *= 2
-		}
-		return nil
-	}); err != nil {
-		panic(err)
-	}
-	return out
-}
-
-func AggregateSumMask(cryptoParams *CryptoParams, vals []*rlwe.Ciphertext) *rlwe.Ciphertext {
-	aggsum := vals[0].CopyNew()
-	if len(vals) == 1 {
-		return aggsum
-	}
-	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
-		for i := 1; i < len(vals); i++ {
-			if err := eval.Add(aggsum, vals[i], aggsum); err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
-		panic(err)
-	}
-	return Mask(cryptoParams, aggsum, 0, false)
-}
-
-func AggregateVec(cryptoParams *CryptoParams, vecs []CipherVector) CipherVector {
-	res := CopyEncryptedVector(vecs[0])
-	for i := 1; i < len(vecs); i++ {
-		res = CAdd(cryptoParams, vecs[i], res)
-	}
-	return res
-}
-
-func AggregateMat(cryptoParams *CryptoParams, mats []CipherMatrix) CipherMatrix {
-	res := CopyEncryptedMatrix(mats[0])
-	for i := 1; i < len(mats); i++ {
-		for j := range mats[0] {
-			res[j] = CAdd(cryptoParams, mats[i][j], res[j])
-		}
-	}
-	return res
 }
 
 func SqSum(cryptoParams *CryptoParams, X CipherVector) *rlwe.Ciphertext {
@@ -719,24 +585,6 @@ func CAddConst(cryptoParams *CryptoParams, X CipherVector, constant interface{})
 	return res
 }
 
-func LevelTest(ciphers CipherVector, cryptoParams *CryptoParams, needed int, serverID, name string) CipherVector {
-	_ = name
-	if len(ciphers) > 0 && ciphers[0].Level() <= needed {
-		ciphers.DummyBootstrapping(serverID, cryptoParams)
-	}
-	return ciphers
-}
-
-func LevelTestMatrix(ciphers CipherMatrix, cryptoParams *CryptoParams, needed int, serverID, name string) CipherMatrix {
-	_ = name
-	if len(ciphers) > 0 && len(ciphers[0]) > 0 && ciphers[0][0].Level() <= needed {
-		for i := range ciphers {
-			ciphers[i].DummyBootstrapping(serverID, cryptoParams)
-		}
-	}
-	return ciphers
-}
-
 func InitEncryptedMatrix(cryptoParams *CryptoParams, dy int, dx int) (CipherMatrix, int, int, error) {
 	matrix := make([][]float64, dy)
 	for i := range matrix {
@@ -883,10 +731,4 @@ func ComplexConjugate(cryptoParams *CryptoParams, X CipherVector) CipherVector {
 		panic(err)
 	}
 	return res
-}
-
-func CReal(cps *CryptoParams, Z CipherVector) (real CipherVector) {
-	conjZ := ComplexConjugate(cps, Z)
-	twiceReal := CAdd(cps, Z, conjZ)
-	return CMultConst(cps, twiceReal, 0.5, true)
 }
