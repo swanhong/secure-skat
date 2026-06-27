@@ -39,25 +39,32 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
 
+	debug := ast.general.config.Debug
+
 	nrowsAll := ast.skatNumInds()
 	nrowsTotal := ast.skatTotalNumInds()
 	nrowsTotalInv := 1.0 / float64(nrowsTotal)
 
 	// covAllOnes specifies whether the input covariates already contain an all-ones column.
-	// For SKAT, we assume it does NOT locally, so we explicitly prepend it.
+	// SKAT needs an intercept; only prepend one when the input does not already carry it.
+	covAllOnes := ast.general.config.CovAllOnes
 	C := ast.inputCov
 
-	log.LLvl1("Adding an all-ones covariate for SKAT Null Model")
-	if pid > 0 { // Party 0 doesn't encode data
-		arr := make([]float64, nrowsAll[pid])
-		for i := range arr {
-			arr[i] = 1.0
+	if !covAllOnes {
+		log.LLvl1("Adding an all-ones covariate for SKAT Null Model")
+		if pid > 0 { // Party 0 doesn't encode data
+			arr := make([]float64, nrowsAll[pid])
+			for i := range arr {
+				arr[i] = 1.0
+			}
+			pv, _ := crypto.EncodeFloatVector(cryptoParams, arr)
+			C = append([]crypto.PlainVector{pv}, C...)
+		} else {
+			// Keep one zero-filled ciphertext so distributed QR sees aligned local shapes.
+			C = append([]crypto.PlainVector{ast.zeroPlainVectorForNonDataParty()}, C...)
 		}
-		pv, _ := crypto.EncodeFloatVector(cryptoParams, arr)
-		C = append([]crypto.PlainVector{pv}, C...)
 	} else {
-		// Keep one zero-filled ciphertext so distributed QR sees aligned local shapes.
-		C = append([]crypto.PlainVector{ast.zeroPlainVectorForNonDataParty()}, C...)
+		log.LLvl1("CovAllOnes=true: assuming first covariate is the all-ones intercept")
 	}
 
 	// Joint QR (NetDQRenc inside requires Party 0)
@@ -85,8 +92,10 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 
 	// Save vertically partitioned arrays by iterating individually to avoid
 	// MPC extracting ciphertexts composed of independent data halves (-1).
-	for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
-		SaveMatrixToFile(cryptoParams, mpcObj, Q, nrowsAll[p], p, ast.general.OutPath("Qcomb.txt"))
+	if debug {
+		for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
+			SaveMatrixToFile(cryptoParams, mpcObj, Q, nrowsAll[p], p, ast.general.OutPath("Qcomb.txt"))
+		}
 	}
 
 	// Project covariates out of y: ynew = (I - Q*Q')*y
@@ -122,8 +131,10 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 		ynew[0] = crypto.CPAdd(cryptoParams, ynew[0], ast.pheno)
 	}
 
-	for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
-		SaveMatrixToFile(cryptoParams, mpcObj, ynew, nrowsAll[p], p, ast.general.OutPath("ynew.txt"))
+	if debug {
+		for p := 1; p <= ast.general.GetConfig().NumMainParties; p++ {
+			SaveMatrixToFile(cryptoParams, mpcObj, ynew, nrowsAll[p], p, ast.general.OutPath("ynew.txt"))
+		}
 	}
 
 	return ynew
@@ -160,10 +171,26 @@ func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (
 	} else {
 		onesRVec = mpc_core.InitRVec(rtype.Zero(), len(p_j))
 	}
-	onesRVec.Sub(p_j)
-	w_term := onesRVec
 
-	// Compute (1 - p_j)^24 via squaring
+	// MAF = min(p_j, 1-p_j)
+	//     = (1-p_j) + [p_j < 0.5] * (p_j - (1-p_j)).
+	half := rtype.FromFloat64(0.5, mpcObj.GetFracBits())
+	pBelowHalf := mpcObj.LessThanPublic(p_j, half, mpcObj.GetBooleanShareFlag())
+
+	oneMinusP := onesRVec.Copy()
+	oneMinusP.Sub(p_j)
+
+	pMinusOneMinusP := p_j.Copy()
+	pMinusOneMinusP.Sub(oneMinusP)
+	selectDelta := mpcObj.SSMultElemVec(pBelowHalf, pMinusOneMinusP)
+
+	maf := oneMinusP.Copy()
+	maf.Add(selectDelta)
+
+	w_term := onesRVec.Copy()
+	w_term.Sub(maf)
+
+	// Compute (1 - MAF)^24 via squaring
 	w2 := mpcObj.SSMultElemVec(w_term, w_term)
 	w2 = mpcObj.TruncVec(w2, mpcObj.GetDataBits(), mpcObj.GetFracBits())
 
@@ -215,6 +242,7 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
 	cryptoParams := ast.general.cps
+	debug := ast.general.config.Debug
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "Starting SKAT Phase 1: Null Model & Score Vector")
 
@@ -261,6 +289,11 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 
 		log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Processing block %d/%d: Loading %d SNPs", block, numBlocks, nsnps_block))
 
+		if nsnps_block == 0 {
+			log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Block %d/%d skipped (empty)", block, numBlocks))
+			continue
+		}
+
 		// Step 2: loadData & multi-party GenoBlockMult implicitly
 		var S_block crypto.CipherMatrix
 		var dosageSum []float64
@@ -288,14 +321,18 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 
 			w_enc := mpcObj.SSToCVec(cryptoParams, w_block_RVec)
 
-			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{S_vec}, nsnps_block, -1, ast.general.OutPath(fmt.Sprintf("S_vec_block%d.txt", block)))
-			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{w_enc}, nsnps_block, -1, ast.general.OutPath(fmt.Sprintf("w_enc_block%d.txt", block)))
+			if debug {
+				SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{S_vec}, nsnps_block, -1, ast.general.OutPath(fmt.Sprintf("S_vec_block%d.txt", block)))
+				SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{w_enc}, nsnps_block, -1, ast.general.OutPath(fmt.Sprintf("w_enc_block%d.txt", block)))
+			}
 
 			// Step 4: ScoreCalculation
 			qBlockRes, qBurdenBlockRes := ast.ScoreCalculation(S_vec, w_enc)
 
-			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qBlock_block%d.txt", block)))
-			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBurdenBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qBurdenBlock_block%d.txt", block)))
+			if debug {
+				SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qBlock_block%d.txt", block)))
+				SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBurdenBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qBurdenBlock_block%d.txt", block)))
+			}
 
 			if finalQStat == nil {
 				finalQStat = qBlockRes

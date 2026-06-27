@@ -415,6 +415,16 @@ func (g *ProtocolInfo) SKAT() {
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "Running SKAT Phase 1 & 2")
 
+	// skip-QC sets full counts directly, otherwise run Phase1 (QC) to populate them.
+	if len(g.gwasParams.FiltNumInds()) != g.config.NumMainParties+1 {
+		if g.config.SkipQC && !g.config.UseCachedQC {
+			g.gwasParams.SetFiltCounts(g.gwasParams.NumInds(), g.gwasParams.NumSNP())
+			log.LLvl1(time.Now().Format(time.RFC3339), "Individual and SNP filters skipped")
+		} else {
+			g.Phase1()
+		}
+	}
+
 	assoc, burden, _, _ := g.ComputeSKATStatistics()
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "Finished SKAT tests")
