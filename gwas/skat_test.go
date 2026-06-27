@@ -28,8 +28,13 @@ func InitProtocolForTest(t *testing.T) *ProtocolInfo {
 		t.Fatalf("Invalid PID: %s", err)
 	}
 
-	_, filename, _, _ := runtime.Caller(0)
-	configPath := filepath.Join(filepath.Dir(filepath.Dir(filename)), "config")
+	// SFGWAS_CONFIG_PATH lets the compare harness (scripts/analysis/skat/run.sh)
+	// point at an alternate config/data dir; default is the repo's config/.
+	configPath := os.Getenv("SFGWAS_CONFIG_PATH")
+	if configPath == "" {
+		_, filename, _, _ := runtime.Caller(0)
+		configPath = filepath.Join(filepath.Dir(filepath.Dir(filename)), "config")
+	}
 	config := new(Config)
 
 	// Import global parameters
@@ -40,6 +45,12 @@ func InitProtocolForTest(t *testing.T) *ProtocolInfo {
 	// Import local parameters
 	if _, err := toml.DecodeFile(filepath.Join(configPath, fmt.Sprintf("configLocal.Party%d.toml", pid)), config); err != nil {
 		t.Fatalf("Failed to read local config for PID=%d: %s", pid, err)
+	}
+
+	// SFGWAS_DEBUG forces per-block intermediate dumps (qBlock_block*.txt etc.) so
+	// run.sh can do plain-vs-secure per-block comparison without editing the config.
+	if os.Getenv("SFGWAS_DEBUG") != "" {
+		config.Debug = true
 	}
 
 	// Create cache/output directories
