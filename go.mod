@@ -1,6 +1,6 @@
 module github.com/hhcho/sfgwas
 
-go 1.18
+go 1.21
 
 replace github.com/ldsec/lattigo/v2 => github.com/hcholab/lattigo/v2 v2.1.2-0.20230123224332-e8d68c24b94a
 
@@ -34,12 +34,13 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/raulk/clock v1.1.0 // indirect
 	github.com/smartystreets/assertions v1.13.0 // indirect
+	github.com/tuneinsight/lattigo/v6 v6.1.1 // indirect
 	go.dedis.ch/fixbuf v1.0.3 // indirect
 	go.dedis.ch/kyber/v3 v3.0.13 // indirect
 	go.dedis.ch/protobuf v1.0.11 // indirect
 	go.etcd.io/bbolt v1.3.6 // indirect
-	golang.org/x/crypto v0.0.0-20210921155107-089bfa567519 // indirect
-	golang.org/x/sys v0.0.0-20211117180635-dee7805ff2e1 // indirect
+	golang.org/x/crypto v0.18.0 // indirect
+	golang.org/x/sys v0.16.0 // indirect
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
 	rsc.io/goversion v1.2.0 // indirect
 )
