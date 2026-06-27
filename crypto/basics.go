@@ -1,17 +1,16 @@
 package crypto
 
 import (
+	"fmt"
 	"math"
-	"math/cmplx"
-	"time"
+	"math/big"
 
-	"github.com/ldsec/lattigo/v2/ckks"
-	"go.dedis.ch/onet/v3/log"
+	"github.com/tuneinsight/lattigo/v6/core/rlwe"
+	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 	"gonum.org/v1/gonum/mat"
 )
 
 func EncodeDense(cryptoParams *CryptoParams, vals *mat.Dense) PlainMatrix {
-	//col encoded
 	r, c := vals.Dims()
 	valsEnc := make(PlainMatrix, c)
 	tmp := make([]float64, r)
@@ -20,11 +19,9 @@ func EncodeDense(cryptoParams *CryptoParams, vals *mat.Dense) PlainMatrix {
 		valsEnc[i], _ = EncodeFloatVector(cryptoParams, valsC)
 	}
 	return valsEnc
-
 }
 
 func EncryptDense(cryptoParams *CryptoParams, vals *mat.Dense) CipherMatrix {
-	//col encoded
 	r, c := vals.Dims()
 	valsEnc := make(CipherMatrix, c)
 	tmp := make([]float64, r)
@@ -35,7 +32,6 @@ func EncryptDense(cryptoParams *CryptoParams, vals *mat.Dense) CipherMatrix {
 	return valsEnc
 }
 
-// Takes PlaintextMatrix and returns a denseMatrix: if col is true (ie pt is a column encoded matrix, then we transpose)
 func PlaintextToDense(cryptoParams *CryptoParams, pt PlainMatrix, ptVecSize int) *mat.Dense {
 	vals := make([]float64, len(pt)*ptVecSize)
 	for i := range pt {
@@ -54,20 +50,23 @@ func EncryptPlaintextMatrix(cryptoParams *CryptoParams, pm PlainMatrix) CipherMa
 	for c := range pm {
 		cm[c] = make(CipherVector, len(pm[c]))
 		for i := range pm[c] {
-			cryptoParams.WithEncryptor(func(encryptor ckks.Encryptor) error {
-				cm[c][i] = encryptor.EncryptNew(pm[c][i])
-				return nil
-			})
+			if err := cryptoParams.WithEncryptor(func(encryptor *rlwe.Encryptor) error {
+				var err error
+				cm[c][i], err = encryptor.EncryptNew(pm[c][i])
+				return err
+			}); err != nil {
+				panic(err)
+			}
 		}
 	}
 	return cm
 }
 
-func DummyBootstrapMatrix(cryptoParams *CryptoParams, Ap CipherMatrix) CipherMatrix {
-	for i := range Ap {
-		Ap[i].DummyBootstrapping("dummy", cryptoParams)
+func DummyBootstrapMatrix(cryptoParams *CryptoParams, ap CipherMatrix) CipherMatrix {
+	for i := range ap {
+		ap[i].DummyBootstrapping("", cryptoParams)
 	}
-	return Ap
+	return ap
 }
 
 func GlobalToPartyIndex(cryptoParams *CryptoParams, Arowdims []int, col, nparty int) (int, int, int) {
@@ -77,27 +76,23 @@ func GlobalToPartyIndex(cryptoParams *CryptoParams, Arowdims []int, col, nparty 
 	for i := 0; i < nparty; i++ {
 		if Arowdims[i] > 0 && slotid < Arowdims[i] {
 			pid = i
-			ctid = int(slotid / (cryptoParams.GetSlots()))
-			slotid = slotid % (cryptoParams.GetSlots())
+			ctid = int(slotid / cryptoParams.GetSlots())
+			slotid = slotid % cryptoParams.GetSlots()
 			break
-		} else {
-			slotid = slotid - Arowdims[i]
 		}
+		slotid -= Arowdims[i]
 	}
 	return pid, ctid, slotid
 }
 
-// DCopyEncrypted returns a shallow? copy of A?
-func DCopyEncrypted(A []CipherMatrix) []CipherMatrix {
-	Acopy := make([]CipherMatrix, len(A))
-	for p := range A {
-		Acopy[p] = CopyEncryptedMatrix(A[p])
-
+func DCopyEncrypted(a []CipherMatrix) []CipherMatrix {
+	acopy := make([]CipherMatrix, len(a))
+	for p := range a {
+		acopy[p] = CopyEncryptedMatrix(a[p])
 	}
-	return Acopy
+	return acopy
 }
 
-/* Ciphertext operations */
 func GetCTsize(vecsize, ctind, slots int) int {
 	if (ctind+1)*slots <= vecsize {
 		return slots
@@ -105,28 +100,40 @@ func GetCTsize(vecsize, ctind, slots int) int {
 	return vecsize % slots
 }
 
-// Retain only the first N slots
-// TODO is there a way to do this without consuming a level?
-func MaskTrunc(cryptoParams *CryptoParams, ct *ckks.Ciphertext, N int) *ckks.Ciphertext {
-	if N == cryptoParams.GetSlots() {
+func MaskTrunc(cryptoParams *CryptoParams, ct *rlwe.Ciphertext, n int) *rlwe.Ciphertext {
+	if n < 0 || n > cryptoParams.GetSlots() {
+		panic(fmt.Sprintf("MaskTrunc: n=%d out of range [0, %d]", n, cryptoParams.GetSlots()))
+	}
+
+	if n == cryptoParams.GetSlots() {
 		return ct
 	}
 
 	m := make([]float64, cryptoParams.GetSlots())
-	for i := 0; i < N; i++ {
+	for i := 0; i < n; i++ {
 		m[i] = 1.0
 	}
 
 	mask, _ := EncodeFloatVector(cryptoParams, m)
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-		ct = eval.MulRelinNew(mask[0], ct)
-		error := eval.Rescale(ct, cryptoParams.Params.Scale(), ct)
-		return error
-	})
-	return ct
+	var out *rlwe.Ciphertext
+	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+		var err error
+		out, err = eval.MulRelinNew(ct, mask[0])
+		if err != nil {
+			return err
+		}
+		return eval.Rescale(out, out)
+	}); err != nil {
+		panic(err)
+	}
+	return out
 }
 
-func MaskWithScaling(cryptoParams *CryptoParams, ct *ckks.Ciphertext, ind int, keep bool, scalingFactor float64) *ckks.Ciphertext {
+func MaskWithScaling(cryptoParams *CryptoParams, ct *rlwe.Ciphertext, ind int, keep bool, scalingFactor float64) *rlwe.Ciphertext {
+	if ind < 0 || ind >= cryptoParams.GetSlots() {
+		panic(fmt.Sprintf("MaskWithScaling: index=%d out of range [0, %d)", ind, cryptoParams.GetSlots()))
+	}
+
 	m := make([]float64, cryptoParams.GetSlots())
 	if keep {
 		for i := range m {
@@ -139,18 +146,28 @@ func MaskWithScaling(cryptoParams *CryptoParams, ct *ckks.Ciphertext, ind int, k
 	}
 
 	mask, _ := EncodeFloatVector(cryptoParams, m)
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-		ct = eval.MulRelinNew(mask[0], ct)
-		error := eval.Rescale(ct, cryptoParams.Params.Scale(), ct)
-		return error
-	})
-	return ct
+	var out *rlwe.Ciphertext
+	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+		var err error
+		out, err = eval.MulRelinNew(ct, mask[0])
+		if err != nil {
+			return err
+		}
+		return eval.Rescale(out, out)
+	}); err != nil {
+		panic(err)
+	}
+	return out
 }
 
-func Mask(cryptoParams *CryptoParams, ct *ckks.Ciphertext, index int, keepRest bool) *ckks.Ciphertext {
+func Mask(cryptoParams *CryptoParams, ct *rlwe.Ciphertext, index int, keepRest bool) *rlwe.Ciphertext {
 	if ct == nil {
 		return nil
 	}
+	if index < 0 || index >= cryptoParams.GetSlots() {
+		panic(fmt.Sprintf("Mask: index=%d out of range [0, %d)", index, cryptoParams.GetSlots()))
+	}
+
 	m := make([]float64, cryptoParams.GetSlots())
 	if keepRest {
 		for i := range m {
@@ -163,173 +180,218 @@ func Mask(cryptoParams *CryptoParams, ct *ckks.Ciphertext, index int, keepRest b
 	}
 
 	mask, _ := EncodeFloatVector(cryptoParams, m)
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-		ct = eval.MulRelinNew(mask[0], ct)
-		error := eval.Rescale(ct, cryptoParams.Params.Scale(), ct)
-		return error
-	})
-	return ct
+	var out *rlwe.Ciphertext
+	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+		var err error
+		out, err = eval.MulRelinNew(ct, mask[0])
+		if err != nil {
+			return err
+		}
+		return eval.Rescale(out, out)
+	}); err != nil {
+		panic(err)
+	}
+	return out
 }
 
-func Add(cryptoParams *CryptoParams, ct1 *ckks.Ciphertext, ct2 *ckks.Ciphertext) *ckks.Ciphertext {
-	var newct *ckks.Ciphertext
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-		newct = eval.AddNew(ct1, ct2)
-		return nil
-	})
-	return newct
-}
-
-func AddPlain(cryptoParams *CryptoParams, ct1 *ckks.Ciphertext, ct2 *ckks.Plaintext) *ckks.Ciphertext {
-	var newct *ckks.Ciphertext
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-		newct = eval.AddNew(ct1, ct2)
-		return nil
-	})
-	return newct
-}
-
-func AddConst(cryptoParams *CryptoParams, ct *ckks.Ciphertext, constant interface{}) *ckks.Ciphertext {
-	var resct *ckks.Ciphertext
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-		resct = eval.AddConstNew(ct, constant)
-		return nil
-	})
-	return resct
-}
-
-func RotateRightWithEvaluator(cryptoParams *CryptoParams, ct *ckks.Ciphertext, nrot int, eva ckks.Evaluator) *ckks.Ciphertext {
-	nrot = Mod(nrot, cryptoParams.GetSlots())
-	var newct *ckks.Ciphertext
-	if nrot != 0 {
-		newct = eva.RotateNew(ct, cryptoParams.GetSlots()-nrot)
-	} else {
-		newct = ct.CopyNew().Ciphertext()
+func Add(cryptoParams *CryptoParams, ct1 *rlwe.Ciphertext, ct2 *rlwe.Ciphertext) *rlwe.Ciphertext {
+	var newct *rlwe.Ciphertext
+	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+		var err error
+		newct, err = eval.AddNew(ct1, ct2)
+		return err
+	}); err != nil {
+		panic(err)
 	}
 	return newct
 }
 
-func RotateRight(cryptoParams *CryptoParams, ct *ckks.Ciphertext, nrot int) *ckks.Ciphertext {
-	nrot = Mod(nrot, cryptoParams.GetSlots())
-	var newct *ckks.Ciphertext
-	if nrot != 0 {
-		cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-			newct = eval.RotateNew(ct, cryptoParams.GetSlots()-nrot)
-			return nil
-		})
-	} else {
-		newct = ct.CopyNew().Ciphertext()
+func AddPlain(cryptoParams *CryptoParams, ct1 *rlwe.Ciphertext, ct2 *rlwe.Plaintext) *rlwe.Ciphertext {
+	var newct *rlwe.Ciphertext
+	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+		var err error
+		newct, err = eval.AddNew(ct1, ct2)
+		return err
+	}); err != nil {
+		panic(err)
 	}
 	return newct
 }
 
-func Mult(cryptoParams *CryptoParams, ct1 *ckks.Ciphertext, ct2 *ckks.Ciphertext) *ckks.Ciphertext {
-	var res *ckks.Ciphertext
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-		res = eval.MulRelinNew(ct1, ct2)
-		return nil
-	})
-	return res
-}
-
-// RotateAndAdd computes the inner sum of a Ciphertext
-func RotateAndAdd(cryptoParams *CryptoParams, ct *ckks.Ciphertext, size int) *ckks.Ciphertext {
-	ctOut := ct.CopyNew().Ciphertext()
-	for rotate := 1; rotate < size; rotate *= 2 {
-		cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-			rt := eval.RotateNew(ctOut, rotate)
-			eval.Add(rt, ctOut, ctOut)
-			return nil
-		})
+func AddConst(cryptoParams *CryptoParams, ct *rlwe.Ciphertext, constant interface{}) *rlwe.Ciphertext {
+	var out *rlwe.Ciphertext
+	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+		var err error
+		out, err = eval.AddNew(ct, constant)
+		return err
+	}); err != nil {
+		panic(err)
 	}
-	return ctOut
+	return out
 }
 
-func Rebalance(cryptoParams *CryptoParams, ct *ckks.Ciphertext) *ckks.Ciphertext {
+func Neg(cryptoParams *CryptoParams, ct *rlwe.Ciphertext) *rlwe.Ciphertext {
 	if ct == nil {
 		return nil
 	}
-	ctOut := InnerSumAll(cryptoParams, CipherVector{ct})
-	ctOut = CMultConst(cryptoParams, CipherVector{ctOut}, 1/float64(cryptoParams.GetSlots()), false)[0]
+	out := ct.CopyNew()
+	ringQ := cryptoParams.Params.RingQ().AtLevel(out.Level())
+	for i := range out.Value {
+		ringQ.Neg(out.Value[i], out.Value[i])
+	}
+	return out
+}
+
+func RotateRightWithEvaluator(cryptoParams *CryptoParams, ct *rlwe.Ciphertext, nrot int, eva *ckks.Evaluator) *rlwe.Ciphertext {
+	nrot = Mod(nrot, cryptoParams.GetSlots())
+	if nrot == 0 {
+		return ct.CopyNew()
+	}
+	out, err := eva.RotateNew(ct, cryptoParams.GetSlots()-nrot)
+	if err != nil {
+		panic(err)
+	}
+	return out
+}
+
+func RotateRight(cryptoParams *CryptoParams, ct *rlwe.Ciphertext, nrot int) *rlwe.Ciphertext {
+	nrot = Mod(nrot, cryptoParams.GetSlots())
+	if nrot == 0 {
+		return ct.CopyNew()
+	}
+	var out *rlwe.Ciphertext
+	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+		var err error
+		out, err = eval.RotateNew(ct, cryptoParams.GetSlots()-nrot)
+		return err
+	}); err != nil {
+		panic(err)
+	}
+	return out
+}
+
+func Mult(cryptoParams *CryptoParams, ct1 *rlwe.Ciphertext, ct2 *rlwe.Ciphertext) *rlwe.Ciphertext {
+	var res *rlwe.Ciphertext
+	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+		var err error
+		res, err = eval.MulRelinNew(ct1, ct2)
+		if err != nil {
+			return err
+		}
+		return eval.Rescale(res, res)
+	}); err != nil {
+		panic(err)
+	}
+	return res
+}
+
+func RotateAndAdd(cryptoParams *CryptoParams, ct *rlwe.Ciphertext, size int) *rlwe.Ciphertext {
+	ctOut := ct.CopyNew()
+	for rotate := 1; rotate < size; rotate *= 2 {
+		if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+			rt, err := eval.RotateNew(ctOut, rotate)
+			if err != nil {
+				return err
+			}
+			return eval.Add(ctOut, rt, ctOut)
+		}); err != nil {
+			panic(err)
+		}
+	}
 	return ctOut
 }
 
-func InnerSum(cryptoParams *CryptoParams, X CipherVector, Xsize int) *ckks.Ciphertext {
-	// Sum all the ciphertexts in vector (i.e vector sum)
-	vecsum := X[0].CopyNew().Ciphertext()
+func Rebalance(cryptoParams *CryptoParams, ct *rlwe.Ciphertext) *rlwe.Ciphertext {
+	if ct == nil {
+		return nil
+	}
+	return InnerSumAll(cryptoParams, CipherVector{ct})
+}
+
+func InnerSum(cryptoParams *CryptoParams, X CipherVector, Xsize int) *rlwe.Ciphertext {
 	if len(X) == 1 {
 		return RotateAndAdd(cryptoParams, X[0], Xsize)
 	}
 
+	vecsum := X[0].CopyNew()
 	for i := 1; i < len(X); i++ {
-		cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-			eval.Add(X[i], vecsum, vecsum)
-			return nil
-		})
+		if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+			return eval.Add(vecsum, X[i], vecsum)
+		}); err != nil {
+			panic(err)
+		}
 	}
-
-	return RotateAndAdd(cryptoParams, X[0], cryptoParams.GetSlots())
+	return RotateAndAdd(cryptoParams, vecsum, cryptoParams.GetSlots())
 }
 
-func InnerProd(cryptoParams *CryptoParams, X, Y CipherVector) *ckks.Ciphertext {
+func InnerProd(cryptoParams *CryptoParams, X, Y CipherVector) *rlwe.Ciphertext {
 	return InnerSumAll(cryptoParams, CMult(cryptoParams, X, Y))
 }
 
-func InnerSumAll(cryptoParams *CryptoParams, X CipherVector) *ckks.Ciphertext {
+func InnerSumAll(cryptoParams *CryptoParams, X CipherVector) *rlwe.Ciphertext {
 	slots := cryptoParams.GetSlots()
-	vecsum := X[0].CopyNew().Ciphertext()
-
+	vecsum := X[0].CopyNew()
 	if len(X) > 1 {
 		for i := 1; i < len(X); i++ {
-			cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-				eval.Add(X[i], vecsum, vecsum)
-				return nil
-			})
+			if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+				return eval.Add(vecsum, X[i], vecsum)
+			}); err != nil {
+				panic(err)
+			}
 		}
 	}
-
 	return RotateAndAdd(cryptoParams, vecsum, slots)
 }
 
-// RotateAndPlace rotates ct to the right by shift = place
-func RotateAndPlace(cryptoParams *CryptoParams, ct *ckks.Ciphertext, size, place int, duplicate bool) *ckks.Ciphertext {
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+func RotateAndPlace(cryptoParams *CryptoParams, ct *rlwe.Ciphertext, size, place int, duplicate bool) *rlwe.Ciphertext {
+	out := ct.CopyNew()
+	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
 		if !duplicate {
-			if !(place == 0) {
-				//rotate right
-				ct = eval.RotateNew(ct, cryptoParams.GetSlots()-place)
+			if place != 0 {
+				var err error
+				out, err = eval.RotateNew(out, cryptoParams.GetSlots()-place)
+				return err
 			}
+			return nil
+		}
 
-		} else {
-			maxnrot := int(math.Ceil(math.Log2(float64(size))))
-			rotate := 1
-			for j := 0; j < maxnrot; j++ {
-				tmp := eval.RotateNew(ct, cryptoParams.GetSlots()-rotate)
-				ct = eval.AddNew(ct, tmp)
-				rotate = rotate * 2
+		maxnrot := intCeilLog2(size)
+		rotate := 1
+		for j := 0; j < maxnrot; j++ {
+			tmp, err := eval.RotateNew(out, cryptoParams.GetSlots()-rotate)
+			if err != nil {
+				return err
 			}
+			next, err := eval.AddNew(out, tmp)
+			if err != nil {
+				return err
+			}
+			out = next
+			rotate *= 2
 		}
 		return nil
-	})
-	return ct
-
+	}); err != nil {
+		panic(err)
+	}
+	return out
 }
 
-// AggregateSumMask sums across parties
-func AggregateSumMask(cryptoParams *CryptoParams, vals []*ckks.Ciphertext) *ckks.Ciphertext {
-	aggsum := vals[0].CopyNew().Ciphertext()
+func AggregateSumMask(cryptoParams *CryptoParams, vals []*rlwe.Ciphertext) *rlwe.Ciphertext {
+	aggsum := vals[0].CopyNew()
 	if len(vals) == 1 {
 		return aggsum
 	}
-
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
 		for i := 1; i < len(vals); i++ {
-			eval.Add(vals[i], aggsum, aggsum)
+			if err := eval.Add(aggsum, vals[i], aggsum); err != nil {
+				return err
+			}
 		}
 		return nil
-	})
-	aggsum = Mask(cryptoParams, aggsum, 0, false)
-	return aggsum
+	}); err != nil {
+		panic(err)
+	}
+	return Mask(cryptoParams, aggsum, 0, false)
 }
 
 func AggregateVec(cryptoParams *CryptoParams, vecs []CipherVector) CipherVector {
@@ -342,7 +404,6 @@ func AggregateVec(cryptoParams *CryptoParams, vecs []CipherVector) CipherVector 
 
 func AggregateMat(cryptoParams *CryptoParams, mats []CipherMatrix) CipherMatrix {
 	res := CopyEncryptedMatrix(mats[0])
-
 	for i := 1; i < len(mats); i++ {
 		for j := range mats[0] {
 			res[j] = CAdd(cryptoParams, mats[i][j], res[j])
@@ -351,14 +412,12 @@ func AggregateMat(cryptoParams *CryptoParams, mats []CipherMatrix) CipherMatrix 
 	return res
 }
 
-// SqSum evaluates the sum(X^2) across the vector
-func SqSum(cryptoParams *CryptoParams, X CipherVector) *ckks.Ciphertext {
+func SqSum(cryptoParams *CryptoParams, X CipherVector) *rlwe.Ciphertext {
 	X2 := CMult(cryptoParams, X, X)
 	return InnerSumAll(cryptoParams, X2)
 }
 
-/* Ciphervector operations */
-func Zero(cryptoParams *CryptoParams) *ckks.Ciphertext {
+func Zero(cryptoParams *CryptoParams) *rlwe.Ciphertext {
 	a := []float64{0.0}
 	tmp, _ := EncryptFloatVector(cryptoParams, a)
 	return tmp[0]
@@ -374,7 +433,6 @@ func CZeros(cryptoParams *CryptoParams, n int) CipherVector {
 	return cv
 }
 
-// column based
 func CZeroMat(cryptoParams *CryptoParams, nrows, ncols int) CipherMatrix {
 	cm := make(CipherMatrix, ncols)
 	for r := range cm {
@@ -384,88 +442,73 @@ func CZeroMat(cryptoParams *CryptoParams, nrows, ncols int) CipherMatrix {
 }
 
 func CMult(cryptoParams *CryptoParams, X CipherVector, Y CipherVector) CipherVector {
-	xlen := len(X)
-	ylen := len(Y)
-	res := make(CipherVector, Max(len(X), len(Y)))
-	if xlen == 1 {
-		cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-			for i := range Y {
-				res[i] = eval.MulRelinNew(Y[i], X[0])
-				error := eval.Rescale(res[i], cryptoParams.Params.Scale(), res[i])
-				if error != nil {
-					return error
-				}
-			}
-			return nil
-		})
-		return res
-	}
-	if ylen == 1 {
-		cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-			for i := range X {
-				res[i] = eval.MulRelinNew(X[i], Y[0])
-				error := eval.Rescale(res[i], cryptoParams.Params.Scale(), res[i])
-				if error != nil {
-					return error
-				}
-			}
-			return nil
-		})
-		return res
-	}
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-		for i := range X {
-			res[i] = eval.MulRelinNew(X[i], Y[i])
-			error := eval.Rescale(res[i], cryptoParams.Params.Scale(), res[i])
-			if error != nil {
-				return error
-			}
+	return binaryCipherVectorOp(cryptoParams, X, Y, func(eval *ckks.Evaluator, a *rlwe.Ciphertext, b rlwe.Operand) (*rlwe.Ciphertext, error) {
+		out, err := eval.MulRelinNew(a, b)
+		if err != nil {
+			return nil, err
 		}
-		return nil
+		return out, eval.Rescale(out, out)
 	})
-	return res
+}
+
+func plaintextForCiphertext(cryptoParams *CryptoParams, encoder *ckks.Encoder, pt *rlwe.Plaintext, ct *rlwe.Ciphertext) (*rlwe.Plaintext, error) {
+	if pt == nil || ct == nil || (pt.Level() == ct.Level() && pt.Scale.Cmp(ct.Scale) == 0) {
+		return pt, nil
+	}
+
+	values := make([]float64, 1<<pt.LogDimensions.Cols)
+	if err := encoder.Decode(pt, values); err != nil {
+		return nil, err
+	}
+
+	out := ckks.NewPlaintext(cryptoParams.Params, ct.Level())
+	*out.MetaData = *pt.MetaData
+	out.Scale = ct.Scale
+	if err := encoder.Encode(values, out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func CPMult(cryptoParams *CryptoParams, X CipherVector, Y PlainVector) CipherVector {
-	xlen := len(X)
-	ylen := len(Y)
-	res := make(CipherVector, Max(len(X), len(Y)))
-	if xlen == 1 {
-		cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-			for i := range Y {
-				res[i] = eval.MulRelinNew(Y[i], X[0])
-				error := eval.Rescale(res[i], cryptoParams.Params.Scale(), res[i])
-				if error != nil {
-					return error
-				}
-			}
-			return nil
-		})
-		return res
+	if len(X) == 0 || len(Y) == 0 {
+		return nil
 	}
-	if ylen == 1 {
-		cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-			for i := range X {
-				res[i] = eval.MulRelinNew(X[i], Y[0])
-				error := eval.Rescale(res[i], cryptoParams.Params.Scale(), res[i])
-				if error != nil {
-					return error
-				}
+
+	size := broadcastSize(len(X), len(Y))
+	res := make(CipherVector, size)
+	plainOps := make(PlainVector, size)
+	if err := cryptoParams.WithEncoder(func(encoder *ckks.Encoder) error {
+		for i := 0; i < size; i++ {
+			x := X[minIndex(i, len(X))]
+			y, err := plaintextForCiphertext(cryptoParams, encoder, Y[minIndex(i, len(Y))], x)
+			if err != nil {
+				return err
 			}
-			return nil
-		})
-		return res
-	}
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-		for i := range X {
-			res[i] = eval.MulRelinNew(X[i], Y[i])
-			error := eval.Rescale(res[i], cryptoParams.Params.Scale(), res[i])
-			if error != nil {
-				return error
-			}
+			plainOps[i] = y
 		}
 		return nil
-	})
+	}); err != nil {
+		panic(err)
+	}
+
+	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+		for i := 0; i < size; i++ {
+			x := X[minIndex(i, len(X))]
+			y := plainOps[i]
+			out, err := eval.MulRelinNew(x, y)
+			if err != nil {
+				return err
+			}
+			if err := eval.Rescale(out, out); err != nil {
+				return err
+			}
+			res[i] = out
+		}
+		return nil
+	}); err != nil {
+		panic(err)
+	}
 	return res
 }
 
@@ -481,178 +524,212 @@ func CMultConst(cryptoParams *CryptoParams, X CipherVector, constant interface{}
 	if inPlace {
 		res = X
 	} else {
-		res = CopyEncryptedVector(X)
+		res = make(CipherVector, len(X))
 	}
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+
+	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
 		for i := range X {
-			if inPlace {
-				eval.MultByConst(res[i], constant, res[i])
-			} else {
-				res[i] = eval.MultByConstNew(res[i], constant)
+			out, err := eval.MulNew(X[i], constant)
+			if err != nil {
+				return err
 			}
+			if !constantIsGaussianInteger(constant) {
+				if err := eval.Rescale(out, out); err != nil {
+					return err
+				}
+			}
+			res[i] = out
 		}
 		return nil
-	})
+	}); err != nil {
+		panic(err)
+	}
 	return res
 }
 
 func CMatRescale(cryptoParams *CryptoParams, X CipherMatrix) CipherMatrix {
-	err := cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
 		for j := range X {
 			for i := range X[j] {
-				eval.Rescale(X[j][i], cryptoParams.Params.Scale(), X[j][i])
+				if err := eval.Rescale(X[j][i], X[j][i]); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
-	})
-	if err != nil {
-		log.Fatal(err)
+	}); err != nil {
+		panic(err)
 	}
 	return X
 }
 
 func FlattenLevels(cryptoParams *CryptoParams, X CipherMatrix) (CipherMatrix, int) {
 	minLevel := math.MaxInt32
+	initialized := false
 	notFlat := false
 	for i := range X {
 		for j := range X[i] {
-			if X[i][j].Level() != minLevel {
-				minLevel = Min(X[i][j].Level(), minLevel)
+			level := X[i][j].Level()
+			if !initialized {
+				minLevel = level
+				initialized = true
+				continue
+			}
+			if level != minLevel {
+				minLevel = Min(level, minLevel)
 				notFlat = true
 			}
 		}
 	}
-
+	if !initialized {
+		return X, 0
+	}
 	if !notFlat {
 		return X, minLevel
 	}
-
 	return DropLevel(cryptoParams, X, minLevel), minLevel
 }
 
 func CMultConstRescale(cryptoParams *CryptoParams, X CipherVector, constant interface{}, inPlace bool) CipherVector {
-	var res CipherVector
-	if inPlace {
-		res = X
-	} else {
-		res = CopyEncryptedVector(X)
-	}
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-		for i := range X {
-			res[i] = eval.MultByConstNew(res[i], constant)
-			error := eval.Rescale(res[i], cryptoParams.Params.Scale(), res[i])
-			if error != nil {
-				return error
-			}
-		}
-		return nil
-	})
-	return res
+	return CMultConst(cryptoParams, X, constant, inPlace)
 }
 
-func CMultScalar(cryptoParams *CryptoParams, X CipherVector, ct *ckks.Ciphertext) CipherVector {
-	res := CopyEncryptedVector(X)
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-		for i := range X {
-			res[i] = eval.MulRelinNew(res[i], ct)
-			error := eval.Rescale(res[i], cryptoParams.Params.Scale(), res[i])
-			if error != nil {
-				return error
-			}
+func constantIsGaussianInteger(constant interface{}) bool {
+	switch c := constant.(type) {
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return true
+	case float32:
+		return math.Trunc(float64(c)) == float64(c)
+	case float64:
+		return math.Trunc(c) == c
+	case complex64:
+		r, i := real(c), imag(c)
+		return i == 0 && math.Trunc(float64(r)) == float64(r)
+	case complex128:
+		r, i := real(c), imag(c)
+		return i == 0 && math.Trunc(r) == r
+	case *big.Int:
+		return true
+	case *big.Float:
+		if c == nil {
+			return false
 		}
-		return nil
+		i, acc := c.Int(nil)
+		if acc == big.Exact {
+			return true
+		}
+		f := new(big.Float).SetPrec(c.Prec()).SetInt(i)
+		return c.Cmp(f) == 0
+	default:
+		return false
+	}
+}
+
+func CMultScalar(cryptoParams *CryptoParams, X CipherVector, ct *rlwe.Ciphertext) CipherVector {
+	return binaryCipherVectorOp(cryptoParams, X, CipherVector{ct}, func(eval *ckks.Evaluator, a *rlwe.Ciphertext, b rlwe.Operand) (*rlwe.Ciphertext, error) {
+		out, err := eval.MulRelinNew(a, b)
+		if err != nil {
+			return nil, err
+		}
+		return out, eval.Rescale(out, out)
 	})
-	return res
 }
 
 func CAdd(cryptoParams *CryptoParams, X CipherVector, Y CipherVector) CipherVector {
-	res := make(CipherVector, len(X)) //equal num of ciphertexts
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-		for i := 0; i < Max(len(Y), len(X)); i++ {
-			//check level
-			res[i] = eval.AddNew(X[i], Y[i])
-		}
-		return nil
+	return binaryCipherVectorOp(cryptoParams, X, Y, func(eval *ckks.Evaluator, a *rlwe.Ciphertext, b rlwe.Operand) (*rlwe.Ciphertext, error) {
+		return eval.AddNew(a, b)
 	})
-	return res
 }
 
 func CSub(cryptoParams *CryptoParams, X CipherVector, Y CipherVector) CipherVector {
-	res := make(CipherVector, len(X))
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-		for i := range Y {
-			res[i] = eval.SubNew(X[i], Y[i])
-		}
-		return nil
+	return binaryCipherVectorOp(cryptoParams, X, Y, func(eval *ckks.Evaluator, a *rlwe.Ciphertext, b rlwe.Operand) (*rlwe.Ciphertext, error) {
+		return eval.SubNew(a, b)
 	})
-	return res
+}
 
+func CNeg(cryptoParams *CryptoParams, X CipherVector, inPlace bool) CipherVector {
+	if inPlace {
+		for i := range X {
+			ringQ := cryptoParams.Params.RingQ().AtLevel(X[i].Level())
+			for j := range X[i].Value {
+				ringQ.Neg(X[i].Value[j], X[i].Value[j])
+			}
+		}
+		return X
+	}
+	res := make(CipherVector, len(X))
+	for i := range X {
+		res[i] = Neg(cryptoParams, X[i])
+	}
+	return res
 }
 
 func CPAdd(cryptoParams *CryptoParams, X CipherVector, Y PlainVector) CipherVector {
-	res := make(CipherVector, len(X))
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-		for i := range Y {
-			res[i] = eval.AddNew(X[i], Y[i])
+	if len(X) == 0 || len(Y) == 0 {
+		return nil
+	}
+	size := broadcastSize(len(X), len(Y))
+	res := make(CipherVector, size)
+	plainOps := make(PlainVector, size)
+	if err := cryptoParams.WithEncoder(func(encoder *ckks.Encoder) error {
+		for i := 0; i < size; i++ {
+			x := X[minIndex(i, len(X))]
+			y, err := plaintextForCiphertext(cryptoParams, encoder, Y[minIndex(i, len(Y))], x)
+			if err != nil {
+				return err
+			}
+			plainOps[i] = y
 		}
 		return nil
-	})
-	return res
+	}); err != nil {
+		panic(err)
+	}
 
+	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+		for i := 0; i < size; i++ {
+			x := X[minIndex(i, len(X))]
+			y := plainOps[i]
+			out, err := eval.AddNew(x, y)
+			if err != nil {
+				return err
+			}
+			res[i] = out
+		}
+		return nil
+	}); err != nil {
+		panic(err)
+	}
+	return res
 }
 
 func CAddConst(cryptoParams *CryptoParams, X CipherVector, constant interface{}) CipherVector {
-	res := CopyEncryptedVector(X)
-	for i := range X {
-		res[i] = AddConst(cryptoParams, X[i], constant)
-	}
-	return res
-
-}
-
-func ChebyApproximation(cryptoParams *CryptoParams, X CipherVector, cheby *ckks.ChebyshevInterpolation) CipherVector {
-	res := CopyEncryptedVector(X)
-	err := cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-		var err error
+	res := make(CipherVector, len(X))
+	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
 		for i := range X {
-			res[i], err = eval.EvaluateCheby(res[i], cheby, res[i].Scale())
-			return err
+			out, err := eval.AddNew(X[i], constant)
+			if err != nil {
+				return err
+			}
+			res[i] = out
 		}
 		return nil
-	})
-
-	if err != nil {
-		log.Fatal(err)
+	}); err != nil {
+		panic(err)
 	}
 	return res
-}
-
-func CInverse(cryptoParams *CryptoParams, X CipherVector, intv IntervalApprox) CipherVector {
-	y := make(CipherVector, len(X))
-	err := cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-		for i := range X {
-			y[i] = eval.InverseNew(X[i], intv.Iter)
-		}
-		return nil
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-	return y
 }
 
 func LevelTest(ciphers CipherVector, cryptoParams *CryptoParams, needed int, serverID, name string) CipherVector {
-	if ciphers[0].Level() <= needed {
-		log.LLvl1(time.Now().Format(time.RFC3339), "Dummy Bootstrapping called")
+	_ = name
+	if len(ciphers) > 0 && ciphers[0].Level() <= needed {
 		ciphers.DummyBootstrapping(serverID, cryptoParams)
-
 	}
 	return ciphers
 }
 
 func LevelTestMatrix(ciphers CipherMatrix, cryptoParams *CryptoParams, needed int, serverID, name string) CipherMatrix {
-	if ciphers[0][0].Level() <= needed {
-		log.LLvl1(time.Now().Format(time.RFC3339), "Dummy Bootstrapping required for function ", name)
+	_ = name
+	if len(ciphers) > 0 && len(ciphers[0]) > 0 && ciphers[0][0].Level() <= needed {
 		for i := range ciphers {
 			ciphers[i].DummyBootstrapping(serverID, cryptoParams)
 		}
@@ -660,7 +737,6 @@ func LevelTestMatrix(ciphers CipherMatrix, cryptoParams *CryptoParams, needed in
 	return ciphers
 }
 
-// Initializes a new encrypted matrix with dy rows and dx columns.
 func InitEncryptedMatrix(cryptoParams *CryptoParams, dy int, dx int) (CipherMatrix, int, int, error) {
 	matrix := make([][]float64, dy)
 	for i := range matrix {
@@ -669,10 +745,13 @@ func InitEncryptedMatrix(cryptoParams *CryptoParams, dy int, dx int) (CipherMatr
 	return EncryptFloatMatrixRow(cryptoParams, matrix)
 }
 
-// Masks out one or multiple values in a ciphervector.
 func CMask(cryptoParams *CryptoParams, cv CipherVector, index int, keepRest bool) CipherVector {
 	if cv == nil {
 		return nil
+	}
+	maxIndex := cryptoParams.GetSlots() * len(cv)
+	if index < 0 || index >= maxIndex {
+		panic(fmt.Sprintf("CMask: index=%d out of range [0, %d)", index, maxIndex))
 	}
 	m := make([]float64, cryptoParams.GetSlots()*len(cv))
 	if keepRest {
@@ -684,104 +763,55 @@ func CMask(cryptoParams *CryptoParams, cv CipherVector, index int, keepRest bool
 	} else {
 		m[index] = 1.0
 	}
-
 	mask, _ := EncodeFloatVector(cryptoParams, m)
-	cv = CPMult(cryptoParams, cv, mask)
-
-	return cv
+	return CPMult(cryptoParams, cv, mask)
 }
 
-// Subtracts a ciphervector from a plaintext vector.
 func CPSubOther(cryptoParams *CryptoParams, X PlainVector, Y CipherVector) CipherVector {
-	res := make(CipherVector, len(X))
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-		for i := range Y {
-			res[i] = eval.SubNew(X[i], Y[i])
-		}
-		return nil
-	})
-	return res
-
+	negY := CNeg(cryptoParams, Y, false)
+	return CPAdd(cryptoParams, negY, X)
 }
 
 func CRescale(cryptoParams *CryptoParams, X CipherVector) CipherVector {
-	err := cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
 		for i := range X {
-			eval.Rescale(X[i], cryptoParams.Params.Scale(), X[i])
+			if err := eval.Rescale(X[i], X[i]); err != nil {
+				return err
+			}
 		}
 		return nil
-	})
-	if err != nil {
-		log.Fatal(err)
+	}); err != nil {
+		panic(err)
 	}
 	return X
 }
 
-/*TODO: LEGACY CODE NEED TO REMOVE*/
-
-// InvSqrtApprox computes an encrypted approximated version of the inverse function
-func InvSqrtApprox(cryptoParams *CryptoParams, ctIn *ckks.Ciphertext, intv IntervalApprox) *ckks.Ciphertext {
-	cheby := ckks.Approximate(invSqrt, complex(intv.A, 0), complex(intv.B, 0), intv.Degree)
-
-	var res *ckks.Ciphertext
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-		var err error
-		res, err = eval.EvaluateCheby(ctIn, cheby, cryptoParams.Params.Scale())
-		return err
-	})
-	return res
-}
-
-// SqrtApprox computes an encrypted approximated version of the inverse function
-func SqrtApprox(cryptoParams *CryptoParams, ctIn *ckks.Ciphertext, intv IntervalApprox) *ckks.Ciphertext {
-	cheby := ckks.Approximate(Sqrt, complex(intv.A, 0), complex(intv.B, 0), intv.Degree)
-
-	var res *ckks.Ciphertext
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-		var err error
-		res, err = eval.EvaluateCheby(ctIn, cheby, cryptoParams.Params.Scale())
-		return err
-	})
-	return res
-}
-
-func invSqrt(x complex128) complex128 {
-	return 1 / cmplx.Sqrt(x)
-}
-
-func Sqrt(x complex128) complex128 {
-	return cmplx.Sqrt(x)
-}
-
-// InvApprox computes an encrypted approximated version of the inverse function
-func InvApprox(cryptoParams *CryptoParams, ctIn *ckks.Ciphertext, intv IntervalApprox) *ckks.Ciphertext {
-	cheby := ckks.Approximate(inv, complex(intv.A, 0), complex(intv.B, 0), intv.Degree)
-
-	var approx *ckks.Ciphertext
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-		var err error
-		approx, err = eval.EvaluateCheby(ctIn, cheby, cryptoParams.Params.Scale())
-		return err
-	})
-	return approx
-}
-
-func inv(x complex128) complex128 {
-	return 1 / x
-}
-
 func ConcatCipherMatrix(mats []CipherMatrix) CipherMatrix {
-	var nrow int
+	nrow := -1
 	for i := range mats {
 		if mats[i] != nil {
-			nrow = len(mats[i])
-			break
+			if nrow == -1 {
+				nrow = len(mats[i])
+			} else if len(mats[i]) != nrow {
+				panic(fmt.Sprintf("ConcatCipherMatrix: matrix %d has %d rows, expected %d", i, len(mats[i]), nrow))
+			}
+			if len(mats[i]) > 0 {
+				rowWidth := len(mats[i][0])
+				for r := 1; r < len(mats[i]); r++ {
+					if len(mats[i][r]) != rowWidth {
+						panic(fmt.Sprintf("ConcatCipherMatrix: matrix %d row %d has %d columns, expected %d", i, r, len(mats[i][r]), rowWidth))
+					}
+				}
+			}
 		}
+	}
+	if nrow == -1 {
+		nrow = 0
 	}
 
 	ncol := 0
 	for i := range mats {
-		if mats[i] != nil {
+		if mats[i] != nil && len(mats[i]) > 0 {
 			ncol += len(mats[i][0])
 		}
 	}
@@ -799,48 +829,64 @@ func ConcatCipherMatrix(mats []CipherMatrix) CipherMatrix {
 			}
 		}
 	}
-
 	return out
 }
 
 func DropLevel(cryptoParams *CryptoParams, A CipherMatrix, outLevel int) CipherMatrix {
+	allAtLevel := true
+	for i := range A {
+		for j := range A[i] {
+			level := A[i][j].Level()
+			if level < outLevel {
+				panic(fmt.Sprintf("DropLevel: requested level %d when input is %d", outLevel, level))
+			}
+			if level != outLevel {
+				allAtLevel = false
+			}
+		}
+	}
+	if allAtLevel {
+		return CopyEncryptedMatrix(A)
+	}
+
 	out := make(CipherMatrix, len(A))
 	for i := range out {
 		out[i] = make(CipherVector, len(A[i]))
 		for j := range out[i] {
-			cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-				if A[i][j].Level() > outLevel {
-					out[i][j] = eval.DropLevelNew(A[i][j], A[i][j].Level()-outLevel)
-				} else if A[i][j].Level() == outLevel {
-					out[i][j] = A[i][j].CopyNew().Ciphertext()
-				} else {
-					log.Fatalf("DropLevel: requested level %v when input is %v", outLevel, A[i][j].Level())
-				}
+			if A[i][j].Level() == outLevel {
+				out[i][j] = A[i][j].CopyNew()
+				continue
+			}
+			if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+				out[i][j] = eval.DropLevelNew(A[i][j], A[i][j].Level()-outLevel)
 				return nil
-			})
+			}); err != nil {
+				panic(err)
+			}
 		}
 	}
 	return out
 }
 
-// Returns the complex conjugate of a ciphervector.
 func ComplexConjugate(cryptoParams *CryptoParams, X CipherVector) CipherVector {
-	res := make(CipherVector, len(X)) // equal num of ciphertexts
-	cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+	res := make(CipherVector, len(X))
+	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
 		for i := 0; i < len(X); i++ {
-			// check level
-			res[i] = eval.ConjugateNew(X[i])
+			out, err := eval.ConjugateNew(X[i])
+			if err != nil {
+				return err
+			}
+			res[i] = out
 		}
 		return nil
-	})
+	}); err != nil {
+		panic(err)
+	}
 	return res
 }
 
-// Returns the real component of a CipherVector.
 func CReal(cps *CryptoParams, Z CipherVector) (real CipherVector) {
 	conjZ := ComplexConjugate(cps, Z)
 	twiceReal := CAdd(cps, Z, conjZ)
-	CMultConst(cps, twiceReal, 0.5, true)
-	real = CRescale(cps, twiceReal)
-	return
+	return CMultConst(cps, twiceReal, 0.5, true)
 }

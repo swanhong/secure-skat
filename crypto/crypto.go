@@ -6,19 +6,13 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
-	"math"
 	"runtime"
 	"sort"
 	"strconv"
 	"sync"
-	"time"
 
-	"github.com/ldsec/lattigo/v2/ring"
-	"go.dedis.ch/onet/v3/log"
-
-	"github.com/ldsec/lattigo/v2/ckks"
-	libunlynx "github.com/ldsec/unlynx/lib"
-	"go.dedis.ch/onet/v3/simul/monitor"
+	"github.com/tuneinsight/lattigo/v6/core/rlwe"
+	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 )
 
 type IntervalApprox struct {
@@ -29,246 +23,169 @@ type IntervalApprox struct {
 	InverseNew bool
 }
 
-// CipherVector is a slice of Ciphertexts
-type CipherVector []*ckks.Ciphertext
-
-// CipherMatrix is a slice of slice of Ciphertexts
+type CipherVector []*rlwe.Ciphertext
 type CipherMatrix []CipherVector
-
-// PlainVector is a slice of Plaintexts
-type PlainVector []*ckks.Plaintext
-
-// PlainMatrix is a slice of slice of Plaintexts
+type PlainVector []*rlwe.Plaintext
 type PlainMatrix []PlainVector
 
-// CryptoParams aggregates all ckks scheme information
-type CryptoParams struct {
-	Sk          *ckks.SecretKey
-	AggregateSk *ckks.SecretKey
-	Pk          *ckks.PublicKey
-	Rlk         *ckks.RelinearizationKey
-	RotKs       *ckks.RotationKeySet
-	Params      *ckks.Parameters
-
-	encoders   chan ckks.Encoder
-	encryptors chan ckks.Encryptor
-	decryptors chan ckks.Decryptor
-	evaluators chan ckks.Evaluator
-
-	numThreads int
-	prec       uint
-}
-
-// CryptoParamsForNetwork stores all crypto info to save to file
-type CryptoParamsForNetwork struct {
-	params      *ckks.Parameters
-	sk          []*ckks.SecretKey
-	aggregateSk *ckks.SecretKey
-	pk          *ckks.PublicKey
-	rlk         *ckks.EvaluationKey
-	rotKs       *ckks.RotationKeySet
-}
-
-var SideRight = true
-var SideLeft = false
-
-// RotationType defines how much we should rotate and in which direction
 type RotationType struct {
 	Value int
 	Side  bool
 }
 
-// CKKSParamsForTests are _unsecure_ and fast parameters
-//var CKKSParamsForTests = ckks.NewParametersFromLogModuli(8, 7, 1<<30, ckks.LogModuli{LogQi: []uint64{36, 30, 30, 30, 30, 30, 30, 30, 30, 30}, LogPi: []uint64{32, 32, 32}}, 3.2)
+var SideRight = true
+var SideLeft = false
 
-// #------------------------------------#
-// #------------ INIT ------------------#
-// #------------------------------------#
+type CryptoParams struct {
+	Sk          *rlwe.SecretKey
+	AggregateSk *rlwe.SecretKey
+	Pk          *rlwe.PublicKey
+	Rlk         *rlwe.RelinearizationKey
+	RotKs       []*rlwe.GaloisKey
+	Params      ckks.Parameters
 
-// NewCryptoParams initializes CryptoParams with the given values
-func NewCryptoParams(params *ckks.Parameters, sk, aggregateSk *ckks.SecretKey, pk *ckks.PublicKey, rlk *ckks.RelinearizationKey, prec uint, numThreads int) *CryptoParams {
-	evaluators := make(chan ckks.Evaluator, numThreads)
-	for i := 0; i < numThreads; i++ {
-		evalKey := ckks.EvaluationKey{
-			Rlk:  rlk,
-			Rtks: nil,
-		}
-		evaluators <- ckks.NewEvaluator(params, evalKey)
+	encoders   chan *ckks.Encoder
+	encryptors chan *rlwe.Encryptor
+	decryptors chan *rlwe.Decryptor
+	evaluators chan *ckks.Evaluator
+
+	numThreads int
+	prec       uint
+}
+
+type cryptoParamsMarshalable struct {
+	Params      []byte
+	Sk          []byte
+	AggregateSk []byte
+	Pk          []byte
+	Rlk         []byte
+	RotKs       [][]byte
+	NumThreads  int
+	Prec        uint
+}
+
+func NewCryptoParams(params ckks.Parameters, sk, aggregateSk *rlwe.SecretKey, pk *rlwe.PublicKey, rlk *rlwe.RelinearizationKey, prec uint, numThreads int) *CryptoParams {
+	if numThreads <= 0 {
+		numThreads = runtime.GOMAXPROCS(0)
 	}
 
-	encoders := make(chan ckks.Encoder, numThreads)
-	var wg sync.WaitGroup
-	for i := 0; i < numThreads; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			encoders <- ckks.NewEncoderBig(params, prec)
-		}()
-	}
-	wg.Wait()
-
-	encryptors := make(chan ckks.Encryptor, numThreads)
-	for i := 0; i < numThreads; i++ {
-		encryptors <- ckks.NewEncryptorFromPk(params, pk)
-	}
-
-	decryptors := make(chan ckks.Decryptor, numThreads)
-	for i := 0; i < numThreads; i++ {
-		decryptors <- ckks.NewDecryptor(params, aggregateSk)
-	}
-
-	return &CryptoParams{
-		Params:      params,
+	cp := &CryptoParams{
 		Sk:          sk,
 		AggregateSk: aggregateSk,
 		Pk:          pk,
 		Rlk:         rlk,
-
-		encoders:   encoders,
-		encryptors: encryptors,
-		decryptors: decryptors,
-		evaluators: evaluators,
-
-		numThreads: numThreads,
-		prec:       prec,
+		Params:      params,
+		numThreads:  numThreads,
+		prec:        prec,
 	}
+	cp.rebuildPools()
+	return cp
 }
 
-// SetDecryptors sets the decryptors in the CryptoParams object
-func (cp *CryptoParams) SetDecryptors(params *ckks.Parameters, sk *ckks.SecretKey) {
-	decryptors := make(chan ckks.Decryptor, cp.numThreads)
-	for i := 0; i < cp.numThreads; i++ {
-		decryptors <- ckks.NewDecryptor(params, sk)
-	}
-	cp.decryptors = decryptors
-}
-
-func (cp *CryptoParams) SetEvaluators(params *ckks.Parameters, rlk *ckks.RelinearizationKey, rtks *ckks.RotationKeySet) {
-	evaluators := make(chan ckks.Evaluator, cp.numThreads)
-	for i := 0; i < cp.numThreads; i++ {
-		evalKey := ckks.EvaluationKey{
-			Rlk:  rlk,
-			Rtks: rtks,
-		}
-		evaluators <- ckks.NewEvaluator(params, evalKey)
-	}
-	cp.evaluators = evaluators
-}
-
-// NewCryptoParamsForNetwork initializes a set of nbrNodes CryptoParams each containing: keys, encoder, encryptor, decryptor, etc.
-func NewCryptoParamsForNetwork(params *ckks.Parameters, nbrNodes int, prec uint) []*CryptoParams {
+func NewCryptoParamsForNetwork(params ckks.Parameters, nbrNodes int, prec uint) []*CryptoParams {
 	kgen := ckks.NewKeyGenerator(params)
-
-	aggregateSk := ckks.NewSecretKey(params)
-	skList := make([]*ckks.SecretKey, nbrNodes)
-	rq, _ := ring.NewRing(params.N(), append(params.Qi(), params.Pi()...))
+	aggregateSk := rlwe.NewSecretKey(params)
+	skList := make([]*rlwe.SecretKey, nbrNodes)
+	ringQP := params.RingQP()
 
 	for i := 0; i < nbrNodes; i++ {
-		skList[i] = kgen.GenSecretKey()
-		rq.Add(aggregateSk.Value, skList[i].Value, aggregateSk.Value)
-	}
-	pk := kgen.GenPublicKey(aggregateSk)
-
-	ret := make([]*CryptoParams, nbrNodes)
-	for i := range ret {
-		rlk := kgen.GenRelinearizationKey(aggregateSk)
-		ret[i] = NewCryptoParams(params, skList[i], aggregateSk, pk, rlk, prec, runtime.GOMAXPROCS(0))
+		skList[i] = kgen.GenSecretKeyNew()
+		ringQP.Add(aggregateSk.Value, skList[i].Value, aggregateSk.Value)
 	}
 
-	return ret
+	pk := kgen.GenPublicKeyNew(aggregateSk)
+	rlk := kgen.GenRelinearizationKeyNew(aggregateSk)
+
+	out := make([]*CryptoParams, nbrNodes)
+	for i := range out {
+		out[i] = NewCryptoParams(params, skList[i], aggregateSk.CopyNew(), pk.CopyNew(), rlk.CopyNew(), prec, runtime.GOMAXPROCS(0))
+	}
+
+	return out
 }
 
-// SetRotKeys sets/adds new rotation keys
+func (cp *CryptoParams) rebuildPools() {
+	cp.encoders = make(chan *ckks.Encoder, cp.numThreads)
+	cp.encryptors = make(chan *rlwe.Encryptor, cp.numThreads)
+	cp.decryptors = make(chan *rlwe.Decryptor, cp.numThreads)
+	cp.evaluators = make(chan *ckks.Evaluator, cp.numThreads)
+
+	var wg sync.WaitGroup
+	for i := 0; i < cp.numThreads; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cp.encoders <- ckks.NewEncoder(cp.Params, cp.prec)
+		}()
+	}
+	wg.Wait()
+
+	for i := 0; i < cp.numThreads; i++ {
+		cp.encryptors <- ckks.NewEncryptor(cp.Params, cp.Pk)
+		cp.decryptors <- ckks.NewDecryptor(cp.Params, cp.AggregateSk)
+		cp.evaluators <- ckks.NewEvaluator(cp.Params, cp.evaluationKeySet())
+	}
+}
+
+func (cp *CryptoParams) evaluationKeySet() *rlwe.MemEvaluationKeySet {
+	return rlwe.NewMemEvaluationKeySet(cp.Rlk, cp.RotKs...)
+}
+
+func (cp *CryptoParams) SetEvaluators(params ckks.Parameters, rlk *rlwe.RelinearizationKey, rotKs []*rlwe.GaloisKey) {
+	cp.Params = params
+	cp.Rlk = rlk
+	cp.RotKs = rotKs
+	cp.rebuildPools()
+}
+
 func (cp *CryptoParams) SetRotKeys(nbrRot []RotationType) []int {
 	kgen := ckks.NewKeyGenerator(cp.Params)
-	ks := make([]int, 0)
-	for i := range nbrRot {
-		fmt.Println("GenRot", i, "/", len(nbrRot))
+	ks := make([]int, 0, len(nbrRot))
+	seen := make(map[int]struct{}, len(nbrRot))
 
-		var rotation int
-		if nbrRot[i].Side == SideRight {
-			rotation = cp.GetSlots() - nbrRot[i].Value
-		} else {
-			rotation = nbrRot[i].Value
+	for _, rot := range nbrRot {
+		rotation := rot.Value
+		if rot.Side == SideRight {
+			rotation = cp.GetSlots() - rot.Value
 		}
-
-		// check if key is already in list
-		in := false
-		for j := range ks {
-			if ks[j] == rotation {
-				in = true
-				break
-			}
-		}
-		if !in {
+		rotation = Mod(rotation, cp.GetSlots())
+		if _, ok := seen[rotation]; !ok {
+			seen[rotation] = struct{}{}
 			ks = append(ks, rotation)
 		}
 	}
 
-	cp.RotKs = kgen.GenRotationKeysForRotations(ks, false, cp.AggregateSk)
-	cp.SetEvaluators(cp.Params, cp.Rlk, cp.RotKs)
 	sort.Ints(ks)
+	cp.RotKs = make([]*rlwe.GaloisKey, 0, len(ks))
+	for _, rotation := range ks {
+		cp.RotKs = append(cp.RotKs, kgen.GenGaloisKeyNew(cp.Params.GaloisElementForRotation(rotation), cp.AggregateSk))
+	}
+	cp.rebuildPools()
+
 	return ks
 }
 
-//
-//// GenRot generates a left or right rotation of a ciphertext
-//func GenRot(cryptoParams *CryptoParams, rotation int, side bool, rotKeys *ckks.RotationKeys) *ckks.RotationKeys {
-//	kgen := ckks.NewKeyGenerator(cryptoParams.Params)
-//	if rotKeys == nil {
-//		rotKeys = ckks.NewRotationKeys()
-//	}
-//
-//	if side == SideRight {
-//		kgen.GenRot(ckks.RotationLeft, cryptoParams.AggregateSk, uint64(cryptoParams.GetSlots()-rotation), rotKeys)
-//	} else {
-//		kgen.GenRot(ckks.RotationLeft, cryptoParams.AggregateSk, uint64(rotation), rotKeys)
-//	}
-//	return rotKeys
-//}
-
-// Generate rotKeys for power of two shifts up to # of slots
-// and for every shift up to smallDim
 func GenerateRotKeys(slots int, smallDim int, babyFlag bool) []RotationType {
 	rotations := make([]RotationType, 0)
-
-	l := slots
-	l = FindClosestPow2(l)
+	l := FindClosestPow2(slots)
 
 	rot := 1
-	for i := 0; i < int(math.Ceil(math.Log2(float64(l)))); i++ {
-		rotations = append(rotations, RotationType{
-			Value: rot,
-			Side:  false,
-		})
-		rotations = append(rotations, RotationType{
-			Value: rot,
-			Side:  true,
-		})
-		rot = rot * 2
+	for i := 0; i < intCeilLog2(l); i++ {
+		rotations = append(rotations, RotationType{Value: rot, Side: false})
+		rotations = append(rotations, RotationType{Value: rot, Side: true})
+		rot *= 2
 	}
 
-	//for baby-step giant-step rotations
 	if babyFlag {
-		rootl := int(math.Ceil(math.Sqrt(float64(slots))))
+		rootl := intCeilSqrt(slots)
 		for i := 1; i < rootl; i++ {
-			rotations = append(rotations, RotationType{
-				Value: i,
-				Side:  false,
-			})
-			rotations = append(rotations, RotationType{
-				Value: i * rootl,
-				Side:  false,
-			})
+			rotations = append(rotations, RotationType{Value: i, Side: false})
+			rotations = append(rotations, RotationType{Value: i * rootl, Side: false})
 		}
 	}
 
-	// for moving the innersum value to its new position
 	for i := 1; i < smallDim; i++ {
-		rotations = append(rotations, RotationType{
-			Value: i,
-			Side:  true,
-		})
+		rotations = append(rotations, RotationType{Value: i, Side: true})
 	}
 
 	return rotations
@@ -278,37 +195,32 @@ func (cp *CryptoParams) GetPrec() uint {
 	return cp.prec
 }
 
-// GetSlots gets the number of encodable slots (N/2)
 func (cp *CryptoParams) GetSlots() int {
-	return cp.Params.Slots()
+	return cp.Params.MaxSlots()
 }
 
-// WithEncoder run the given function with an encoder
-func (cp *CryptoParams) WithEncoder(act func(ckks.Encoder) error) error {
+func (cp *CryptoParams) WithEncoder(act func(*ckks.Encoder) error) error {
 	encoder := <-cp.encoders
 	err := act(encoder)
 	cp.encoders <- encoder
 	return err
 }
 
-// WithEncryptor run the given function with an encryptor
-func (cp *CryptoParams) WithEncryptor(act func(ckks.Encryptor) error) error {
+func (cp *CryptoParams) WithEncryptor(act func(*rlwe.Encryptor) error) error {
 	encryptor := <-cp.encryptors
 	err := act(encryptor)
 	cp.encryptors <- encryptor
 	return err
 }
 
-// WithDecryptor run the given function with a decryptor
-func (cp *CryptoParams) WithDecryptor(act func(act ckks.Decryptor) error) error {
+func (cp *CryptoParams) WithDecryptor(act func(*rlwe.Decryptor) error) error {
 	decryptor := <-cp.decryptors
 	err := act(decryptor)
 	cp.decryptors <- decryptor
 	return err
 }
 
-// WithEvaluator run the given function with an evaluator
-func (cp *CryptoParams) WithEvaluator(act func(ckks.Evaluator) error) error {
+func (cp *CryptoParams) WithEvaluator(act func(*ckks.Evaluator) error) error {
 	eval := <-cp.evaluators
 	err := act(eval)
 	cp.evaluators <- eval
@@ -318,68 +230,38 @@ func (cp *CryptoParams) WithEvaluator(act func(ckks.Evaluator) error) error {
 // #------------------------------------#
 // #------------ ENCRYPTION ------------#
 // #------------------------------------#
-
-// EncryptFloat encrypts one float64 value.
-func EncryptFloat(cryptoParams *CryptoParams, num float64) *ckks.Ciphertext {
-	slots := cryptoParams.GetSlots()
-	plaintext := ckks.NewPlaintext(cryptoParams.Params, cryptoParams.Params.MaxLevel(), cryptoParams.Params.Scale())
-
-	cryptoParams.WithEncoder(func(encoder ckks.Encoder) error {
-		encoder.Encode(plaintext, ConvertVectorFloat64ToComplex(PadVector([]float64{num}, slots)), cryptoParams.Params.LogSlots())
-		return nil
-	})
-
-	var ciphertext *ckks.Ciphertext
-	cryptoParams.WithEncryptor(func(encryptor ckks.Encryptor) error {
-		ciphertext = encryptor.EncryptNew(plaintext)
-		return nil
-	})
-	return ciphertext
-}
-
 // EncryptFloatVector encrypts a slice of float64 values in multiple batched ciphertexts.
 // and return the number of encrypted elements.
 func EncryptFloatVector(cryptoParams *CryptoParams, f []float64) (CipherVector, int) {
-	nbrMaxCoef := cryptoParams.GetSlots()
-	length := len(f)
+	plainArr, elementsEncoded := EncodeFloatVector(cryptoParams, f)
+	cipherArr := make(CipherVector, len(plainArr))
 
-	cipherArr := make(CipherVector, 0)
-	elementsEncrypted := 0
-	for elementsEncrypted < length {
-		start := elementsEncrypted
-		end := elementsEncrypted + nbrMaxCoef
-
-		if end > length {
-			end = length
+	for i := range plainArr {
+		if err := cryptoParams.WithEncryptor(func(encryptor *rlwe.Encryptor) error {
+			var err error
+			cipherArr[i], err = encryptor.EncryptNew(plainArr[i])
+			return err
+		}); err != nil {
+			panic(err)
 		}
-		plaintext := ckks.NewPlaintext(cryptoParams.Params, cryptoParams.Params.MaxLevel(), cryptoParams.Params.Scale())
-		// pad to 0s
-		cryptoParams.WithEncoder(func(encoder ckks.Encoder) error {
-			encoder.Encode(plaintext, ConvertVectorFloat64ToComplex(PadVector(f[start:end], nbrMaxCoef)), cryptoParams.Params.LogSlots())
-			return nil
-		})
-		var cipher *ckks.Ciphertext
-		cryptoParams.WithEncryptor(func(encryptor ckks.Encryptor) error {
-			cipher = encryptor.EncryptNew(plaintext)
-			return nil
-		})
-		cipherArr = append(cipherArr, cipher)
-		elementsEncrypted = elementsEncrypted + (end - start)
 	}
-	return cipherArr, elementsEncrypted
+
+	return cipherArr, elementsEncoded
 }
 
 // EncryptFloatMatrixRow encrypts a matrix of float64 to multiple packed ciphertexts.
 // For this specific matrix encryption each row is encrypted in a set of ciphertexts.
+// It returns the encrypted matrix, the number of rows, the number of columns, and an error if any.
 func EncryptFloatMatrixRow(cryptoParams *CryptoParams, matrix [][]float64) (CipherMatrix, int, int, error) {
+	if len(matrix) == 0 {
+		return nil, 0, 0, nil
+	}
 	nbrRows := len(matrix)
 	d := len(matrix[0])
-
-	matrixEnc := make([]CipherVector, 0)
+	matrixEnc := make(CipherMatrix, 0, nbrRows)
 	for _, row := range matrix {
 		if d != len(row) {
-			return nil, 0, 0, errors.New("this is not a matrix (expected " + strconv.FormatInt(int64(d), 10) +
-				" dimensions but got " + strconv.FormatInt(int64(len(row)), 10))
+			return nil, 0, 0, errors.New("this is not a matrix (expected " + strconv.Itoa(d) + " dimensions but got " + strconv.Itoa(len(row)) + ")")
 		}
 		rowEnc, _ := EncryptFloatVector(cryptoParams, row)
 		matrixEnc = append(matrixEnc, rowEnc)
@@ -387,188 +269,124 @@ func EncryptFloatMatrixRow(cryptoParams *CryptoParams, matrix [][]float64) (Ciph
 	return matrixEnc, nbrRows, d, nil
 }
 
-// EncodeFloatVector encodes a slice of float64 values in multiple batched plaintext (ready to be encrypted).
-// It also returns the number of encoded elements.
 func EncodeFloatVector(cryptoParams *CryptoParams, f []float64) (PlainVector, int) {
-	return EncodeFloatVectorWithScale(cryptoParams, f, cryptoParams.Params.Scale())
+	return EncodeFloatVectorWithScale(cryptoParams, f, cryptoParams.Params.DefaultScale().Float64())
 }
 
-// EncodeFloatVector encodes a slice of float64 values in multiple batched plaintext (ready to be encrypted).
-// It also returns the number of encoded elements.
 func EncodeFloatVectorWithScale(cryptoParams *CryptoParams, f []float64, scale float64) (PlainVector, int) {
 	nbrMaxCoef := cryptoParams.GetSlots()
 	length := len(f)
-
-	plainArr := make(PlainVector, 0)
+	plainArr := make(PlainVector, 0, (length+nbrMaxCoef-1)/nbrMaxCoef)
 	elementsEncoded := 0
+
 	for elementsEncoded < length {
 		start := elementsEncoded
-		end := elementsEncoded + nbrMaxCoef
-
-		if end > length {
-			end = length
+		end := Min(elementsEncoded+nbrMaxCoef, length)
+		pt := ckks.NewPlaintext(cryptoParams.Params, cryptoParams.Params.MaxLevel())
+		pt.Scale = rlwe.NewScale(scale)
+		if err := cryptoParams.WithEncoder(func(encoder *ckks.Encoder) error {
+			return encoder.Encode(PadVector(f[start:end], nbrMaxCoef), pt)
+		}); err != nil {
+			panic(err)
 		}
-		plaintext := ckks.NewPlaintext(cryptoParams.Params, cryptoParams.Params.MaxLevel(), scale)
-		cryptoParams.WithEncoder(func(encoder ckks.Encoder) error {
-			encoder.EncodeNTT(plaintext, ConvertVectorFloat64ToComplex(PadVector(f[start:end], nbrMaxCoef)), cryptoParams.Params.LogSlots())
-			return nil
-		})
-		plainArr = append(plainArr, plaintext)
-		elementsEncoded = elementsEncoded + (end - start)
+		plainArr = append(plainArr, pt)
+		elementsEncoded += end - start
 	}
+
 	return plainArr, elementsEncoded
 }
 
-// EncodeFloatMatrixRow encodes a matrix of float64 to multiple packed plaintexts.
-// For this specific matrix encoding each row is encoded in a set of plaintexts.
 func EncodeFloatMatrixRow(cryptoParams *CryptoParams, matrix [][]float64) (PlainMatrix, int, int, error) {
+	if len(matrix) == 0 {
+		return nil, 0, 0, nil
+	}
 	nbrRows := len(matrix)
 	d := len(matrix[0])
-
-	matrixEnc := make(PlainMatrix, 0)
+	matrixEnc := make(PlainMatrix, 0, nbrRows)
 	for _, row := range matrix {
 		if d != len(row) {
-			return nil, 0, 0, errors.New("this is not a matrix (expected " + strconv.FormatInt(int64(d), 10) +
-				" dimensions but got " + strconv.FormatInt(int64(len(row)), 10))
+			return nil, 0, 0, errors.New("this is not a matrix (expected " + strconv.Itoa(d) + " dimensions but got " + strconv.Itoa(len(row)) + ")")
 		}
-
 		rowEnc, _ := EncodeFloatVector(cryptoParams, row)
 		matrixEnc = append(matrixEnc, rowEnc)
 	}
 	return matrixEnc, nbrRows, d, nil
 }
 
-// #------------------------------------#
-// #------------ DECRYPTION ------------#
-// #------------------------------------#
-
-// DecryptFloat decrypts a ciphertext with one float64 value.
-func DecryptFloat(cryptoParams *CryptoParams, cipher *ckks.Ciphertext) float64 {
-	var ret float64
-	var plaintext *ckks.Plaintext
-
-	cryptoParams.WithDecryptor(func(decryptor ckks.Decryptor) error {
+func DecryptMultipleFloat(cryptoParams *CryptoParams, cipher *rlwe.Ciphertext, nbrEl int) []float64 {
+	var plaintext *rlwe.Plaintext
+	if err := cryptoParams.WithDecryptor(func(decryptor *rlwe.Decryptor) error {
 		plaintext = decryptor.DecryptNew(cipher)
 		return nil
-	})
-	cryptoParams.WithEncoder(func(encoder ckks.Encoder) error {
-		ret = real(encoder.Decode(plaintext, cryptoParams.Params.LogSlots())[0])
-		return nil
-	})
+	}); err != nil {
+		panic(err)
+	}
 
-	return ret
-}
-
-// DecryptMultipleFloat decrypts a ciphertext with multiple float64 values.
-// If nbrEl<=0 it decrypts everything without caring about the number of encrypted values.
-// If nbrEl>0 the function returns N elements from the decryption.
-func DecryptMultipleFloat(cryptoParams *CryptoParams, cipher *ckks.Ciphertext, nbrEl int) []float64 {
-	var plaintext *ckks.Plaintext
-
-	cryptoParams.WithDecryptor(func(decryptor ckks.Decryptor) error {
-		plaintext = decryptor.DecryptNew(cipher)
-		return nil
-	})
-
-	var val []complex128
-	cryptoParams.WithEncoder(func(encoder ckks.Encoder) error {
-		val = encoder.Decode(plaintext, cryptoParams.Params.LogSlots())
-		return nil
-	})
-	dataDecrypted := ConvertVectorComplexToFloat64(val)
+	dataDecrypted := DecodeFloatVector(cryptoParams, PlainVector{plaintext})
 	if nbrEl <= 0 {
 		return dataDecrypted
 	}
 	return dataDecrypted[:nbrEl]
 }
 
-// DecryptFloatVector decrypts multiple batched ciphertexts with N float64 values and appends
-// all data into one single float vector.
-// If nbrEl<=0 it decrypts everything without caring about the number of encrypted values.
-// If nbrEl>0 the function returns N elements from the decryption.
-func DecryptFloatVector(cryptoParams *CryptoParams, fEnc CipherVector, N int) []float64 {
-	var plaintext *ckks.Plaintext
-
-	dataDecrypted := make([]float64, 0)
+func DecryptFloatVector(cryptoParams *CryptoParams, fEnc CipherVector, n int) []float64 {
+	dataDecrypted := make([]float64, 0, Max(n, len(fEnc)*cryptoParams.GetSlots()))
 	for _, cipher := range fEnc {
-		cryptoParams.WithDecryptor(func(decryptor ckks.Decryptor) error {
-			plaintext = decryptor.DecryptNew(cipher)
-			return nil
-		})
-		var val []complex128
-		cryptoParams.WithEncoder(func(encoder ckks.Encoder) error {
-			val = encoder.Decode(plaintext, cryptoParams.Params.LogSlots())
-			return nil
-		})
-		dataDecrypted = append(dataDecrypted, ConvertVectorComplexToFloat64(val)...)
+		dataDecrypted = append(dataDecrypted, DecryptMultipleFloat(cryptoParams, cipher, 0)...)
 	}
-
-	if N <= 0 {
+	if n <= 0 {
 		return dataDecrypted
 	}
-	return dataDecrypted[:N]
+	return dataDecrypted[:n]
 }
 
-// DecryptFloatMatrix decrypts a matrix (kind of) of multiple packed ciphertexts.
-// For this specific matrix decryption each row is encrypted in a set of ciphertexts.
-// d is the number of column values
 func DecryptFloatMatrix(cryptoParams *CryptoParams, matrixEnc []CipherVector, d int) [][]float64 {
-	matrix := make([][]float64, 0)
+	matrix := make([][]float64, 0, len(matrixEnc))
 	for _, rowEnc := range matrixEnc {
-		row := DecryptFloatVector(cryptoParams, rowEnc, d)
-		matrix = append(matrix, row)
+		matrix = append(matrix, DecryptFloatVector(cryptoParams, rowEnc, d))
 	}
 	return matrix
 }
 
-// DecodeFloatVector decodes a slice of plaintext values in multiple float64 values.
 func DecodeFloatVector(cryptoParams *CryptoParams, fEncoded PlainVector) []float64 {
-	dataDecoded := make([]float64, 0)
+	dataDecoded := make([]float64, 0, len(fEncoded)*cryptoParams.GetSlots())
 	for _, plaintext := range fEncoded {
-		var val []complex128
-		cryptoParams.WithEncoder(func(encoder ckks.Encoder) error {
-			val = encoder.Decode(plaintext, cryptoParams.Params.LogSlots())
-			return nil
-		})
-		dataDecoded = append(dataDecoded, ConvertVectorComplexToFloat64(val)...)
+		values := make([]complex128, cryptoParams.GetSlots())
+		if err := cryptoParams.WithEncoder(func(encoder *ckks.Encoder) error {
+			return encoder.Decode(plaintext, values)
+		}); err != nil {
+			panic(err)
+		}
+		dataDecoded = append(dataDecoded, ConvertVectorComplexToFloat64(values)...)
 	}
 	return dataDecoded
 }
-
-// #------------------------------------#
-// #------------ MARSHALL --------------#
-// #------------------------------------#
 
 func (cm *CipherMatrix) MarshalBinary() ([]byte, [][]int, error) {
 	b := make([]byte, 0)
 	ctSizes := make([][]int, len(*cm))
 	for i, v := range *cm {
 		tmp, n, err := v.MarshalBinary()
-		ctSizes[i] = n
 		if err != nil {
 			return nil, nil, err
 		}
+		ctSizes[i] = n
 		b = append(b, tmp...)
 	}
-
 	return b, ctSizes, nil
-
 }
 
 func (cm *CipherMatrix) UnmarshalBinary(cryptoParams *CryptoParams, f []byte, ctSizes [][]int) error {
 	*cm = make([]CipherVector, len(ctSizes))
-
 	start := 0
 	for i := range ctSizes {
 		rowSize := 0
-		for j := range ctSizes[i] {
-			rowSize += ctSizes[i][j]
+		for _, size := range ctSizes[i] {
+			rowSize += size
 		}
 		end := start + rowSize
-		cv := make(CipherVector, 0)
-		// log.LLvl1(time.Now().Format(time.RFC3339), "vector: ", i)
-		err := cv.UnmarshalBinary(cryptoParams, f[start:end], ctSizes[i])
-		if err != nil {
+		cv := make(CipherVector, 0, len(ctSizes[i]))
+		if err := cv.UnmarshalBinary(cryptoParams, f[start:end], ctSizes[i]); err != nil {
 			return err
 		}
 		start = end
@@ -579,181 +397,168 @@ func (cm *CipherMatrix) UnmarshalBinary(cryptoParams *CryptoParams, f []byte, ct
 
 func (cv *CipherVector) MarshalBinary() ([]byte, []int, error) {
 	data := make([]byte, 0)
-	ctSizes := make([]int, 0)
+	ctSizes := make([]int, 0, len(*cv))
 	for _, ct := range *cv {
 		b, err := ct.MarshalBinary()
 		if err != nil {
 			return nil, nil, err
 		}
-
-		// log.LLvl1(time.Now().Format(time.RFC3339), "ct level byte: ", i, b[:8]) //first 8 bytes
-
 		data = append(data, b...)
 		ctSizes = append(ctSizes, len(b))
 	}
 	return data, ctSizes, nil
 }
 
-// UnmarshalBinary -> CipherVector: converts an array of bytes to an array of ciphertexts.
 func (cv *CipherVector) UnmarshalBinary(cryptoParams *CryptoParams, f []byte, fSizes []int) error {
 	*cv = make(CipherVector, len(fSizes))
-
 	start := 0
-	for i := 0; i < len(fSizes); i++ {
-		ct := ckks.NewCiphertext(cryptoParams.Params, 1, cryptoParams.Params.MaxLevel(), cryptoParams.Params.Scale())
-
-		// log.LLvl1(time.Now().Format(time.RFC3339), "ct level byte: ", i, f[start:start+8]) //first 8 bytes
-
-		if err := ct.UnmarshalBinary(f[start : start+fSizes[i]]); err != nil {
+	for i, size := range fSizes {
+		ct := ckks.NewCiphertext(cryptoParams.Params, 1, cryptoParams.Params.MaxLevel())
+		if err := ct.UnmarshalBinary(f[start : start+size]); err != nil {
 			return err
 		}
 		(*cv)[i] = ct
-		start += fSizes[i]
+		start += size
 	}
 	return nil
 }
 
-type cryptoParamsMarshalable struct {
-	Params      *ckks.Parameters
-	Sk          []*ckks.SecretKey
-	AggregateSk *ckks.SecretKey
-	Pk          *ckks.PublicKey
-	Rlk         *ckks.RelinearizationKey
-	RotKs       *ckks.RotationKeySet
-}
-
-// #------------------------------------#
-// #-------------- COPY ----------------#
-// #------------------------------------#
-
-// CopyEncryptedVector does a copy of an array of ciphertexts to a newly created array
 func CopyEncryptedVector(src CipherVector) CipherVector {
 	dest := make(CipherVector, len(src))
-	for i := 0; i < len(src); i++ {
-		if src[i] == nil {
-			log.LLvl1(time.Now().Format(time.RFC3339), "nil pointer", i)
+	for i := range src {
+		if src[i] != nil {
+			dest[i] = src[i].CopyNew()
 		}
-		dest[i] = (*src[i]).CopyNew().Ciphertext()
 	}
 	return dest
 }
 
-// CopyEncryptedMatrix does a copy of a matrix of ciphertexts to a newly created array
 func CopyEncryptedMatrix(src []CipherVector) []CipherVector {
 	dest := make([]CipherVector, len(src))
-	for i := 0; i < len(src); i++ {
+	for i := range src {
 		dest[i] = CopyEncryptedVector(src[i])
 	}
 	return dest
 }
 
-// DummyBootstrapping mimics the bootstrapping
-func (cv *CipherVector) DummyBootstrapping(serverID string, cryptoParams *CryptoParams) CipherVector {
-	var bootstrappingTime *monitor.TimeMeasure
-	if serverID != "" {
-		bootstrappingTime = libunlynx.StartTimer(serverID + "_DummyBootstrapping")
-	}
-
+func (cv *CipherVector) DummyBootstrapping(_ string, cryptoParams *CryptoParams) CipherVector {
 	for i, ct := range *cv {
 		decryptedValues := DecryptMultipleFloat(cryptoParams, ct, 0)
 		encryptedValues, _ := EncryptFloatVector(cryptoParams, decryptedValues)
 		(*cv)[i] = encryptedValues[0]
 	}
-
-	if serverID != "" {
-		libunlynx.EndTimer(bootstrappingTime)
-	}
 	return *cv
 }
-
-/*******/
-/*EDITS*/
-/*******/
 
 var _ encoding.BinaryMarshaler = new(CryptoParams)
 var _ encoding.BinaryUnmarshaler = new(CryptoParams)
 
-// MarshalBinary for minimal cryptoParams-keys + params
 func (cp *CryptoParams) MarshalBinary() ([]byte, error) {
-	var ret bytes.Buffer
-	encoder := gob.NewEncoder(&ret)
-
-	if cp.Params == nil {
-		log.LLvl1(time.Now().Format(time.RFC3339), "encoding params is nil")
-
-	} else if cp.Sk == nil {
-		log.LLvl1(time.Now().Format(time.RFC3339), "encoding Sk is nil")
-
-	} else if cp.AggregateSk == nil {
-		log.LLvl1(time.Now().Format(time.RFC3339), "encoding aggregate sk is nil")
-
-	} else if cp.Rlk == nil {
-		log.LLvl1(time.Now().Format(time.RFC3339), "encoding Rlk is nil")
-	} else if cp.RotKs == nil {
-		log.LLvl1(time.Now().Format(time.RFC3339), "encoding Rotks are nil")
-	}
-
-	err := encoder.Encode(cryptoParamsMarshalable{
-		Params:      cp.Params,
-		Sk:          []*ckks.SecretKey{cp.Sk},
-		AggregateSk: cp.AggregateSk,
-		Pk:          cp.Pk,
-		Rlk:         cp.Rlk,
-		RotKs:       cp.RotKs,
-	})
+	paramsBytes, err := cp.Params.MarshalBinary()
 	if err != nil {
-		return nil, fmt.Errorf("encode minimal crypto params: %v", err)
+		return nil, fmt.Errorf("marshal params: %w", err)
 	}
 
-	return ret.Bytes(), nil
+	skBytes, err := cp.Sk.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("marshal secret key: %w", err)
+	}
+	aggSkBytes, err := cp.AggregateSk.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("marshal aggregate secret key: %w", err)
+	}
+	pkBytes, err := cp.Pk.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("marshal public key: %w", err)
+	}
+
+	var rlkBytes []byte
+	if cp.Rlk != nil {
+		evk := rlwe.NewMemEvaluationKeySet(cp.Rlk)
+		rlkBytes, err = evk.MarshalBinary()
+		if err != nil {
+			return nil, fmt.Errorf("marshal relin key: %w", err)
+		}
+	}
+
+	rotBytes := make([][]byte, len(cp.RotKs))
+	for i, gk := range cp.RotKs {
+		rotBytes[i], err = gk.MarshalBinary()
+		if err != nil {
+			return nil, fmt.Errorf("marshal galois key %d: %w", i, err)
+		}
+	}
+
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+	if err := enc.Encode(cryptoParamsMarshalable{
+		Params:      paramsBytes,
+		Sk:          skBytes,
+		AggregateSk: aggSkBytes,
+		Pk:          pkBytes,
+		Rlk:         rlkBytes,
+		RotKs:       rotBytes,
+		NumThreads:  cp.numThreads,
+		Prec:        cp.prec,
+	}); err != nil {
+		return nil, fmt.Errorf("encode crypto params: %w", err)
+	}
+
+	return buf.Bytes(), nil
 }
 
 func (cp *CryptoParams) UnmarshalBinary(data []byte) error {
-	decoder := gob.NewDecoder(bytes.NewBuffer(data))
-
-	decodeParams := new(cryptoParamsMarshalable)
-	if err := decoder.Decode(decodeParams); err != nil {
-		return fmt.Errorf("decode minimal crypto params: %v", err)
+	dec := gob.NewDecoder(bytes.NewBuffer(data))
+	var enc cryptoParamsMarshalable
+	if err := dec.Decode(&enc); err != nil {
+		return fmt.Errorf("decode crypto params: %w", err)
 	}
 
-	cp.Params = decodeParams.Params
-	cp.Sk = decodeParams.Sk[0]
-	cp.AggregateSk = decodeParams.AggregateSk
-	cp.Pk = decodeParams.Pk
-	cp.Rlk = decodeParams.Rlk
-	cp.RotKs = decodeParams.RotKs
+	if err := cp.Params.UnmarshalBinary(enc.Params); err != nil {
+		return fmt.Errorf("unmarshal params: %w", err)
+	}
+
+	cp.Sk = rlwe.NewSecretKey(cp.Params)
+	if err := cp.Sk.UnmarshalBinary(enc.Sk); err != nil {
+		return fmt.Errorf("unmarshal secret key: %w", err)
+	}
+
+	cp.AggregateSk = rlwe.NewSecretKey(cp.Params)
+	if err := cp.AggregateSk.UnmarshalBinary(enc.AggregateSk); err != nil {
+		return fmt.Errorf("unmarshal aggregate secret key: %w", err)
+	}
+
+	cp.Pk = rlwe.NewPublicKey(cp.Params)
+	if err := cp.Pk.UnmarshalBinary(enc.Pk); err != nil {
+		return fmt.Errorf("unmarshal public key: %w", err)
+	}
+
+	if len(enc.Rlk) > 0 {
+		evk := &rlwe.MemEvaluationKeySet{}
+		if err := evk.UnmarshalBinary(enc.Rlk); err != nil {
+			return fmt.Errorf("unmarshal relin key set: %w", err)
+		}
+		var err error
+		cp.Rlk, err = evk.GetRelinearizationKey()
+		if err != nil {
+			return fmt.Errorf("extract relin key: %w", err)
+		}
+	}
+
+	cp.RotKs = make([]*rlwe.GaloisKey, len(enc.RotKs))
+	for i, gkBytes := range enc.RotKs {
+		gk := rlwe.NewGaloisKey(cp.Params)
+		if err := gk.UnmarshalBinary(gkBytes); err != nil {
+			return fmt.Errorf("unmarshal galois key %d: %w", i, err)
+		}
+		cp.RotKs[i] = gk
+	}
+
+	cp.numThreads = enc.NumThreads
+	if cp.numThreads <= 0 {
+		cp.numThreads = runtime.GOMAXPROCS(0)
+	}
+	cp.prec = enc.Prec
+	cp.rebuildPools()
 	return nil
-}
-
-// ConvertVectorFloat64ToComplex converts an array of floats to complex
-func ConvertVectorFloat64ToComplex(v []float64) []complex128 {
-	res := make([]complex128, len(v))
-	for i, el := range v {
-		res[i] = complex(el, 0)
-	}
-	return res
-}
-
-// ConvertVectorComplexToFloat64 converts an array of complex to float
-func ConvertVectorComplexToFloat64(v []complex128) []float64 {
-	res := make([]float64, len(v))
-	for i, el := range v {
-		res[i] = real(el)
-	}
-	return res
-}
-
-// PadVector pads the vector with 0's before encoding/encryption
-func PadVector(v []float64, slots int) []float64 {
-	toAdd := make([]float64, slots-len(v))
-	return append(v, toAdd...)
-}
-
-// FindClosestPow2 finds the closest power of 2 bigger than a number n
-func FindClosestPow2(n int) int {
-	// find closest power of two
-	var bigPower2 int
-	for bigPower2 = 1; bigPower2 < n; bigPower2 *= 2 {
-	}
-	return bigPower2
 }
