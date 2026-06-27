@@ -12,9 +12,6 @@ import (
 
 	"github.com/aead/chacha20/chacha"
 	"github.com/hhcho/frand"
-	"github.com/ldsec/lattigo/v2/ckks"
-	"github.com/ldsec/lattigo/v2/dckks"
-	"github.com/ldsec/lattigo/v2/ring"
 )
 
 type Network struct {
@@ -22,9 +19,7 @@ type Network struct {
 	hubPid     int
 	NumParties int
 
-	crpGen       *ring.UniformSampler
-	dckksContext *dckks.Context
-	Rand         *Random
+	Rand *Random
 
 	// Paralellization: socket between every machine, thread pair
 
@@ -232,22 +227,6 @@ func initNetworkForThread(bindingIP string, servers map[string]Server, pid int, 
 
 }
 
-func (netObj *Network) SetMHEParams(params *ckks.Parameters) {
-	dckksContext := dckks.NewContext(params)
-
-	seed := make([]byte, chacha.KeySize)
-	netObj.Rand.SwitchPRG(-1)
-	netObj.Rand.RandRead(seed)
-	netObj.Rand.RestorePRG()
-
-	seedPrng := frand.NewCustom(seed, bufferSize, 20)
-
-	crpGen := ring.NewUniformSamplerWithBasePrng(seedPrng, dckksContext.RingQP)
-
-	netObj.crpGen = crpGen
-	netObj.dckksContext = dckksContext
-}
-
 /* Reading and writing from channel */
 
 func WriteFull(conn *net.Conn, buf []byte) {
@@ -408,8 +387,4 @@ func (netObj *Network) SetNParty(np int) {
 
 func (netObj *Network) GetNParty() int {
 	return netObj.NumParties
-}
-
-func (netObj *Network) GetCRPGen() *ring.UniformSampler {
-	return netObj.crpGen
 }

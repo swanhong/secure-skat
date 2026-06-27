@@ -10,8 +10,6 @@ import (
 	"go.dedis.ch/onet/v3/log"
 
 	mpc_core "github.com/hhcho/mpc-core"
-	"github.com/ldsec/lattigo/v2/dckks"
-	"github.com/ldsec/lattigo/v2/ring"
 
 	"sync"
 )
@@ -24,6 +22,7 @@ type MPC struct {
 	Network          *Network
 
 	divSqrtMaxLen int
+	threadID      int
 
 	orLagrangeCache map[TypedKey]mpc_core.RVec
 	lagrangeCache   map[TypedKey]mpc_core.RMat
@@ -53,6 +52,7 @@ func InitParallelMPCEnv(netObjs []*Network, rtype mpc_core.RElem, dataBits, frac
 			invPowCache:      make(map[TypedKey]mpc_core.RElem),
 			pascalCache:      make(map[TypedKey]mpc_core.RMat),
 			syncCounter:      0,
+			threadID:         i,
 			rtype:            rtype,
 		}
 	}
@@ -74,6 +74,7 @@ func initMPCEnv(netObj *Network, rtype mpc_core.RElem, dataBits, fracBits int) *
 		Network:         netObj,
 		dataBits:        dataBits,
 		fracBits:        fracBits,
+		threadID:        0,
 		orLagrangeCache: make(map[TypedKey]mpc_core.RVec),
 		lagrangeCache:   make(map[TypedKey]mpc_core.RMat),
 		invPowCache:     make(map[TypedKey]mpc_core.RElem),
@@ -222,14 +223,6 @@ func (mpcObj *MPC) SetFracBits(f int) {
 
 func (mpcObj *MPC) GetRType() mpc_core.RElem {
 	return mpcObj.rtype
-}
-
-func (mpcObj *MPC) GetMHEContext() *dckks.Context {
-	return mpcObj.Network.dckksContext
-}
-
-func (mpcObj *MPC) GetCRPGen() *ring.UniformSampler {
-	return mpcObj.Network.crpGen
 }
 
 func (mpcObj *MPC) InitLagrangeCache() {
@@ -405,18 +398,10 @@ func (mpcObj *MPC) RevealSymMat(a mpc_core.RMat) mpc_core.RMat {
 			mpcObj.Network.SendRData(a, p)
 			r := mpcObj.Network.ReceiveRMat(rtype, nr, nc, p)
 			ar.Add(r)
-
-			//DEBUG
-			//fmt.Println(pid, "send", p, a[0][:5])
-			//fmt.Println(pid, "receive", p, r[0][:5])
 		} else if p > pid {
 			r := mpcObj.Network.ReceiveRMat(rtype, nr, nc, p)
 			ar.Add(r)
 			mpcObj.Network.SendRData(a, p)
-
-			//DEBUG
-			//fmt.Println(pid, "send", p, a[0][:5])
-			//fmt.Println(pid, "receive", p, r[0][:5])
 		}
 	}
 
@@ -2775,9 +2760,14 @@ func (mpcObjs ParallelMPC) runParallel(a mpc_core.RMat, aux mpc_core.RElem, name
 				go func(threadID, startIndex, endIndex, divSqrtMaxLen int, aSub mpc_core.RMat) {
 					defer wg.Done()
 					mpcObjs[threadID].divSqrtMaxLen = divSqrtMaxLen
+					if name == "RevealSymVec" {
+						log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("runParallel (%s): pid %d thread %d starting range %d-%d / %d", name, mpcObjs[threadID].GetPid(), threadID, startIndex, endIndex, n))
+					}
 					tmp := fn(mpcObjs[threadID], aSub, aux)
 					copy(res[startIndex:endIndex], tmp)
-					// log.LLvl1(fmt.Sprintf("runParallel (%s): processed %d-%d / %d", name, startIndex, endIndex, n))
+					if name == "RevealSymVec" {
+						log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("runParallel (%s): pid %d thread %d finished range %d-%d / %d", name, mpcObjs[threadID].GetPid(), threadID, startIndex, endIndex, n))
+					}
 				}(i, startIndex, endIndex, divSqrtMaxLen, aSub)
 			}
 

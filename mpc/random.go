@@ -92,11 +92,7 @@ func (rand *Random) CurPRG() *frand.RNG {
 }
 
 func (rand *Random) ExportPRG() []byte {
-	return rand.curPRG.Marshal()
-}
-
-func (rand *Random) ImportPRG(buf []byte, prgId int) {
-	rand.prgTable[prgId] = frand.Unmarshal(buf, bufferSize)
+	return nil
 }
 
 func (rand *Random) RandRead(buf []byte) {
