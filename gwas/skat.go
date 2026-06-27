@@ -19,9 +19,10 @@ func (ast *AssocTest) skatNumInds() []int {
 }
 
 func (ast *AssocTest) skatTotalNumInds() int {
+	nrows := ast.skatNumInds()
 	total := 0
 	for p := 1; p <= ast.general.config.NumMainParties; p++ {
-		total += ast.skatNumInds()[p]
+		total += nrows[p]
 	}
 	return total
 }
@@ -39,10 +40,7 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 	pid := mpcObj.GetPid()
 
 	nrowsAll := ast.skatNumInds()
-	nrowsTotal := 0
-	for p := 1; p <= ast.general.config.NumMainParties; p++ {
-		nrowsTotal += nrowsAll[p]
-	}
+	nrowsTotal := ast.skatTotalNumInds()
 	nrowsTotalInv := 1.0 / float64(nrowsTotal)
 
 	// covAllOnes specifies whether the input covariates already contain an all-ones column.
@@ -64,10 +62,6 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 
 	// Joint QR (NetDQRenc inside requires Party 0)
 	// SKAT runs without PCA covariates, passing nil
-
-	// Joint QR (NetDQRenc inside requires Party 0)
-	// SKAT runs without PCA covariates, passing nil
-
 	Q := ast.computeCombinedQV2(C, nil)
 
 	// In SKAT, the first covariate is ALWAYS the identically precise intercept.
