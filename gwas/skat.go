@@ -171,27 +171,24 @@ func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (
 	} else {
 		onesRVec = mpc_core.InitRVec(rtype.Zero(), len(p_j))
 	}
+	onesRVec.Sub(p_j)
+	pVec := onesRVec // p = 1 - p_j
 
-	// MAF = min(p_j, 1-p_j)
-	//     = (1-p_j) + [p_j < 0.5] * (p_j - (1-p_j)).
-	half := rtype.FromFloat64(0.5, mpcObj.GetFracBits())
-	pBelowHalf := mpcObj.LessThanPublic(p_j, half, mpcObj.GetBooleanShareFlag())
+	// SKAT weight base is 1-MAF = max(p_j, 1-p_j), invariant to allele orientation.
+	// betaBase = p_j + [p_j < p]*(p - p_j).
+	useBoolean := mpcObj.GetBooleanShareFlag()
+	majorSelect := mpcObj.LessThan(p_j, pVec, useBoolean)
+	majorSelect.MulScalar(one)
 
-	oneMinusP := onesRVec.Copy()
-	oneMinusP.Sub(p_j)
+	betaBase := p_j.Copy()
+	majorDelta := pVec.Copy()
+	majorDelta.Sub(p_j)
+	majorDelta = mpcObj.SSMultElemVec(majorDelta, majorSelect)
+	majorDelta = mpcObj.TruncVec(majorDelta, mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	betaBase.Add(majorDelta)
 
-	pMinusOneMinusP := p_j.Copy()
-	pMinusOneMinusP.Sub(oneMinusP)
-	selectDelta := mpcObj.SSMultElemVec(pBelowHalf, pMinusOneMinusP)
-
-	maf := oneMinusP.Copy()
-	maf.Add(selectDelta)
-
-	w_term := onesRVec.Copy()
-	w_term.Sub(maf)
-
-	// Compute (1 - MAF)^24 via squaring
-	w2 := mpcObj.SSMultElemVec(w_term, w_term)
+	// Compute betaBase^24 = (1 - MAF)^24 via squaring
+	w2 := mpcObj.SSMultElemVec(betaBase, betaBase)
 	w2 = mpcObj.TruncVec(w2, mpcObj.GetDataBits(), mpcObj.GetFracBits())
 
 	w4 := mpcObj.SSMultElemVec(w2, w2)
