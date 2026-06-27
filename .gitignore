@@ -12,3 +12,10 @@ out/
 cache/
 test_stdout_*.txt
 *.skat.bin
+
+CLAUDE.md
+skills-lock.json
+.claude/*
+.agents/*
+test_data/*
+*.pyc
