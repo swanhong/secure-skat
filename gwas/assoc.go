@@ -459,10 +459,6 @@ func (ast *AssocTest) GenoBlockMult(b int, mat crypto.CipherMatrix, square bool)
 	return ast.genoBlockMult(b, mat, square, "", true)
 }
 
-func (ast *AssocTest) GenoBlockMultSKAT(b int, mat crypto.CipherMatrix, square bool) (crypto.CipherMatrix, []float64, []float64, []bool) {
-	return ast.genoBlockMult(b, mat, square, "skat", false)
-}
-
 func (ast *AssocTest) GetAssociationStats() (crypto.CipherVector, []bool) {
 	debug := ast.general.config.Debug
 

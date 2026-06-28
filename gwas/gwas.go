@@ -436,21 +436,14 @@ func (g *ProtocolInfo) SKAT() {
 	net := g.mpcObj.GetNetworks()
 	net.PrintNetworkLog()
 
-	// Collective decrypt and save to file
+	// Collective decrypt and save the per-block (per-gene) Q/Burden: slot b = block b.
 	if pid > 0 {
+		nB := g.config.GenoNumBlocks
 		assocDec := mpcObj.Network.CollectiveDecryptVec(g.cps, assoc, -1)
-		out := crypto.DecodeFloatVector(g.cps, assocDec)
-
-		outFinal := []float64{out[0]}
-
-		SaveFloatVectorToFile(g.OutPath("skat_out.txt"), outFinal)
+		SaveFloatVectorToFile(g.OutPath("skat_out.txt"), crypto.DecodeFloatVector(g.cps, assocDec)[:nB])
 
 		burdenDec := mpcObj.Network.CollectiveDecryptVec(g.cps, burden, -1)
-		outBurden := crypto.DecodeFloatVector(g.cps, burdenDec)
-
-		outBurdenFinal := []float64{outBurden[0]}
-
-		SaveFloatVectorToFile(g.OutPath("burden_out.txt"), outBurdenFinal)
+		SaveFloatVectorToFile(g.OutPath("burden_out.txt"), crypto.DecodeFloatVector(g.cps, burdenDec)[:nB])
 	}
 	log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Output collectively decrypted and saved to: %s and burden_out.txt", g.OutPath("skat_out.txt")))
 }
@@ -461,9 +454,12 @@ func (g *ProtocolInfo) SetPhenoAndCov(pheno, cov *mat.Dense) {
 	g.cov = cov
 }
 
+// ComputeSKATStatistics runs the low-rank per-block secure SKAT: returns per-block Q and
+// Burden (slot b = block b's per-gene statistic). The trailing nils are legacy slots.
 func (g *ProtocolInfo) ComputeSKATStatistics() (crypto.CipherVector, crypto.CipherVector, crypto.CipherMatrix, []bool) {
 	assocTest := g.InitAssociationTests(nil) // SKAT does not use PCA
-	return assocTest.ComputeSKATStatistics()
+	q, b := assocTest.ComputeSKATStatisticsLowRankPerBlock()
+	return q, b, nil, nil
 }
 
 // rareVariantScaleShares returns the shared 1/(2σ̂²) = (dof/2)/RSS scale factor (dof = N−c),
