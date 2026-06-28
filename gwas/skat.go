@@ -7,7 +7,86 @@ import (
 	mpc_core "github.com/hhcho/mpc-core"
 	"github.com/hhcho/sfgwas/crypto"
 	"go.dedis.ch/onet/v3/log"
+	"gonum.org/v1/gonum/mat"
 )
+
+// LocalContraction is one party's plaintext contraction of (G, X, y0): only c-/m-dim
+// aggregates (never n), additive across parties so Σ_party == full-cohort contraction.
+type LocalContraction struct {
+	XtX       *mat.Dense // c×c
+	Xty0      []float64  // c
+	Y0ty0     float64
+	GtX       *mat.Dense // m×c
+	Gty0      []float64  // m
+	DosageSum []float64  // m
+}
+
+func vecToSlice(v *mat.VecDense) []float64 {
+	out := make([]float64, v.Len())
+	for i := range out {
+		out[i] = v.AtVec(i)
+	}
+	return out
+}
+
+// LocalContract contracts (G, X, y0) locally; y0 centered, X includes intercept.
+func LocalContract(G, X *mat.Dense, y0 []float64) LocalContraction {
+	n, _ := X.Dims()
+	_, m := G.Dims()
+	y0v := mat.NewVecDense(n, y0)
+
+	var XtX mat.Dense
+	XtX.Mul(X.T(), X)
+
+	var Xty mat.VecDense
+	Xty.MulVec(X.T(), y0v)
+
+	var GtX mat.Dense
+	GtX.Mul(G.T(), X)
+
+	var Gty mat.VecDense
+	Gty.MulVec(G.T(), y0v)
+
+	dosage := make([]float64, m)
+	for j := 0; j < m; j++ {
+		for i := 0; i < n; i++ {
+			dosage[j] += G.At(i, j)
+		}
+	}
+
+	return LocalContraction{
+		XtX:       &XtX,
+		Xty0:      vecToSlice(&Xty),
+		Y0ty0:     mat.Dot(y0v, y0v),
+		GtX:       &GtX,
+		Gty0:      vecToSlice(&Gty),
+		DosageSum: dosage,
+	}
+}
+
+// Add sums two contractions party-wise (all fields additive).
+func (a LocalContraction) Add(b LocalContraction) LocalContraction {
+	var XtX, GtX mat.Dense
+	XtX.Add(a.XtX, b.XtX)
+	GtX.Add(a.GtX, b.GtX)
+
+	addVec := func(x, y []float64) []float64 {
+		out := make([]float64, len(x))
+		for i := range x {
+			out[i] = x[i] + y[i]
+		}
+		return out
+	}
+
+	return LocalContraction{
+		XtX:       &XtX,
+		Xty0:      addVec(a.Xty0, b.Xty0),
+		Y0ty0:     a.Y0ty0 + b.Y0ty0,
+		GtX:       &GtX,
+		Gty0:      addVec(a.Gty0, b.Gty0),
+		DosageSum: addVec(a.DosageSum, b.DosageSum),
+	}
+}
 
 func (ast *AssocTest) skatNumInds() []int {
 	filtNumInds := ast.general.gwasParams.FiltNumInds()

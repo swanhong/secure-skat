@@ -647,3 +647,86 @@ func TestQBasisComputation(t *testing.T) {
 		}
 	}
 }
+
+// --- low-rank local plaintext contraction (skat.go LocalContract) ---
+
+func rowSlice(m *mat.Dense, r0, r1 int) *mat.Dense {
+	_, c := m.Dims()
+	return mat.DenseCopyOf(m.Slice(r0, r1, 0, c))
+}
+
+func vecApprox(t *testing.T, name string, got, want []float64, tol float64) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s: len got %d want %d", name, len(got), len(want))
+	}
+	for i := range got {
+		if !approxEqual(got[i], want[i], tol) {
+			t.Errorf("%s[%d]: got %.12g want %.12g", name, i, got[i], want[i])
+		}
+	}
+}
+
+func matApprox(t *testing.T, name string, got, want *mat.Dense, tol float64) {
+	t.Helper()
+	if !mat.EqualApprox(got, want, tol) {
+		t.Errorf("%s mismatch:\ngot  %v\nwant %v", name, mat.Formatted(got), mat.Formatted(want))
+	}
+}
+
+// LocalContract matches gonum on the full cohort (correctness).
+func TestLowRankLocalMatchesGonum(t *testing.T) {
+	G, X, y := plainFixture()
+	n, _ := X.Dims()
+	yv := mat.NewVecDense(n, y)
+
+	lc := LocalContract(G, X, y)
+
+	var XtX mat.Dense
+	XtX.Mul(X.T(), X)
+	matApprox(t, "XtX", lc.XtX, &XtX, 1e-9)
+
+	var Xty mat.VecDense
+	Xty.MulVec(X.T(), yv)
+	vecApprox(t, "Xty0", lc.Xty0, vecToSlice(&Xty), 1e-9)
+
+	if !approxEqual(lc.Y0ty0, mat.Dot(yv, yv), 1e-9) {
+		t.Errorf("y0ty0: got %.12g want %.12g", lc.Y0ty0, mat.Dot(yv, yv))
+	}
+
+	var GtX mat.Dense
+	GtX.Mul(G.T(), X)
+	matApprox(t, "GtX", lc.GtX, &GtX, 1e-9)
+
+	var Gty mat.VecDense
+	Gty.MulVec(G.T(), yv)
+	vecApprox(t, "Gty0", lc.Gty0, vecToSlice(&Gty), 1e-9)
+
+	_, m := G.Dims()
+	wantDose := make([]float64, m)
+	for j := 0; j < m; j++ {
+		for i := 0; i < n; i++ {
+			wantDose[j] += G.At(i, j)
+		}
+	}
+	vecApprox(t, "dosageSum", lc.DosageSum, wantDose, 1e-9)
+}
+
+// n-independence invariant: Σ over party row-slices == full cohort.
+func TestLowRankLocalPartyAdditivity(t *testing.T) {
+	G, X, y := plainFixture() // n=6
+	full := LocalContract(G, X, y)
+
+	p1 := LocalContract(rowSlice(G, 0, 3), rowSlice(X, 0, 3), y[0:3])
+	p2 := LocalContract(rowSlice(G, 3, 6), rowSlice(X, 3, 6), y[3:6])
+	sum := p1.Add(p2)
+
+	matApprox(t, "XtX", sum.XtX, full.XtX, 1e-9)
+	vecApprox(t, "Xty0", sum.Xty0, full.Xty0, 1e-9)
+	if !approxEqual(sum.Y0ty0, full.Y0ty0, 1e-9) {
+		t.Errorf("y0ty0: got %.12g want %.12g", sum.Y0ty0, full.Y0ty0)
+	}
+	matApprox(t, "GtX", sum.GtX, full.GtX, 1e-9)
+	vecApprox(t, "Gty0", sum.Gty0, full.Gty0, 1e-9)
+	vecApprox(t, "dosageSum", sum.DosageSum, full.DosageSum, 1e-9)
+}
