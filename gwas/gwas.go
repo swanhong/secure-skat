@@ -413,11 +413,13 @@ func (g *ProtocolInfo) GWAS() {
 }
 
 // SKAT is the main entry point to run the Secure SKAT protocol independently of single-variant GWAS
-func (g *ProtocolInfo) SKAT() {
+// runRareVariant runs QC + the per-block low-rank SKAT, returning the decrypted per-block
+// SKAT (Q) and Burden statistics (slot b = block b). nil on pid 0.
+func (g *ProtocolInfo) runRareVariant() (skat, burden []float64) {
 	mpcObj := g.mpcObj[0]
 	pid := mpcObj.GetPid()
 
-	log.LLvl1(time.Now().Format(time.RFC3339), "Running SKAT Phase 1 & 2")
+	log.LLvl1(time.Now().Format(time.RFC3339), "Running rare-variant test (low-rank per-block)")
 
 	// skip-QC sets full counts directly, otherwise run Phase1 (QC) to populate them.
 	if len(g.gwasParams.FiltNumInds()) != g.config.NumMainParties+1 {
@@ -429,23 +431,47 @@ func (g *ProtocolInfo) SKAT() {
 		}
 	}
 
-	assoc, burden, _, _ := g.ComputeSKATStatistics()
+	assoc, burdenEnc, _, _ := g.ComputeSKATStatistics()
+	g.mpcObj.GetNetworks().PrintNetworkLog()
 
-	log.LLvl1(time.Now().Format(time.RFC3339), "Finished SKAT tests")
-
-	net := g.mpcObj.GetNetworks()
-	net.PrintNetworkLog()
-
-	// Collective decrypt and save the per-block (per-gene) Q/Burden: slot b = block b.
 	if pid > 0 {
 		nB := g.config.GenoNumBlocks
-		assocDec := mpcObj.Network.CollectiveDecryptVec(g.cps, assoc, -1)
-		SaveFloatVectorToFile(g.OutPath("skat_out.txt"), crypto.DecodeFloatVector(g.cps, assocDec)[:nB])
-
-		burdenDec := mpcObj.Network.CollectiveDecryptVec(g.cps, burden, -1)
-		SaveFloatVectorToFile(g.OutPath("burden_out.txt"), crypto.DecodeFloatVector(g.cps, burdenDec)[:nB])
+		skat = crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, assoc, -1))[:nB]
+		burden = crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, burdenEnc, -1))[:nB]
 	}
-	log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Output collectively decrypted and saved to: %s and burden_out.txt", g.OutPath("skat_out.txt")))
+	return
+}
+
+// SKAT runs the per-block SKAT test, saving per-block Q and Burden.
+func (g *ProtocolInfo) SKAT() {
+	skat, burden := g.runRareVariant()
+	if g.mpcObj[0].GetPid() > 0 {
+		SaveFloatVectorToFile(g.OutPath("skat_out.txt"), skat)
+		SaveFloatVectorToFile(g.OutPath("burden_out.txt"), burden)
+	}
+}
+
+// Burden runs the per-block Burden test, saving per-block Burden.
+func (g *ProtocolInfo) Burden() {
+	_, burden := g.runRareVariant()
+	if g.mpcObj[0].GetPid() > 0 {
+		SaveFloatVectorToFile(g.OutPath("burden_out.txt"), burden)
+	}
+}
+
+// SKATO runs the per-block SKAT-O: skato_b = (1-rho)*skat_b + rho*burden_b, blended from
+// the public per-block statistics.
+func (g *ProtocolInfo) SKATO(rho float64) {
+	skat, burden := g.runRareVariant()
+	if g.mpcObj[0].GetPid() > 0 {
+		skato := make([]float64, len(skat))
+		for b := range skato {
+			skato[b] = (1-rho)*skat[b] + rho*burden[b]
+		}
+		SaveFloatVectorToFile(g.OutPath("skat_out.txt"), skat)
+		SaveFloatVectorToFile(g.OutPath("burden_out.txt"), burden)
+		SaveFloatVectorToFile(g.OutPath("skato_out.txt"), skato)
+	}
 }
 
 // SetPhenoAndCov allows deterministic testing scripts to override File I/O datasets in memory
