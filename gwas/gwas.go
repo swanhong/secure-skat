@@ -13,6 +13,7 @@ import (
 
 	mpc_core "github.com/hhcho/mpc-core"
 
+	"github.com/tuneinsight/lattigo/v6/core/rlwe"
 	"github.com/tuneinsight/lattigo/v6/examples"
 	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 
@@ -463,6 +464,53 @@ func (g *ProtocolInfo) SetPhenoAndCov(pheno, cov *mat.Dense) {
 func (g *ProtocolInfo) ComputeSKATStatistics() (crypto.CipherVector, crypto.CipherVector, crypto.CipherMatrix, []bool) {
 	assocTest := g.InitAssociationTests(nil) // SKAT does not use PCA
 	return assocTest.ComputeSKATStatistics()
+}
+
+// rareVariantScaleShares returns the shared 1/(2σ̂²) = (dof/2)/RSS scale factor (dof = N−c),
+// and false if RSS/dof is unavailable. RSS arrives encrypted from the null model.
+func (g *ProtocolInfo) rareVariantScaleShares(rssEnc crypto.CipherVector) (mpc_core.RVec, bool) {
+	mpcObj := g.mpcObj[0]
+	pid := mpcObj.GetPid()
+	rtype := mpcObj.GetRType()
+	scaleSS := mpc_core.InitRVec(rtype.Zero(), 1)
+	sourcePid := mpcObj.GetHubPid()
+	if rssEnc == nil && pid > 0 && pid != sourcePid {
+		return scaleSS, false
+	}
+
+	nrowsAll := g.gwasParams.FiltNumInds()
+	if len(nrowsAll) != g.config.NumMainParties+1 {
+		nrowsAll = g.config.NumInds
+	}
+	totalInds := 0
+	for p := 1; p <= g.config.NumMainParties; p++ {
+		totalInds += nrowsAll[p]
+	}
+	dof := totalInds - (g.gwasParams.NumCov() + 1)
+	if dof <= 0 {
+		return scaleSS, false
+	}
+
+	var rssCt *rlwe.Ciphertext
+	if pid == sourcePid && rssEnc != nil && len(rssEnc) > 0 {
+		rssCt = rssEnc[0]
+	}
+	rssSS := mpcObj.CiphertextToSS(g.cps, rtype, rssCt, sourcePid, 1)
+
+	numerSS := mpc_core.InitRVec(rtype.Zero(), 1)
+	if pid == sourcePid {
+		numerSS[0] = rtype.FromFloat64(float64(dof)/2.0, mpcObj.GetFracBits())
+	}
+	return mpcObj.Divide(numerSS, rssSS, false), true
+}
+
+// scaleRareVariantShareStat multiplies a shared statistic by the shared scale and truncates.
+func (g *ProtocolInfo) scaleRareVariantShareStat(stat, scale mpc_core.RVec) mpc_core.RVec {
+	if len(stat) == 0 || len(scale) == 0 {
+		return stat
+	}
+	mpcObj := g.mpcObj[0]
+	return mpcObj.TruncVec(mpcObj.SSMultElemVec(stat, scale), mpcObj.GetDataBits(), mpcObj.GetFracBits())
 }
 
 func (g *ProtocolInfo) CZeroTest() {

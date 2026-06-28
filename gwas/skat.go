@@ -380,6 +380,237 @@ func (ast *AssocTest) lowRankSignedWeight(dosageSum []float64, nsnps int) mpc_co
 	return mpcObj.TruncVec(signed, mpcObj.GetDataBits(), fracBits)
 }
 
+// scalarCiphertextToShares converts an encrypted scalar statistic to a 1-elem RVec (zero on pid 0).
+func (ast *AssocTest) scalarCiphertextToShares(stat crypto.CipherVector) mpc_core.RVec {
+	mpcObj := ast.general.mpcObj[0]
+	rtype := mpcObj.GetRType()
+	if len(stat) == 0 || stat[0] == nil {
+		return mpc_core.InitRVec(rtype.Zero(), 1)
+	}
+	return mpcObj.CiphertextToSS(ast.general.cps, rtype, stat[0], -1, 1)
+}
+
+// skatBlockNumSnps returns block b's SNP count, syncing pid 0 over the network.
+func (ast *AssocTest) skatBlockNumSnps(block int) int {
+	mpcObj := ast.general.mpcObj[0]
+	pid := mpcObj.GetPid()
+	hubPid := mpcObj.GetHubPid()
+	if pid == 0 {
+		return mpcObj.Network.ReceiveInt(hubPid)
+	}
+
+	var nsnpsBlock int
+	blockSize := ast.general.genoBlockSizes[block]
+	shift := uint64(0)
+	for i := 0; i < block; i++ {
+		shift += uint64(ast.general.genoBlockSizes[i])
+	}
+	if ast.general.IsPgen() {
+		if ast.general.gwasParams.snpFilt == nil {
+			nsnpsBlock = blockSize
+		} else {
+			nsnpsBlock = SumBool(ast.general.gwasParams.snpFilt[shift : shift+uint64(blockSize)])
+		}
+	} else {
+		nsnpsBlock = int(ast.general.genoBlocks[block].NumColsToKeep())
+	}
+
+	if pid == hubPid {
+		mpcObj.Network.SendInt(nsnpsBlock, 0)
+	}
+	return nsnpsBlock
+}
+
+// openBlockGenoStream returns this party's genotype stream for block b (the open "blocks"
+// stream, or a pgen block materialized to a temp file). nil for an empty block.
+func (ast *AssocTest) openBlockGenoStream(b int) *GenoFileStream {
+	if !ast.general.IsPgen() {
+		if b < len(ast.general.genoBlocks) {
+			return ast.general.genoBlocks[b]
+		}
+		return nil
+	}
+
+	gp := ast.general.gwasParams
+	blockSize := ast.general.genoBlockSizes[b]
+	shift := 0
+	for i := 0; i < b; i++ {
+		shift += ast.general.genoBlockSizes[i]
+	}
+	var snpFilt []bool
+	if gp.snpFilt == nil {
+		snpFilt = OnesBool(blockSize)
+	} else {
+		snpFilt = gp.snpFilt[shift : shift+blockSize]
+	}
+	nsnps := SumBool(snpFilt)
+	if nsnps == 0 {
+		return nil
+	}
+	numInd := ast.skatNumInds()[ast.general.mpcObj[0].GetPid()]
+	pgenFile := fmt.Sprintf(ast.general.config.GenoFilePrefix, b+1)
+	tmp := ast.general.CachePath(fmt.Sprintf("lowrank_pgen_gfs.%d.tmp", b))
+	FilterMatrixFilePgen(pgenFile, numInd, nsnps, ast.general.config.SampleKeepFile,
+		ast.general.config.SnpIdsFile, shift, snpFilt, tmp, false)
+	return NewGenoFileStream(tmp, uint64(numInd), uint64(nsnps), true)
+}
+
+// readGenoBlockLocal streams this party's genotype block b into a dense matrix
+// (samples × variants), missing (negative) dosages → 0. Empty on pid 0 or an empty block.
+func (ast *AssocTest) readGenoBlockLocal(b int) *mat.Dense {
+	gfs := ast.openBlockGenoStream(b)
+	if gfs == nil {
+		return mat.NewDense(0, 0, nil)
+	}
+	gfs.Reset()
+
+	var rows [][]float64
+	for {
+		row := gfs.NextRow()
+		if row == nil {
+			break
+		}
+		fr := make([]float64, len(row))
+		for j, v := range row {
+			if v > 0 {
+				fr[j] = float64(v)
+			}
+		}
+		rows = append(rows, fr)
+	}
+	if len(rows) == 0 {
+		return mat.NewDense(0, 0, nil)
+	}
+	G := mat.NewDense(len(rows), len(rows[0]), nil)
+	for i := range rows {
+		G.SetRow(i, rows[i])
+	}
+	return G
+}
+
+// lowRankNullSetup runs the secure null model (β̂ + RSS) and builds the block-independent
+// per-party design X=[1|cov] and centered y₀ (empty on pid 0).
+func (ast *AssocTest) lowRankNullSetup() (null lowRankNull, nullRSS crypto.CipherVector, X *mat.Dense, y0 []float64) {
+	null = ast.computeBetaHatEnc()
+	nullRSS = ast.computeNullRSSEnc(null)
+	if ast.general.mpcObj[0].GetPid() > 0 {
+		center := 0.0
+		if ast.general.config.BinaryPheno {
+			center = 0.5
+		}
+		ln := localNullEquations(ast.general.cov, ast.general.pheno, center)
+		X, y0 = ln.X, ln.Y0
+	}
+	return
+}
+
+// lowRankBlockStat computes one block's raw statistics as 1-elem RVecs: qRawSS = Σ ŵ²s²
+// and bLinSS = Σ ŵ·s (burden linear term, squared by the caller). Local plaintext
+// contraction → key-free score → AggregateCMat → oriented weights → ScoreCalculation → SS.
+func (ast *AssocTest) lowRankBlockStat(b, nsnps int, null lowRankNull, X *mat.Dense, y0 []float64) (qRawSS, bLinSS mpc_core.RVec) {
+	mpcObj := ast.general.mpcObj[0]
+	cps := ast.general.cps
+	pid := mpcObj.GetPid()
+
+	var SBlock crypto.CipherMatrix
+	dosage := make([]float64, nsnps)
+	if pid > 0 {
+		lc := LocalContract(ast.readGenoBlockLocal(b), X, y0)
+		SBlock = crypto.CipherMatrix{ast.lowRankPartyScore(lc.GtX, lc.Gty0, null)}
+		dosage = lc.DosageSum
+	}
+
+	sAggr := mpcObj.Network.AggregateCMat(cps, SBlock)
+	if pid > 0 && len(sAggr) > 0 && len(sAggr[0]) > 0 &&
+		mpcObj.Network.CanCollectiveBootstrap(cps, sAggr[0][0].Level()) {
+		sAggr = mpcObj.Network.CollectiveBootstrapMat(cps, sAggr, -1)
+	}
+	weightEnc := mpcObj.SSToCVec(cps, ast.lowRankSignedWeight(dosage, nsnps))
+
+	var qRaw, bLin crypto.CipherVector
+	if pid > 0 && len(sAggr) > 0 {
+		qRaw, bLin, _, _, _, _ = ast.ScoreCalculation(sAggr[0], weightEnc)
+	}
+	return ast.scalarCiphertextToShares(qRaw), ast.scalarCiphertextToShares(bLin)
+}
+
+// ComputeSKATStatisticsLowRank returns the whole-genome secure SKAT (Q) and Burden as
+// 1-elem CipherVectors (Σ over all blocks, scaled by 1/(2σ̂²)). Caller collectively decrypts.
+func (ast *AssocTest) ComputeSKATStatisticsLowRank() (qStat, qBurden crypto.CipherVector) {
+	mpcObj := ast.general.mpcObj[0]
+	cps := ast.general.cps
+	rtype := mpcObj.GetRType()
+
+	null, nullRSS, X, y0 := ast.lowRankNullSetup()
+
+	finalQSS := mpc_core.InitRVec(rtype.Zero(), 1)
+	finalBurdenSS := mpc_core.InitRVec(rtype.Zero(), 1)
+	for b := 0; b < ast.general.config.GenoNumBlocks; b++ {
+		nsnps := ast.skatBlockNumSnps(b)
+		if nsnps == 0 {
+			continue
+		}
+		qRawSS, bLinSS := ast.lowRankBlockStat(b, nsnps, null, X, y0)
+		finalQSS.Add(qRawSS)
+		finalBurdenSS.Add(bLinSS)
+	}
+
+	finalBurdenSS = mpcObj.SSSquareElemVec(finalBurdenSS)
+	finalBurdenSS = mpcObj.TruncVec(finalBurdenSS, mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	if scaleSS, ok := ast.general.rareVariantScaleShares(nullRSS); ok {
+		finalQSS = ast.general.scaleRareVariantShareStat(finalQSS, scaleSS)
+		finalBurdenSS = ast.general.scaleRareVariantShareStat(finalBurdenSS, scaleSS)
+	}
+	return mpcObj.SSToCVec(cps, finalQSS), mpcObj.SSToCVec(cps, finalBurdenSS)
+}
+
+// ComputeSKATStatisticsLowRankPerBlock returns per-block Q and Burden (slot b = block b's
+// statistic, scaled by the common 1/(2σ̂²)) — the per-gene secure SKAT statistics.
+func (ast *AssocTest) ComputeSKATStatisticsLowRankPerBlock() (qPerBlock, burdenPerBlock crypto.CipherVector) {
+	mpcObj := ast.general.mpcObj[0]
+	cps := ast.general.cps
+	rtype := mpcObj.GetRType()
+	hub := mpcObj.GetPid() == mpcObj.GetHubPid()
+
+	t0 := time.Now()
+	null, nullRSS, X, y0 := ast.lowRankNullSetup()
+	if hub {
+		log.LLvl1(fmt.Sprintf(">>> [secure] null model (β̂, RSS) done (%.1fs)", time.Since(t0).Seconds()))
+	}
+
+	nB := ast.general.config.GenoNumBlocks
+	qBlockSS := mpc_core.InitRVec(rtype.Zero(), nB)
+	bLinBlockSS := mpc_core.InitRVec(rtype.Zero(), nB)
+	done := 0
+	for b := 0; b < nB; b++ {
+		nsnps := ast.skatBlockNumSnps(b)
+		if nsnps == 0 {
+			continue
+		}
+		tb := time.Now()
+		q, bl := ast.lowRankBlockStat(b, nsnps, null, X, y0)
+		qBlockSS[b] = q[0]
+		bLinBlockSS[b] = bl[0]
+		done++
+		if hub {
+			log.LLvl1(fmt.Sprintf(">>> [secure] block %d/%d done (%d snps, %.1fs; elapsed %.1fs)",
+				done, nB, nsnps, time.Since(tb).Seconds(), time.Since(t0).Seconds()))
+		}
+	}
+
+	burdenSqSS := mpcObj.SSSquareElemVec(bLinBlockSS)
+	burdenSqSS = mpcObj.TruncVec(burdenSqSS, mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	if scaleSS, ok := ast.general.rareVariantScaleShares(nullRSS); ok {
+		scaleVec := mpc_core.InitRVec(rtype.Zero(), nB)
+		for b := 0; b < nB; b++ {
+			scaleVec[b] = scaleSS[0].Copy()
+		}
+		qBlockSS = mpcObj.TruncVec(mpcObj.SSMultElemVec(qBlockSS, scaleVec), mpcObj.GetDataBits(), mpcObj.GetFracBits())
+		burdenSqSS = mpcObj.TruncVec(mpcObj.SSMultElemVec(burdenSqSS, scaleVec), mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	}
+	return mpcObj.SSToCVec(cps, qBlockSS), mpcObj.SSToCVec(cps, burdenSqSS)
+}
+
 func (ast *AssocTest) skatNumInds() []int {
 	filtNumInds := ast.general.gwasParams.FiltNumInds()
 	if len(filtNumInds) == ast.general.config.NumMainParties+1 {

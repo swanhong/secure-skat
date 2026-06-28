@@ -1217,3 +1217,125 @@ func TestLowRankSignedWeight(t *testing.T) {
 		mpcObj.Network.CollectiveDecryptVec(cps, nil, 1)
 	}
 }
+
+// --- low-rank driver (skat.go ComputeSKATStatisticsLowRank, file-backed) ---
+
+// File-backed driver E2E: reads per-party "blocks"-format genotype fixtures, runs the full
+// low-rank path over 3 blocks, and compares decrypted Q/Burden to the plaintext oracle.
+func TestLowRankDriverE2E(t *testing.T) {
+	prot := InitProtocolForTest(t)
+	if prot == nil {
+		return
+	}
+	defer prot.SyncAndTerminate(true)
+
+	mpcObj := prot.mpcObj[0]
+	cps := prot.cps
+	pid := mpcObj.GetPid()
+
+	nParties := prot.GetConfig().NumMainParties
+	nIndsAll := prot.GetConfig().NumInds
+	numCov := prot.GetGwasParams().NumCov()
+	c := numCov + 1
+	const nBlocks, mPerBlock = 3, 6
+	const mTotal = nBlocks * mPerBlock
+
+	nIndsTotal := 0
+	for p := 1; p <= nParties; p++ {
+		nIndsTotal += nIndsAll[p]
+	}
+
+	r := rand.New(rand.NewSource(41))
+	fullCov := mat.NewDense(nIndsTotal, numCov, nil)
+	fullG := mat.NewDense(nIndsTotal, mTotal, nil)
+	fullY := make([]float64, nIndsTotal)
+	af := make([]float64, mTotal)
+	for j := 0; j < mTotal; j++ {
+		af[j] = 0.05 + 0.85*r.Float64()
+	}
+	for i := 0; i < nIndsTotal; i++ {
+		yi := 0.0
+		for j := 0; j < numCov; j++ {
+			v := r.NormFloat64()
+			fullCov.Set(i, j, v)
+			yi += (0.3 + 0.2*float64(j)) * v
+		}
+		fullY[i] = yi + 1.5*r.NormFloat64()
+		for j := 0; j < mTotal; j++ {
+			d := 0.0
+			if r.Float64() < af[j] {
+				d++
+			}
+			if r.Float64() < af[j] {
+				d++
+			}
+			fullG.Set(i, j, d)
+		}
+	}
+
+	offset := 0
+	for p := 1; p < pid; p++ {
+		offset += nIndsAll[p]
+	}
+
+	prot.GetConfig().GenoNumBlocks = nBlocks
+	prot.GetConfig().GenoFileFormat = "blocks"
+	if pid > 0 {
+		n := nIndsAll[pid]
+		localCov := fullCov.Slice(offset, offset+n, 0, numCov).(*mat.Dense)
+		localY := mat.NewDense(n, 1, append([]float64(nil), fullY[offset:offset+n]...))
+		prot.SetPhenoAndCov(localY, localCov)
+
+		dir := t.TempDir()
+		streams := make([]*GenoFileStream, nBlocks)
+		sizes := make([]int, nBlocks)
+		for b := 0; b < nBlocks; b++ {
+			buf := make([]byte, n*mPerBlock)
+			for i := 0; i < n; i++ {
+				for j := 0; j < mPerBlock; j++ {
+					buf[i*mPerBlock+j] = byte(int8(fullG.At(offset+i, b*mPerBlock+j)))
+				}
+			}
+			path := filepath.Join(dir, "geno.") + string(rune('0'+b)) + ".bin"
+			if err := os.WriteFile(path, buf, 0644); err != nil {
+				t.Fatalf("write geno fixture: %v", err)
+			}
+			streams[b] = NewGenoFileStream(path, uint64(n), uint64(mPerBlock), false)
+			sizes[b] = mPerBlock
+		}
+		prot.genoBlocks = streams
+		prot.genoBlockSizes = sizes
+	} else {
+		prot.SetPhenoAndCov(nil, nil)
+		prot.genoBlockSizes = make([]int, nBlocks)
+	}
+
+	assocTest := prot.InitAssociationTests(nil)
+	qOut, bOut := assocTest.ComputeSKATStatisticsLowRank()
+
+	if pid == 1 {
+		qDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, qOut, 1))[0]
+		bDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, bOut, 1))[0]
+
+		fullX := mat.NewDense(nIndsTotal, c, nil)
+		for i := 0; i < nIndsTotal; i++ {
+			fullX.Set(i, 0, 1.0)
+			for j := 0; j < numCov; j++ {
+				fullX.Set(i, j+1, fullCov.At(i, j))
+			}
+		}
+		oracle := SKATPlainLowRank(fullG, fullX, fullY)
+
+		qRel := math.Abs(qDec-oracle.Q) / math.Abs(oracle.Q)
+		bRel := math.Abs(bDec-oracle.Burden) / math.Abs(oracle.Burden)
+		t.Logf("Q: secure=%.6f oracle=%.6f rel=%.2e | Burden: secure=%.6f oracle=%.6f rel=%.2e",
+			qDec, oracle.Q, qRel, bDec, oracle.Burden, bRel)
+		const tol = 5e-3
+		if qRel > tol || bRel > tol {
+			t.Errorf("driver E2E vs oracle: Q rel=%.3e, Burden rel=%.3e (tol %.0e)", qRel, bRel, tol)
+		}
+	} else {
+		mpcObj.Network.CollectiveDecryptVec(cps, qOut, 1)
+		mpcObj.Network.CollectiveDecryptVec(cps, bOut, 1)
+	}
+}
