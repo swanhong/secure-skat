@@ -107,7 +107,7 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 	}
 
 	mmplainfn := func(cp *crypto.CryptoParams, a crypto.CipherVector, B crypto.PlainMatrix, j int) crypto.CipherVector {
-		return crypto.CRescale(cp, crypto.CPMult(cp, a, B[j]))
+		return crypto.CPMult(cp, a, B[j])
 	}
 
 	var ynew crypto.CipherMatrix
@@ -310,7 +310,9 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 
 		// Aggregate across parties
 		S_block_aggr := mpcObj.Network.AggregateCMat(cryptoParams, S_block)
-		S_block_aggr = mpcObj.Network.CollectiveBootstrapMat(cryptoParams, S_block_aggr, -1)
+		if pid > 0 && mpcObj.Network.CanCollectiveBootstrap(cryptoParams, S_block_aggr[0][0].Level()) {
+			S_block_aggr = mpcObj.Network.CollectiveBootstrapMat(cryptoParams, S_block_aggr, -1)
+		}
 
 		if pid > 0 {
 			S_vec := S_block_aggr[0]

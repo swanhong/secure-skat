@@ -82,8 +82,12 @@ func elemToSignedBigFloat(e mpc_core.RElem, fracBits int) *big.Float {
 // element: round(f * 2^fracBits) reduced modulo the field modulus. The explicit
 // reduction is required because RElem.FromBigInt does not reduce on construction.
 func signedBigFloatToElem(rtype mpc_core.RElem, f *big.Float, fracBits int) mpc_core.RElem {
-	scaled := new(big.Float).SetPrec(600).Mul(f, bigFloatPow2(fracBits))
-	half := new(big.Float).SetPrec(600).SetFloat64(0.5)
+	prec := f.Prec()
+	if prec < 256 {
+		prec = 256
+	}
+	scaled := new(big.Float).SetPrec(prec).Mul(f, bigFloatPow2(fracBits, prec))
+	half := new(big.Float).SetPrec(prec).SetFloat64(0.5)
 	if scaled.Sign() >= 0 {
 		scaled.Add(scaled, half)
 	} else {
@@ -94,8 +98,8 @@ func signedBigFloatToElem(rtype mpc_core.RElem, f *big.Float, fracBits int) mpc_
 	return rtype.FromBigInt(r)
 }
 
-func bigFloatPow2(n int) *big.Float {
-	return new(big.Float).SetPrec(600).SetInt(new(big.Int).Lsh(big.NewInt(1), uint(n)))
+func bigFloatPow2(n int, prec uint) *big.Float {
+	return new(big.Float).SetPrec(prec).SetInt(new(big.Int).Lsh(big.NewInt(1), uint(n)))
 }
 
 // sampleCenteredMask draws a per-element uniform mask in (-bound/2, bound/2], stored
@@ -169,16 +173,22 @@ func (mpcObj *MPC) decodePlainToElemSlots(cryptoParams *crypto.CryptoParams, rty
 	fracBits := mpcObj.GetFracBits()
 	numCtxRow := len(pm)
 
+	// The masked plaintext carries a full-Q coefficient mask (~log2(Q) bits), so the
+	// slot decode must keep far more precision than the pooled encoder (config prec):
+	// otherwise the huge mask rounds away the signal and the field shares don't cancel.
+	// v2's DecodeRVec decoded exact big.Int coefficients through a big-float FFT; we match
+	// that by decoding with a high-precision encoder.
+	decPrec := uint(cryptoParams.Params.LogQP() + 128)
+	encoder := ckks.NewEncoder(cryptoParams.Params, decPrec)
+
 	out := mpc_core.InitRMat(rtype.Zero(), numCtxRow, nElemRow)
 	for i := range pm {
 		for j := range pm[i] {
 			buf := make([]*big.Float, slots)
 			for k := range buf {
-				buf[k] = new(big.Float)
+				buf[k] = new(big.Float).SetPrec(decPrec)
 			}
-			if err := cryptoParams.WithEncoder(func(encoder *ckks.Encoder) error {
-				return encoder.Decode(pm[i][j], buf)
-			}); err != nil {
+			if err := encoder.Decode(pm[i][j], buf); err != nil {
 				panic(err)
 			}
 			start := j * slots

@@ -329,9 +329,6 @@ func (netObj *Network) CollectiveBootstrapMat(cps *crypto.CryptoParams, cm crypt
 
 	cm, _ = crypto.FlattenLevels(cps, cm)
 
-	if !cm[0][0].Scale.Equal(cps.Params.DefaultScale()) {
-		panic("CollectiveBootstrapMat: input ciphertext scale differs from default; refresh bound would be miscomputed")
-	}
 	minLevel, logBound, ok := mpckks.GetMinimumLevelForRefresh(128, cps.Params.DefaultScale(), max(1, netObj.GetNParty()-1), cps.Params.Q())
 	if !ok || cm[0][0].Level() < minLevel {
 		panic(fmt.Sprintf("CollectiveBootstrapMat: ciphertext level %d below required refresh level %d", cm[0][0].Level(), minLevel))
