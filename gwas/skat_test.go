@@ -730,3 +730,176 @@ func TestLowRankLocalPartyAdditivity(t *testing.T) {
 	vecApprox(t, "Gty0", sum.Gty0, full.Gty0, 1e-9)
 	vecApprox(t, "dosageSum", sum.DosageSum, full.DosageSum, 1e-9)
 }
+
+// --- low-rank null model (skat.go localNullEquations / computeBetaHatEnc / RSS) ---
+
+func TestLocalNullEquationsMatchesGonum(t *testing.T) {
+	cov := mat.NewDense(5, 2, []float64{
+		0.5, -1.0,
+		-1.2, 0.3,
+		0.3, 2.0,
+		2.0, -0.7,
+		-0.7, 1.1,
+	})
+	pheno := mat.NewDense(5, 1, []float64{1.0, -0.5, 0.3, 2.2, -1.1})
+
+	ln := localNullEquations(cov, pheno, 0.0) // center 0 → y0 == pheno
+
+	n, ncov := cov.Dims()
+	X := mat.NewDense(n, ncov+1, nil)
+	for i := 0; i < n; i++ {
+		X.Set(i, 0, 1.0)
+		for j := 0; j < ncov; j++ {
+			X.Set(i, j+1, cov.At(i, j))
+		}
+	}
+	y0v := mat.NewVecDense(n, []float64{1.0, -0.5, 0.3, 2.2, -1.1})
+
+	var XtX mat.Dense
+	XtX.Mul(X.T(), X)
+	matApprox(t, "XtX", ln.XtX, &XtX, 1e-9)
+
+	var Xty mat.VecDense
+	Xty.MulVec(X.T(), y0v)
+	vecApprox(t, "Xty0", ln.Xty0, vecToSlice(&Xty), 1e-9)
+
+	if !approxEqual(ln.Y0ty0, mat.Dot(y0v, y0v), 1e-9) {
+		t.Errorf("y0ty0: got %.12g want %.12g", ln.Y0ty0, mat.Dot(y0v, y0v))
+	}
+}
+
+func TestLocalNullEquationsCenteringAndIntercept(t *testing.T) {
+	cov := mat.NewDense(3, 1, []float64{0.5, -1.0, 2.0})
+	pheno := mat.NewDense(3, 1, []float64{1.0, 0.0, 2.0})
+
+	ln := localNullEquations(cov, pheno, 0.5)
+
+	for i := 0; i < 3; i++ {
+		if ln.X.At(i, 0) != 1.0 {
+			t.Errorf("intercept X[%d,0]=%v want 1", i, ln.X.At(i, 0))
+		}
+		if ln.X.At(i, 1) != cov.At(i, 0) {
+			t.Errorf("cov X[%d,1]=%v want %v", i, ln.X.At(i, 1), cov.At(i, 0))
+		}
+		if !approxEqual(ln.Y0[i], pheno.At(i, 0)-0.5, 1e-12) {
+			t.Errorf("centered y0[%d]=%v want %v", i, ln.Y0[i], pheno.At(i, 0)-0.5)
+		}
+	}
+}
+
+func TestLocalNullEquationsNilParty0(t *testing.T) {
+	ln := localNullEquations(nil, nil, 0.5)
+	if len(ln.Y0) != 0 || ln.XtX != nil {
+		t.Errorf("nil inputs should give empty result, got Y0=%d XtX=%v", len(ln.Y0), ln.XtX)
+	}
+}
+
+// Secure low-rank null model: computeBetaHatEnc + computeNullRSSEnc, decrypted on the
+// hub and compared to the plaintext gonum β̂/RSS on the same full (X,y). No genotypes.
+func TestLowRankNullModel(t *testing.T) {
+	prot := InitProtocolForTest(t)
+	if prot == nil {
+		return
+	}
+	defer prot.SyncAndTerminate(true)
+
+	mpcObj := prot.mpcObj[0]
+	cps := prot.cps
+	pid := mpcObj.GetPid()
+
+	nParties := prot.GetConfig().NumMainParties
+	nIndsAll := prot.GetConfig().NumInds
+	numCov := prot.GetGwasParams().NumCov()
+	c := numCov + 1
+
+	nIndsTotal := 0
+	for p := 1; p <= nParties; p++ {
+		nIndsTotal += nIndsAll[p]
+	}
+
+	// Deterministic well-conditioned design; realistic residual (do NOT shrink the noise:
+	// tiny noise → RSS is a sliver of two ~equal large numbers and CKKS cancellation blows up).
+	r := rand.New(rand.NewSource(7))
+	fullCov := mat.NewDense(nIndsTotal, numCov, nil)
+	fullY := make([]float64, nIndsTotal)
+	trueBeta := make([]float64, c)
+	for j := 0; j < c; j++ {
+		trueBeta[j] = 0.5 + 0.3*float64(j)
+	}
+	for i := 0; i < nIndsTotal; i++ {
+		yi := trueBeta[0]
+		for j := 0; j < numCov; j++ {
+			v := r.NormFloat64()
+			fullCov.Set(i, j, v)
+			yi += trueBeta[j+1] * v
+		}
+		fullY[i] = yi + 2.5*r.NormFloat64()
+	}
+
+	offset := 0
+	for p := 1; p < pid; p++ {
+		offset += nIndsAll[p]
+	}
+	if pid > 0 {
+		n := nIndsAll[pid]
+		localCov := fullCov.Slice(offset, offset+n, 0, numCov).(*mat.Dense)
+		localY := mat.NewDense(n, 1, append([]float64(nil), fullY[offset:offset+n]...))
+		prot.SetPhenoAndCov(localY, localCov)
+	} else {
+		prot.SetPhenoAndCov(nil, nil)
+	}
+
+	assocTest := prot.InitAssociationTests(nil)
+	null := assocTest.computeBetaHatEnc()
+	rssEnc := assocTest.computeNullRSSEnc(null) // nil on pid 0
+
+	if pid == 1 {
+		betaDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, null.betaHat, 1))[:c]
+		rssDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, rssEnc, 1))[0]
+
+		fullX := mat.NewDense(nIndsTotal, c, nil)
+		for i := 0; i < nIndsTotal; i++ {
+			fullX.Set(i, 0, 1.0)
+			for j := 0; j < numCov; j++ {
+				fullX.Set(i, j+1, fullCov.At(i, j))
+			}
+		}
+		yVec := mat.NewVecDense(nIndsTotal, fullY)
+		var xtx mat.Dense
+		xtx.Mul(fullX.T(), fullX)
+		var xty mat.VecDense
+		xty.MulVec(fullX.T(), yVec)
+		var beta mat.VecDense
+		if err := beta.SolveVec(&xtx, &xty); err != nil {
+			t.Fatalf("oracle solve failed: %v", err)
+		}
+
+		maxAbs := 0.0
+		for j := 0; j < c; j++ {
+			gap := math.Abs(betaDec[j] - beta.AtVec(j))
+			if gap > maxAbs {
+				maxAbs = gap
+			}
+			t.Logf("beta[%d]: secure=%.8f oracle=%.8f |gap|=%.2e", j, betaDec[j], beta.AtVec(j), gap)
+		}
+		t.Logf("max β̂ |gap| over %d coeffs = %.2e", c, maxAbs)
+		const tol = 1e-4
+		if maxAbs > tol {
+			t.Errorf("β̂ secure vs oracle max gap %.3e exceeds tol %.1e", maxAbs, tol)
+		}
+
+		rssOracle := mat.Dot(yVec, yVec) - mat.Dot(&xty, &beta)
+		rssRel := math.Abs(rssDec-rssOracle) / math.Abs(rssOracle)
+		t.Logf("RSS: secure=%.6f oracle=%.6f rel=%.2e", rssDec, rssOracle, rssRel)
+		const rssTol = 1e-4
+		if rssRel > rssTol {
+			t.Errorf("RSS secure vs oracle rel %.3e exceeds tol %.1e", rssRel, rssTol)
+		}
+	} else if pid > 0 {
+		mpcObj.Network.CollectiveDecryptVec(cps, null.betaHat, 1)
+		mpcObj.Network.CollectiveDecryptVec(cps, rssEnc, 1)
+	} else {
+		mpcObj.Network.CollectiveDecryptVec(cps, nil, 1)
+		mpcObj.Network.CollectiveDecryptVec(cps, nil, 1)
+	}
+}

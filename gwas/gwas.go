@@ -112,6 +112,10 @@ type Config struct {
 	Degree          int     `toml:"degree"`
 	Epochs          int     `toml:"epochs"`
 
+	// BinaryPheno marks a binary {0,1} (case-control) phenotype; the SKAT null model
+	// then centers y by 0.5. A public study-design property, not derived from data.
+	BinaryPheno bool `toml:"binary_pheno"`
+
 	Debug          bool  `toml:"debug"`
 	BlocksForAssoc []int `toml:"blocks_for_assoc_test"`
 	PgenBatchSize  int   `toml:"pgen_batch_nsnp"`

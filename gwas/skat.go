@@ -6,6 +6,7 @@ import (
 
 	mpc_core "github.com/hhcho/mpc-core"
 	"github.com/hhcho/sfgwas/crypto"
+	"github.com/tuneinsight/lattigo/v6/core/rlwe"
 	"go.dedis.ch/onet/v3/log"
 	"gonum.org/v1/gonum/mat"
 )
@@ -86,6 +87,244 @@ func (a LocalContraction) Add(b LocalContraction) LocalContraction {
 		Gty0:      addVec(a.Gty0, b.Gty0),
 		DosageSum: addVec(a.DosageSum, b.DosageSum),
 	}
+}
+
+// --- CKKS level alignment (mixed-provenance ciphertexts in the low-rank path) ---
+
+func minCipherVectorLevel(v crypto.CipherVector) int {
+	if len(v) == 0 || v[0] == nil {
+		return 0
+	}
+	min := v[0].Level()
+	for _, ct := range v {
+		if ct != nil && ct.Level() < min {
+			min = ct.Level()
+		}
+	}
+	return min
+}
+
+func dropCipherVectorToLevel(cps *crypto.CryptoParams, v crypto.CipherVector, level int) crypto.CipherVector {
+	return crypto.DropLevel(cps, crypto.CipherMatrix{v}, level)[0]
+}
+
+// alignCipherVectorLevels drops whichever of left/right is higher to the common
+// minimum level, so CMult/CSub can combine them.
+func alignCipherVectorLevels(cps *crypto.CryptoParams, left, right crypto.CipherVector) (crypto.CipherVector, crypto.CipherVector) {
+	target := minCipherVectorLevel(left)
+	if r := minCipherVectorLevel(right); r < target {
+		target = r
+	}
+	if minCipherVectorLevel(left) != target {
+		left = dropCipherVectorToLevel(cps, left, target)
+	}
+	if minCipherVectorLevel(right) != target {
+		right = dropCipherVectorToLevel(cps, right, target)
+	}
+	return left, right
+}
+
+// --- secure low-rank null model (β̂, RSS from c-dim aggregates only; n never enters) ---
+
+type localNull struct {
+	X     *mat.Dense
+	Y0    []float64
+	XtX   *mat.Dense
+	Xty0  []float64
+	Y0ty0 float64
+}
+
+// localNullEquations builds this party's X=[1|cov], centered y0, and XᵀX/Xᵀy₀/y₀ᵀy₀.
+// nil cov/pheno (pid-0) yields an empty result (zero aggregates).
+func localNullEquations(cov, pheno *mat.Dense, center float64) localNull {
+	if cov == nil || pheno == nil {
+		return localNull{}
+	}
+	cn, ncov := cov.Dims()
+	pn, _ := pheno.Dims()
+	n := cn
+	if pn < n {
+		n = pn
+	}
+	c := ncov + 1
+
+	X := mat.NewDense(n, c, nil)
+	y0 := make([]float64, n)
+	for i := 0; i < n; i++ {
+		X.Set(i, 0, 1.0) // intercept
+		for j := 0; j < ncov; j++ {
+			X.Set(i, j+1, cov.At(i, j))
+		}
+		y0[i] = pheno.At(i, 0) - center
+	}
+	y0v := mat.NewVecDense(n, y0)
+
+	var XtX mat.Dense
+	XtX.Mul(X.T(), X)
+	var Xty mat.VecDense
+	Xty.MulVec(X.T(), y0v)
+
+	return localNull{X: X, Y0: y0, XtX: &XtX, Xty0: vecToSlice(&Xty), Y0ty0: mat.Dot(y0v, y0v)}
+}
+
+// matrices flattens the c-dim aggregates into the plaintext forms the encoders consume;
+// the empty (pid-0) localNull yields c×c / c zeros so AggregateCMat sums align.
+func (ln localNull) matrices(c int) (xtx [][]float64, xty []float64, y0ty0 float64) {
+	xtx = make([][]float64, c)
+	for j := range xtx {
+		xtx[j] = make([]float64, c)
+	}
+	xty = make([]float64, c)
+	if ln.XtX == nil {
+		return xtx, xty, 0
+	}
+	for j := 0; j < c; j++ {
+		for k := 0; k < c; k++ {
+			xtx[j][k] = ln.XtX.At(j, k)
+		}
+		xty[j] = ln.Xty0[j]
+	}
+	return xtx, xty, ln.Y0ty0
+}
+
+// lowRankNull holds the secure null-model results from the c-dim aggregates.
+type lowRankNull struct {
+	betaHat  crypto.CipherVector // β̂ in slots 0..c-1
+	betaRep  crypto.CipherVector // betaRep[ℓ] = Enc(β̂_ℓ) in every slot (for the score)
+	xtyEnc   crypto.CipherVector // global Xᵀy₀ (kept for RSS)
+	y0ty0Enc crypto.CipherVector // global y₀ᵀy₀ (kept for RSS)
+	c        int
+	center   float64 // public centering constant, reused by the score
+}
+
+// lowRankRidgeRel: tiny Tikhonov ridge on the XᵀX diagonal (hub, once, intercept excluded)
+// to keep the inverse finite on a singular design; negligible on a well-conditioned one.
+const lowRankRidgeRel = 1e-6
+
+// computeBetaHatEnc computes β̂ = (XᵀX)⁻¹Xᵀy₀ as an encrypted c-vector from the cross-party
+// normal equations — only the c-dim aggregates cross the secure boundary, n never does.
+func (ast *AssocTest) computeBetaHatEnc() lowRankNull {
+	cps := ast.general.cps
+	mpcObj := ast.general.mpcObj[0]
+	pid := mpcObj.GetPid()
+	rtype := mpcObj.GetRType()
+
+	c := ast.general.gwasParams.NumCov() + 1
+	if c > cps.GetSlots() {
+		panic(fmt.Sprintf("computeBetaHatEnc: c=%d exceeds slots=%d", c, cps.GetSlots()))
+	}
+
+	center := 0.0
+	if ast.general.config.BinaryPheno {
+		center = 0.5 // binary {0,1} phenotype; absorbed by the intercept (Q-invariant)
+	}
+	ln := localNullEquations(ast.general.cov, ast.general.pheno, center)
+	xtxLocal, xtyLocal, y0ty0Local := ln.matrices(c)
+
+	// Ridge on the hub only (AggregateCMat sums per-party XᵀX, so add ε once); skip intercept.
+	if pid == mpcObj.GetHubPid() {
+		var trace float64
+		for k := 1; k < c; k++ {
+			trace += xtxLocal[k][k]
+		}
+		eps := lowRankRidgeRel * (trace / float64(c))
+		for k := 1; k < c; k++ {
+			xtxLocal[k][k] += eps
+		}
+	}
+
+	xtxEnc, _, _, err := crypto.EncryptFloatMatrixRow(cps, xtxLocal)
+	if err != nil {
+		panic(err)
+	}
+	xtyEnc, _ := crypto.EncryptFloatVector(cps, xtyLocal)
+	y0ty0Enc, _ := crypto.EncryptFloatVector(cps, []float64{y0ty0Local})
+
+	xtxEnc = mpcObj.Network.AggregateCMat(cps, xtxEnc)
+	if rows := mpcObj.Network.AggregateCMat(cps, crypto.CipherMatrix{xtyEnc}); len(rows) > 0 {
+		xtyEnc = rows[0]
+	} else {
+		xtyEnc = nil
+	}
+	if rows := mpcObj.Network.AggregateCMat(cps, crypto.CipherMatrix{y0ty0Enc}); len(rows) > 0 {
+		y0ty0Enc = rows[0]
+	} else {
+		y0ty0Enc = nil
+	}
+	xtxEnc = mpcObj.Network.CollectiveBootstrapMat(cps, xtxEnc, -1)
+
+	// Invert XᵀX in SS (c rows × 1 ct, c data slots), then β̂ = (XᵀX)⁻¹·Xᵀy₀.
+	xtxSS := mpcObj.CMatToSS(cps, rtype, xtxEnc, -1, c, 1, c)
+	invSS, _ := mpcObj.MatrixInverseSymPos(xtxSS)
+
+	var xtyCt *rlwe.Ciphertext
+	if len(xtyEnc) > 0 {
+		xtyCt = xtyEnc[0]
+	}
+	xtySS := mpcObj.CiphertextToSS(cps, rtype, xtyCt, mpcObj.GetHubPid(), c)
+	xtyCol := make(mpc_core.RMat, c)
+	for i := 0; i < c; i++ {
+		xtyCol[i] = mpc_core.RVec{xtySS[i]}
+	}
+	betaMat := mpcObj.SSMultMat(invSS, xtyCol)
+	betaSS := make(mpc_core.RVec, c)
+	for i := 0; i < c; i++ {
+		betaSS[i] = betaMat[i][0]
+	}
+	betaSS = mpcObj.TruncVec(betaSS, mpcObj.GetDataBits(), mpcObj.GetFracBits())
+
+	betaHat := mpcObj.SSToCVec(cps, betaSS)
+
+	// betaRep[ℓ] = β̂_ℓ replicated in every slot (for the score's CPMult). pid-0 → nil.
+	slots := cps.GetSlots()
+	betaRep := make(crypto.CipherVector, c)
+	for j := 0; j < c; j++ {
+		rep := mpc_core.InitRVec(rtype.Zero(), slots)
+		if j < len(betaSS) {
+			for k := 0; k < slots; k++ {
+				rep[k] = betaSS[j].Copy()
+			}
+		}
+		if cv := mpcObj.SSToCVec(cps, rep); len(cv) > 0 {
+			betaRep[j] = cv[0]
+		}
+	}
+
+	return lowRankNull{betaHat: betaHat, betaRep: betaRep, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
+}
+
+// maskFirstSlots zeros slots >= c, keeping 0..c-1 — used before InnerSumAll so the
+// (Xᵀy₀)ᵀβ̂ inner product never sums CKKS garbage in the padding slots.
+func (ast *AssocTest) maskFirstSlots(v crypto.CipherVector, c int) crypto.CipherVector {
+	cps := ast.general.cps
+	out := make(crypto.CipherVector, len(v))
+	for i := range v {
+		if v[i] == nil {
+			continue
+		}
+		out[i] = crypto.MaskTrunc(cps, v[i], c)
+	}
+	return out
+}
+
+// computeNullRSSEnc returns RSS = y₀ᵀy₀ − (Xᵀy₀)ᵀβ̂ as a 1-element CipherVector (the
+// orthogonality identity makes this exact without touching n). pid 0 returns nil.
+func (ast *AssocTest) computeNullRSSEnc(null lowRankNull) crypto.CipherVector {
+	cps := ast.general.cps
+	pid := ast.general.mpcObj[0].GetPid()
+
+	if pid == 0 || len(null.xtyEnc) == 0 || len(null.y0ty0Enc) == 0 ||
+		len(null.betaHat) == 0 || null.xtyEnc[0] == nil || null.y0ty0Enc[0] == nil {
+		return nil
+	}
+
+	xtyEnc, betaHat := alignCipherVectorLevels(cps, null.xtyEnc, null.betaHat)
+	prod := crypto.CMult(cps, xtyEnc, betaHat)
+	prod = ast.maskFirstSlots(prod, null.c)
+	dotCt := crypto.InnerSumAll(cps, prod)
+
+	y0ty0Enc, dotVec := alignCipherVectorLevels(cps, null.y0ty0Enc, crypto.CipherVector{dotCt})
+	return crypto.CSub(cps, y0ty0Enc, dotVec)
 }
 
 func (ast *AssocTest) skatNumInds() []int {
