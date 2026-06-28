@@ -1,49 +1,17 @@
 package gwas
 
 import (
-	"fmt"
 	"math"
-	"sync"
 	"time"
 
 	mpc_core "github.com/hhcho/mpc-core"
 	"github.com/hhcho/sfgwas/crypto"
 
 	"github.com/hhcho/sfgwas/mpc"
-	"github.com/ldsec/lattigo/v2/ckks"
+	"github.com/tuneinsight/lattigo/v6/core/rlwe"
 	"go.dedis.ch/onet/v3/log"
-
-	"gonum.org/v1/gonum/mat"
 )
 
-func getQR(cryptoParams *crypto.CryptoParams, A *mat.Dense, scalingFactor float64) (crypto.PlainMatrix, crypto.PlainMatrix) {
-	nrows, ncols := A.Dims()
-
-	fmt.Println("QR factorize ", nrows, ncols)
-
-	var qr mat.QR
-	qr.Factorize(A)
-	var Q, R mat.Dense
-	qr.QTo(&Q)
-	qr.RTo(&R)
-
-	q1, _ := Q.Dims()
-	_, r2 := R.Dims()
-
-	var matQ mat.Dense
-	matQ.Scale(scalingFactor, Q.Slice(0, q1, 0, r2))
-	matR := mat.DenseCopyOf(R.Slice(0, r2, 0, r2))
-
-	fmt.Println("Q: ", q1, r2)
-	fmt.Println("R: ", r2, r2)
-
-	QEnc := crypto.EncodeDense(cryptoParams, &matQ)
-	REnc := crypto.EncodeDense(cryptoParams, matR)
-
-	return QEnc, REnc
-}
-
-// Since required precision scales with 1/sqrt(n) maintain sqrt(n)*v for unit vectors v
 func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.CipherMatrix, nrowsAll []int) crypto.CipherMatrix {
 	debug := false
 	useBoolean := mpcObj.GetBooleanShareFlag()
@@ -90,12 +58,12 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 		// Determine who has the current first row of A and their local indices
 		upid, ctid, slotid := crypto.GlobalToPartyIndex(cryptoParams, nrowsAll, col, nparty)
 
-		if true {
+		if debug {
 			log.LLvl1(time.Now().Format(time.RFC3339), "check location: upid, ctid, slotid", upid, ctid, slotid)
 		}
 
 		// Compute Householder vector from the current first column
-		var z, zloc *ckks.Ciphertext
+		var z, zloc *rlwe.Ciphertext
 		var uvec crypto.CipherVector
 
 		// Compute zloc and aggregate to get z
@@ -116,7 +84,7 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 
 		zSqrtSS, _ := mpcObj.SqrtAndSqrtInverse(zSS, useBoolean)
 
-		var ssIn *ckks.Ciphertext
+		var ssIn *rlwe.Ciphertext
 		if pid > 0 && upid == pid {
 			ssIn = uvec[ctid]
 		}
@@ -154,7 +122,7 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 		zNewSqrtInv := mpcObj.SStoCiphertext(cryptoParams, mpc_core.RVec{zNewSqrtInvSS[0]})
 		zNewSqrtInv = crypto.Rebalance(cryptoParams, zNewSqrtInv)
 
-		if debug || col <= 2 {
+		if debug {
 			log.LLvl1(time.Now().Format(time.RFC3339), "col", col,
 				"zSS", mpcObj.RevealSym(zSS[0]).Float64(fracBits),
 				"zSqrtSS", mpcObj.RevealSym(zSqrtSS[0]).Float64(fracBits),
@@ -201,14 +169,10 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 			vvTA := DCMatMulAAtB(cryptoParams, mpcObj, vMat, A, nrowsAll, ncolCurr, fn)
 
 			// fmt.Println("Finished matrix multiplication")
-			cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-				for c := range A {
-					for ci := range A[c] {
-						eval.MultByConstAndAdd(vvTA[c][ci], -2*invN, A[c][ci])
-					}
-				}
-				return nil
-			})
+			for c := range A {
+				scaled := crypto.CMultConstRescale(cryptoParams, vvTA[c], -2*invN, false)
+				A[c] = crypto.CAdd(cryptoParams, A[c], scaled)
+			}
 
 			A = mpcObj.Network.BootstrapMatAll(cryptoParams, A)
 
@@ -254,9 +218,11 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 	// SYNCHRONIZE Q across parties so that they represent the same polynomial!
 	// Because each party has only their locally valid values in the vector, we can just aggregate them
 	// and bootstrap them to synchronize the polynomial.
+	// WAIT: If Party 1 and Party 2 both use slots 0-999, aggregating them adds them maliciously!
+	// We MUST NOT aggregate them because `vvTQ` aggregation will handle the distributed sum correctly!
 	if pid > 0 {
-		Q = mpcObj.Network.AggregateCMat(cryptoParams, Q)
-		Q = mpcObj.Network.CollectiveBootstrapMat(cryptoParams, Q, -1)
+		// Q = mpcObj.Network.AggregateCMat(cryptoParams, Q)
+		Q = mpcObj.Network.BootstrapMatAll(cryptoParams, Q)
 
 		// Iterate backwards through the list of Householder vectors to update Q
 		for j := ncols - 1; j >= 0; j-- {
@@ -301,12 +267,8 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 					} else {
 						scalar = invN
 					}
-					cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-						for ci := range vvTQ[c] {
-							eval.MultByConstAndAdd(vvTQ[c][ci], -2*scalar, Q[j+c][ci])
-						}
-						return nil
-					})
+					scaled := crypto.CMultConstRescale(cryptoParams, vvTQ[c], -2*scalar, false)
+					Q[j+c] = crypto.CAdd(cryptoParams, Q[j+c], scaled)
 				}
 			}
 
@@ -340,75 +302,4 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 		return Q
 	}
 	return Q //nil for pid=0
-}
-
-// NetDQRplain returns Q all zeros (or nil) (for pid=0), else returns share of Q for each party
-func NetDQRplain(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.PlainMatrix, nrowsAll []int) crypto.CipherMatrix {
-	pid := mpcObj.GetPid()
-	ncols := len(A) //column encrypted
-	slots := cryptoParams.GetSlots()
-	nrows := 0
-	if pid < len(nrowsAll) {
-		nrows = nrowsAll[pid]
-	}
-	nrowsTotal := 0
-	for i := 1; i < len(nrowsAll); i++ {
-		nrowsTotal += nrowsAll[i]
-	}
-
-	scaling := 1.0 / math.Sqrt(float64(ncols)*float64(mpcObj.Network.NumParties-1))
-
-	// Local QR factorization
-	var QlocPlain, RlocPlain crypto.PlainMatrix
-	var RlocEnc crypto.CipherMatrix
-	if pid > 0 {
-		denseA := crypto.PlaintextToDense(cryptoParams, A, nrows)
-		QlocPlain, RlocPlain = getQR(cryptoParams, denseA, math.Sqrt(float64(nrowsTotal)))
-		RlocEnc = crypto.EncryptPlaintextMatrix(cryptoParams, RlocPlain)
-	} else {
-		RlocEnc = make(crypto.CipherMatrix, ncols)
-	}
-
-	// Perform distributed QR on concatenated R matrices
-	ncolArr := make([]int, mpcObj.Network.NumParties)
-	for i := 1; i < mpcObj.Network.NumParties; i++ {
-		ncolArr[i] = ncols
-	}
-	Qp := NetDQRenc(cryptoParams, mpcObj, RlocEnc, ncolArr)
-
-	// Calculate Qi, Qi = Qloc * Qp
-	var Q crypto.CipherMatrix
-	if pid > 0 {
-		Q = crypto.CZeroMat(cryptoParams, 1+((nrows-1)/slots), ncols)
-		var wg sync.WaitGroup
-		for c := range Qp {
-			wg.Add(1)
-			go func(c int) {
-				defer wg.Done()
-
-				for j := 0; j < ncols; j++ {
-					ctid := j / slots
-					slotid := j % slots
-
-					tmp := crypto.Mask(cryptoParams, Qp[c][ctid], slotid, false)
-					tmp = crypto.InnerSumAll(cryptoParams, crypto.CipherVector{tmp})
-
-					dupvec := make(crypto.CipherVector, len(Q[c]))
-					for i := range dupvec {
-						dupvec[i] = tmp
-					}
-
-					col := crypto.CPMult(cryptoParams, dupvec, QlocPlain[j])
-					Q[c] = crypto.CAdd(cryptoParams, Q[c], col)
-				}
-
-				Q[c] = crypto.CMultConstRescale(cryptoParams, Q[c], scaling, true)
-			}(c)
-		}
-		wg.Wait()
-	} else {
-		Q = make(crypto.CipherMatrix, ncols)
-	}
-
-	return Q
 }

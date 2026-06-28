@@ -12,8 +12,8 @@ import (
 	"go.dedis.ch/onet/v3/log"
 
 	"github.com/hhcho/sfgwas/crypto"
-	"github.com/ldsec/lattigo/v2/ckks"
-	"github.com/ldsec/lattigo/v2/ring"
+	"github.com/tuneinsight/lattigo/v6/core/rlwe"
+	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 )
 
 type DiagCacheStream struct {
@@ -102,11 +102,6 @@ func NewDiagCacheStream(cryptoParams *crypto.CryptoParams, filePrefix string, bl
 			giantTable[i] = tableBuf[d+i] != 0
 		}
 
-		fmt.Println("DiagCacheStream header:")
-		fmt.Println(vectorLen, level, scale, n, numModuli, rowSize)
-		fmt.Println(d, babyTable[:10])
-		fmt.Println(d, giantTable[:10])
-
 		resetPosition = len(headerBuf) + len(tableBuf)
 
 		buf = make([]byte, rowSize)
@@ -146,10 +141,10 @@ func (dcs *DiagCacheStream) WriteDiag(pv crypto.PlainVector, shift uint32) {
 	if dcs.atHead { // Write header
 		dcs.vectorLen = uint64(len(pv))
 		dcs.level = uint64(pv[0].Level())
-		dcs.scale = pv[0].Scale()
-		dcs.n = uint64(pv[0].Value()[0].Degree())
-		dcs.numModuli = uint64(pv[0].Value()[0].LenModuli())
-		dcs.rowSize = 4 + (uint64(1+pv[0].Value()[0].GetDataLen(false)) * dcs.vectorLen)
+		dcs.scale = pv[0].Scale.Float64()
+		dcs.n = uint64(pv[0].Value.N())
+		dcs.numModuli = uint64(pv[0].Value.Level() + 1)
+		dcs.rowSize = 4 + (uint64(1+pv[0].Value.BinarySize()) * dcs.vectorLen)
 
 		buf := make([]byte, 8*6)
 
@@ -191,11 +186,6 @@ func (dcs *DiagCacheStream) WriteDiag(pv crypto.PlainVector, shift uint32) {
 			log.Fatal(err)
 		}
 
-		fmt.Println("Written DiagCacheStream header:")
-		fmt.Println(dcs.vectorLen, dcs.level, dcs.scale, dcs.n, dcs.numModuli, dcs.rowSize)
-		fmt.Println(len(dcs.babyTable), dcs.babyTable[:10])
-		fmt.Println(len(dcs.giantTable), dcs.giantTable[:10])
-
 		dcs.buf = make([]byte, dcs.rowSize)
 		dcs.atHead = false
 	}
@@ -213,9 +203,12 @@ func (dcs *DiagCacheStream) WriteDiag(pv crypto.PlainVector, shift uint32) {
 		pointer++
 
 		if isEmpty == 0 {
-			var tmp int
-			tmp, err = ring.WriteCoeffsTo(int(pointer), int(dcs.n), int(dcs.numModuli), pv[i].Value()[0].Coeffs, dcs.buf)
-			pointer = uint64(tmp)
+			polyBytes, marshalErr := pv[i].Value.MarshalBinary()
+			if marshalErr != nil {
+				panic(marshalErr)
+			}
+			copy(dcs.buf[pointer:], polyBytes)
+			pointer += uint64(len(polyBytes))
 			if err != nil {
 				panic(err)
 			}
@@ -268,12 +261,14 @@ func (dcs *DiagCacheStream) ReadDiag() (pv crypto.PlainVector, shift int) {
 		pointer++
 
 		if !isEmpty {
-			pt := ckks.NewPlaintext(dcs.cryptoParams.Params, int(dcs.level), dcs.scale)
-			for i := range pt.Value() {
-				var tmp int
-				tmp, _ = ring.DecodeCoeffs(int(pointer), int(dcs.n), int(dcs.numModuli), pt.Value()[i].Coeffs, dcs.buf[:bytesToRead])
-				pointer = uint64(tmp)
+			pt := ckks.NewPlaintext(dcs.cryptoParams.Params, int(dcs.level))
+			pt.Scale = rlwe.NewScale(dcs.scale)
+			polySize := uint64(pt.Value.BinarySize())
+			if err := pt.Element.Value[0].UnmarshalBinary(dcs.buf[pointer : pointer+polySize]); err != nil {
+				panic(err)
 			}
+			pt.Value = pt.Element.Value[0]
+			pointer += polySize
 			pv[i] = pt
 		}
 	}

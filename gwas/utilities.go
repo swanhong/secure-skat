@@ -14,6 +14,7 @@ import (
 
 	"github.com/hhcho/sfgwas/crypto"
 	"github.com/hhcho/sfgwas/mpc"
+	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 	"gonum.org/v1/gonum/mat"
 )
 
@@ -138,12 +139,22 @@ func writeFilterToFile(filename string, filter []bool, isBinary bool) {
 	writer.Flush()
 }
 
-func FilterMatrixFilePgen(pgenPrefix string, nrows, ncols int, rowFiltFile, colNamesFile string, colStartPos int, colFilt []bool, outputFile string) {
+func FilterMatrixFilePgen(pgenPrefix string, nrows, ncols int, rowFiltFile, colNamesFile string, colStartPos int, colFilt []bool, outputFile string, secureOrientation bool) {
 	colFiltFile := outputFile + ".colFilter.bin"
 
 	writeFilterToFile(colFiltFile, colFilt, true)
 
-	cmd := exec.Command("/bin/sh", "scripts/filterMatrixPgen.sh", pgenPrefix, strconv.Itoa(nrows), strconv.Itoa(ncols), rowFiltFile, colFiltFile, colNamesFile, strconv.Itoa(colStartPos), outputFile)
+	scriptPath := "scripts/filterMatrixPgen.sh"
+	if _, err := os.Stat(pgenPrefix + ".pvar.zst"); err == nil {
+		scriptPath = "scripts/filterMatrixPgenVzs.sh"
+	}
+
+	secureOrientationArg := "false"
+	if secureOrientation {
+		secureOrientationArg = "true"
+	}
+
+	cmd := exec.Command("/bin/sh", scriptPath, pgenPrefix, strconv.Itoa(nrows), strconv.Itoa(ncols), rowFiltFile, colFiltFile, colNamesFile, strconv.Itoa(colStartPos), outputFile, secureOrientationArg)
 	cout, e := cmd.CombinedOutput()
 	fmt.Print(string(cout))
 	if e != nil {
@@ -199,10 +210,6 @@ func MergeBlockFiles(inputBlockFilePrefix string, nrows int, ncolsPerBlock []int
 	}
 }
 
-func matPrint(X mat.Matrix) {
-	fa := mat.Formatted(X, mat.Prefix(""), mat.Squeeze())
-	fmt.Printf("%v\n", fa)
-}
 func Max(x, y int) int {
 	if x <= y {
 		return y
@@ -418,6 +425,64 @@ func SaveMatrixToFile(cps *crypto.CryptoParams, mpcObj *mpc.MPC, cm crypto.Ciphe
 
 }
 
+func SaveMatrixComplexPartsToFile(cps *crypto.CryptoParams, mpcObj *mpc.MPC, cm crypto.CipherMatrix, nElemCol int, sourcePid int, realFilename, imagFilename string) {
+	pid := mpcObj.GetPid()
+	if pid == 0 {
+		return
+	}
+
+	pm := mpcObj.Network.CollectiveDecryptMat(cps, cm, sourcePid)
+
+	realM := mat.NewDense(len(cm), nElemCol, nil)
+	imagM := mat.NewDense(len(cm), nElemCol, nil)
+	for i := range pm {
+		var vals []complex128
+		cps.WithEncoder(func(encoder *ckks.Encoder) error {
+			for _, plaintext := range pm[i] {
+				decoded := make([]complex128, cps.GetSlots())
+				if err := encoder.Decode(plaintext, decoded); err != nil {
+					return err
+				}
+				vals = append(vals, decoded...)
+			}
+			return nil
+		})
+
+		realRow := make([]float64, nElemCol)
+		imagRow := make([]float64, nElemCol)
+		for j := 0; j < nElemCol; j++ {
+			realRow[j] = real(vals[j])
+			imagRow[j] = imag(vals[j])
+		}
+		realM.SetRow(i, realRow)
+		imagM.SetRow(i, imagRow)
+	}
+
+	if pid == sourcePid || sourcePid < 0 {
+		writeDenseMatrix := func(filename string, M *mat.Dense) {
+			f, err := os.Create(filename)
+			if err != nil {
+				panic(err)
+			}
+			defer f.Close()
+
+			rows, cols := M.Dims()
+			for row := 0; row < rows; row++ {
+				line := make([]string, cols)
+				for col := 0; col < cols; col++ {
+					line[col] = fmt.Sprintf("%.6e", M.At(row, col))
+				}
+				f.WriteString(strings.Join(line, ",") + "\n")
+			}
+			f.Sync()
+			fmt.Println("Saved data to", filename)
+		}
+
+		writeDenseMatrix(realFilename, realM)
+		writeDenseMatrix(imagFilename, imagM)
+	}
+}
+
 func SaveFloatMatrixToFile(filename string, x [][]float64) {
 	file, err := os.Create(filename)
 	defer file.Close()
@@ -451,6 +516,22 @@ func SaveFloatVectorToFile(filename string, x []float64) {
 
 	for i := range x {
 		writer.WriteString(fmt.Sprintf("%.6e\n", x[i]))
+	}
+
+	writer.Flush()
+}
+
+func SaveStringLinesToFile(filename string, lines []string) {
+	file, err := os.Create(filename)
+	defer file.Close()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	writer := bufio.NewWriter(file)
+	for _, line := range lines {
+		writer.WriteString(line)
+		writer.WriteString("\n")
 	}
 
 	writer.Flush()
