@@ -2,7 +2,6 @@ package mpc
 
 import (
 	"fmt"
-	"gonum.org/v1/gonum/mat"
 	"math"
 	"os"
 	"runtime"
@@ -10,97 +9,204 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/aead/chacha20/chacha"
-	"github.com/hhcho/frand"
-	"github.com/hhcho/sfgwas/crypto"
-	"github.com/ldsec/lattigo/v2/dckks"
-	"github.com/ldsec/lattigo/v2/ring"
-	"github.com/ldsec/lattigo/v2/utils"
-	"go.dedis.ch/onet/v3/log"
+	"gonum.org/v1/gonum/mat"
 
-	"github.com/ldsec/lattigo/v2/ckks"
+	"github.com/hhcho/sfgwas/crypto"
+	"github.com/tuneinsight/lattigo/v6/circuits/ckks/polynomial"
+	"github.com/tuneinsight/lattigo/v6/core/rlwe"
+	"github.com/tuneinsight/lattigo/v6/multiparty"
+	"github.com/tuneinsight/lattigo/v6/multiparty/mpckks"
+	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
+	"github.com/tuneinsight/lattigo/v6/utils/bignum"
+	"github.com/tuneinsight/lattigo/v6/utils/sampling"
+	"go.dedis.ch/onet/v3/log"
 )
+
+func (netObj *Network) sharedCRS() sampling.PRNG {
+	seed := make([]byte, 64)
+	netObj.Rand.SwitchPRG(-1)
+	netObj.Rand.RandRead(seed)
+	netObj.Rand.RestorePRG()
+
+	crs, err := sampling.NewKeyedPRNG(seed)
+	if err != nil {
+		panic(err)
+	}
+
+	return crs
+}
+
+func (netObj *Network) aggregateRelinearizationKeyGenShare(prot multiparty.RelinearizationKeyGenProtocol, share multiparty.RelinearizationKeyGenShare) multiparty.RelinearizationKeyGenShare {
+	_, outRoundOne, outRoundTwo := prot.AllocateShare()
+	out := outRoundOne
+	if share.Degree() == 0 {
+		out = outRoundTwo
+	}
+
+	pid := netObj.GetPid()
+	hubPid := netObj.GetHubPid()
+
+	if pid == 0 {
+		if hubPid > 0 {
+			if err := out.UnmarshalBinary(netObj.receiveBinaryValue(hubPid)); err != nil {
+				panic(err)
+			}
+		}
+		return out
+	}
+
+	if pid == hubPid {
+		for p := 1; p < netObj.GetNParty(); p++ {
+			var next multiparty.RelinearizationKeyGenShare
+			if p == pid {
+				next = share
+			} else {
+				_, nextRoundOne, nextRoundTwo := prot.AllocateShare()
+				next = nextRoundOne
+				if share.Degree() == 0 {
+					next = nextRoundTwo
+				}
+				if err := next.UnmarshalBinary(netObj.receiveBinaryValue(p)); err != nil {
+					panic(err)
+				}
+			}
+			prot.AggregateShares(next, out, &out)
+		}
+
+		for p := 0; p < netObj.GetNParty(); p++ {
+			if p != pid {
+				netObj.sendBinaryValue(out, p)
+			}
+		}
+		return out
+	}
+
+	netObj.sendBinaryValue(share, hubPid)
+	if err := out.UnmarshalBinary(netObj.receiveBinaryValue(hubPid)); err != nil {
+		panic(err)
+	}
+	return out
+}
+
+func (netObj *Network) aggregateKeySwitchShare(prot multiparty.KeySwitchProtocol, share multiparty.KeySwitchShare, level int) multiparty.KeySwitchShare {
+	out := prot.AllocateShare(level)
+	pid := netObj.GetPid()
+	hubPid := netObj.GetHubPid()
+
+	if pid == hubPid {
+		for p := 1; p < netObj.GetNParty(); p++ {
+			next := prot.AllocateShare(level)
+			if p == pid {
+				next = share
+			} else if err := next.UnmarshalBinary(netObj.receiveBinaryValue(p)); err != nil {
+				panic(err)
+			}
+			if err := prot.AggregateShares(next, out, &out); err != nil {
+				panic(err)
+			}
+		}
+
+		for p := 1; p < netObj.GetNParty(); p++ {
+			if p != pid {
+				netObj.sendBinaryValue(out, p)
+			}
+		}
+		return out
+	}
+
+	netObj.sendBinaryValue(share, hubPid)
+	if err := out.UnmarshalBinary(netObj.receiveBinaryValue(hubPid)); err != nil {
+		panic(err)
+	}
+	return out
+}
 
 func (netObj ParallelNetworks) CollectiveInit(params *ckks.Parameters, prec uint) (cps *crypto.CryptoParams) {
 	log.LLvl1("CollectiveInit started")
 
-	dckksContext := dckks.NewContext(params)
+	kgen := ckks.NewKeyGenerator(*params)
 
-	var kgen = ckks.NewKeyGenerator(params)
-
-	var skShard *ckks.SecretKey
-	if netObj[0].GetPid() == 0 {
-		skShard = new(ckks.SecretKey)
-		skShard.Value = dckksContext.RingQP.NewPoly()
-	} else {
-		skShard = kgen.GenSecretKey()
-
-		skShard.Value.Zero()
-		prng, err := utils.NewPRNG() // Use NewKeyedPRNG for debugging if deterministic behavior is desired
-		if err != nil {
-			panic(err)
-		}
-		ternarySamplerMontgomery := ring.NewTernarySampler(prng, dckksContext.RingQP, 1.0/3.0, true)
-		skShard.Value = ternarySamplerMontgomery.ReadNew()
-		dckksContext.RingQP.NTT(skShard.Value, skShard.Value)
+	skShard := rlwe.NewSecretKey(*params)
+	if netObj[0].GetPid() > 0 {
+		skShard = kgen.GenSecretKeyNew()
 	}
 
-	// Globally shared random generator
-	crpGen := make([]*ring.UniformSampler, len(netObj))
-	for i := range crpGen {
-		seed := make([]byte, chacha.KeySize)
-		netObj[0].Rand.SwitchPRG(-1)
-		netObj[0].Rand.RandRead(seed)
-		netObj[0].Rand.RestorePRG()
-
-		seedPrng := frand.NewCustom(seed, bufferSize, 20)
-
-		crpGen[i] = ring.NewUniformSamplerWithBasePrng(seedPrng, dckksContext.RingQP)
-	}
+	baseCRS := netObj[0].sharedCRS()
 
 	log.LLvl1("PubKeyGen")
-	var pk = netObj[0].CollectivePubKeyGen(params, skShard, crpGen[0])
+	pk := netObj[0].CollectivePubKeyGen(params, skShard, baseCRS)
 
 	log.LLvl1("RelinKeyGen")
-	var rlk = netObj[0].CollectiveRelinKeyGen(params, skShard, crpGen[0])
+	rlk := netObj[0].CollectiveRelinKeyGen(params, skShard, baseCRS)
 
 	nprocs := runtime.GOMAXPROCS(0)
-	cps = crypto.NewCryptoParams(params, skShard, skShard, pk, rlk, prec, nprocs)
+	cps = crypto.NewCryptoParams(*params, skShard, skShard.CopyNew(), pk, rlk, prec, nprocs)
 
 	smallDim := 20
 	log.LLvl1("RotKeyGen: shifts <=", smallDim, "and powers of two up to", cps.GetSlots())
+	if strings.TrimSpace(os.Getenv("SFGWAS_SKIP_ROTKEYGEN")) != "" {
+		log.LLvl1("CollectiveInit: skipping rotation-key generation because SFGWAS_SKIP_ROTKEYGEN is set")
+		log.LLvl1("CollectiveInit finished")
+		return
+	}
+
 	if netObj[0].GetPid() > 0 {
-		rotKs := netObj.CollectiveRotKeyGen(params, skShard, crpGen, crypto.GenerateRotKeys(cps.GetSlots(), smallDim, true))
-		cps.RotKs = rotKs
-		cps.SetEvaluators(cps.Params, rlk, cps.RotKs)
+		crsVec := make([]sampling.PRNG, len(netObj))
+		for i := range netObj {
+			crsVec[i] = netObj[i].sharedCRS()
+		}
+		rotKs := netObj.CollectiveRotKeyGen(params, skShard, crsVec, crypto.GenerateRotKeys(cps.GetSlots(), smallDim, true))
+		cps.SetEvaluators(*params, rlk, rotKs)
 	}
 
 	log.LLvl1("CollectiveInit finished")
-
 	return
 }
 
-func (netObj *Network) CollectivePubKeyGen(parameters *ckks.Parameters, skShard *ckks.SecretKey, crpGen *ring.UniformSampler) (pk *ckks.PublicKey) {
-	sk := &skShard.SecretKey
+func (netObj *Network) CollectivePubKeyGen(parameters *ckks.Parameters, skShard *rlwe.SecretKey, crs sampling.PRNG) (pk *rlwe.PublicKey) {
+	ckgProtocol := multiparty.NewPublicKeyGenProtocol(*parameters)
+	pkShare := ckgProtocol.AllocateShare()
+	crp := ckgProtocol.SampleCRP(crs)
 
-	ckgProtocol := dckks.NewCKGProtocol(parameters)
-
-	pkShare := ckgProtocol.AllocateShares()
-
-	crp := crpGen.ReadNew()
-	ckgProtocol.GenShare(sk, crp, pkShare)
-
-	pkAgg := netObj.AggregatePubKeyShares(pkShare)
-
-	hubPid := netObj.GetHubPid()
-	if netObj.GetPid() == 0 {
-		pkAgg.Poly = netObj.ReceivePoly(hubPid)
-	} else if netObj.GetPid() == hubPid {
-		netObj.SendPoly(pkAgg.Poly, 0)
+	if netObj.GetPid() > 0 {
+		ckgProtocol.GenShare(skShard, crp, &pkShare)
 	}
 
-	pk = ckks.NewPublicKey(parameters)
-	ckgProtocol.GenPublicKey(pkAgg, crp, &pk.PublicKey)
+	pkAgg := ckgProtocol.AllocateShare()
+	pid := netObj.GetPid()
+	hubPid := netObj.GetHubPid()
+
+	if pid == 0 {
+		if hubPid > 0 {
+			if err := pkAgg.UnmarshalBinary(netObj.receiveBinaryValue(hubPid)); err != nil {
+				panic(err)
+			}
+		}
+	} else if pid == hubPid {
+		for p := 1; p < netObj.GetNParty(); p++ {
+			next := ckgProtocol.AllocateShare()
+			if p == pid {
+				next = pkShare
+			} else if err := next.UnmarshalBinary(netObj.receiveBinaryValue(p)); err != nil {
+				panic(err)
+			}
+			ckgProtocol.AggregateShares(next, pkAgg, &pkAgg)
+		}
+
+		for p := 0; p < netObj.GetNParty(); p++ {
+			if p != pid {
+				netObj.sendBinaryValue(pkAgg, p)
+			}
+		}
+	} else {
+		netObj.sendBinaryValue(pkShare, hubPid)
+		if err := pkAgg.UnmarshalBinary(netObj.receiveBinaryValue(hubPid)); err != nil {
+			panic(err)
+		}
+	}
+
+	pk = rlwe.NewPublicKey(*parameters)
+	ckgProtocol.GenPublicKey(pkAgg, crp, pk)
 	return
 }
 
@@ -125,8 +231,6 @@ func (netObj *Network) CollectiveDecryptMat(cps *crypto.CryptoParams, cm crypto.
 		} else {
 			nr = netObj.ReceiveInt(sourcePid)
 			nc = netObj.ReceiveInt(sourcePid)
-			cm = make(crypto.CipherMatrix, nr)
-			cm[0] = make(crypto.CipherVector, nc)
 		}
 
 		tmp = netObj.BroadcastCMat(cps, cm, sourcePid, nr, nc)
@@ -137,35 +241,23 @@ func (netObj *Network) CollectiveDecryptMat(cps *crypto.CryptoParams, cm crypto.
 	}
 
 	tmp, level := crypto.FlattenLevels(cps, tmp)
-	scale := tmp[0][0].Scale()
 
-	parameters := cps.Params
-	skShard := cps.Sk.Value
-
-	zeroPoly := parameters.NewPolyQP()
-
-	zeroPk := new(ckks.PublicKey)
-	zeroPk.Value = [2]*ring.Poly{zeroPoly, zeroPoly}
-
-	pcksProtocol := dckks.NewPCKSProtocol(parameters, 6.36)
-
-	decShare := make([][]dckks.PCKSShare, nr)
-	for i := range decShare {
-		decShare[i] = make([]dckks.PCKSShare, nc)
-		for j := range decShare[i] {
-			decShare[i][j] = pcksProtocol.AllocateShares(level)
-			pcksProtocol.GenShare(skShard, zeroPk, tmp[i][j], decShare[i][j])
-		}
+	ksp, err := multiparty.NewKeySwitchProtocol(cps.Params, cps.Params.Xe())
+	if err != nil {
+		panic(err)
 	}
 
-	decAgg := netObj.AggregateDecryptSharesMat(decShare, level)
-
+	zero := rlwe.NewSecretKey(cps.Params)
 	pm = make(crypto.PlainMatrix, nr)
 	for i := range pm {
 		pm[i] = make(crypto.PlainVector, nc)
 		for j := range pm[i] {
-			ciphertextSwitched := ckks.NewCiphertext(parameters, 1, level, scale)
-			pcksProtocol.KeySwitch(decAgg[i][j], tmp[i][j], ciphertextSwitched)
+			decShare := ksp.AllocateShare(level)
+			ksp.GenShare(cps.Sk, zero, tmp[i][j], &decShare)
+			decAgg := netObj.aggregateKeySwitchShare(ksp, decShare, level)
+
+			ciphertextSwitched := rlwe.NewCiphertext(cps.Params, 1, level)
+			ksp.KeySwitch(tmp[i][j], decAgg, ciphertextSwitched)
 			pm[i][j] = ciphertextSwitched.Plaintext()
 		}
 	}
@@ -180,88 +272,38 @@ func (netObj *Network) CollectiveDecryptVec(cps *crypto.CryptoParams, cv crypto.
 	return netObj.CollectiveDecryptMat(cps, crypto.CipherMatrix{cv}, sourcePid)[0]
 }
 
-func (netObj *Network) CollectiveDecrypt(cps *crypto.CryptoParams, ct *ckks.Ciphertext, sourcePid int) (pt *ckks.Plaintext) {
-	var tmp *ckks.Ciphertext
-
-	// sourcePid broadcasts ct to other parties for collective decryption
-	if netObj.GetPid() == sourcePid {
-		for p := 1; p < netObj.GetNParty(); p++ {
-			if p != sourcePid {
-				netObj.SendCiphertext(ct, p)
-			}
-		}
-		tmp = ct
-	} else if netObj.GetPid() > 0 {
-		tmp = netObj.ReceiveCiphertext(cps, sourcePid)
-	} else { // pid == 0
-		return
-	}
-
-	parameters := cps.Params
-	skShard := cps.Sk.Value
-
-	zeroPoly := parameters.NewPolyQP()
-
-	zeroPk := new(ckks.PublicKey)
-	zeroPk.Value = [2]*ring.Poly{zeroPoly, zeroPoly}
-
-	pcksProtocol := dckks.NewPCKSProtocol(parameters, 6.36)
-
-	decShare := pcksProtocol.AllocateShares(tmp.Level())
-	pcksProtocol.GenShare(skShard, zeroPk, tmp, decShare)
-	decAgg := netObj.AggregateDecryptShares(&decShare, tmp.Level())
-
-	ciphertextSwitched := ckks.NewCiphertext(parameters, 1, tmp.Level(), tmp.Scale())
-	pcksProtocol.KeySwitch(*decAgg, tmp, ciphertextSwitched)
-
-	pt = ciphertextSwitched.Plaintext()
-
-	return
-}
-
-func (netObj *Network) CollectiveBootstrap(cps *crypto.CryptoParams, ct *ckks.Ciphertext, sourcePid int) {
-	// sourcePid broadcasts ct to other parties for collective decryption
+func (netObj *Network) CollectiveDecrypt(cps *crypto.CryptoParams, ct *rlwe.Ciphertext, sourcePid int) (pt *rlwe.Plaintext) {
 	if netObj.GetPid() == 0 {
 		return
 	}
 
-	// if sourcePid <= 0, assume cm is already shared across parties
+	tmp := ct
 	if sourcePid > 0 {
-		if netObj.GetPid() == sourcePid {
-			for p := 1; p < netObj.GetNParty(); p++ {
-				if p != sourcePid {
-					netObj.SendCiphertext(ct, p)
-				}
-			}
-		} else {
-			ct = netObj.ReceiveCiphertext(cps, sourcePid)
-		}
+		tmp = netObj.BroadcastCiphertext(cps, ct, sourcePid)
 	}
 
-	parameters := cps.Params
-	skShard := cps.Sk.Value
-	crpGen := netObj.GetCRPGen()
-	levelStart := ct.Level()
+	ksp, err := multiparty.NewKeySwitchProtocol(cps.Params, cps.Params.Xe())
+	if err != nil {
+		panic(err)
+	}
 
-	refProtocol := dckks.NewRefreshProtocol(parameters)
-	refShare1, refShare2 := refProtocol.AllocateShares(levelStart)
+	decShare := ksp.AllocateShare(tmp.Level())
+	zero := rlwe.NewSecretKey(cps.Params)
+	ksp.GenShare(cps.Sk, zero, tmp, &decShare)
+	decAgg := netObj.aggregateKeySwitchShare(ksp, decShare, tmp.Level())
 
-	crp := crpGen.ReadNew()
-
-	refProtocol.GenShares(skShard, levelStart, netObj.GetNParty()-1, ct, parameters.Scale(), crp, refShare1, refShare2)
-
-	refAgg1 := netObj.AggregateRefreshShare(refShare1, levelStart)
-	refAgg2 := netObj.AggregateRefreshShare(refShare2, parameters.MaxLevel())
-
-	refProtocol.Decrypt(ct, refAgg1)           // Masked decryption
-	refProtocol.Recode(ct, parameters.Scale()) // Masked re-encoding
-	refProtocol.Recrypt(ct, crp, refAgg2)      // Masked re-encryption
-
-	return
+	ciphertextSwitched := rlwe.NewCiphertext(cps.Params, 1, tmp.Level())
+	ksp.KeySwitch(tmp, decAgg, ciphertextSwitched)
+	return ciphertextSwitched.Plaintext()
 }
 
 func (netObj *Network) CollectiveBootstrapVec(cps *crypto.CryptoParams, cv crypto.CipherVector, sourcePid int) crypto.CipherVector {
 	return netObj.CollectiveBootstrapMat(cps, crypto.CipherMatrix{cv}, sourcePid)[0]
+}
+
+func (netObj *Network) CanCollectiveBootstrap(cps *crypto.CryptoParams, level int) bool {
+	minLevel, _, ok := mpckks.GetMinimumLevelForRefresh(128, cps.Params.DefaultScale(), max(1, netObj.GetNParty()-1), cps.Params.Q())
+	return ok && level >= minLevel
 }
 
 func (netObj *Network) CollectiveBootstrapMat(cps *crypto.CryptoParams, cm crypto.CipherMatrix, sourcePid int) crypto.CipherMatrix {
@@ -269,9 +311,7 @@ func (netObj *Network) CollectiveBootstrapMat(cps *crypto.CryptoParams, cm crypt
 		return cm
 	}
 
-	// if sourcePid <= 0, assume cm is already shared across parties
 	if sourcePid > 0 {
-		// sourcePid broadcasts ct to other parties for collective decryption
 		if netObj.GetPid() == sourcePid {
 			for p := 1; p < netObj.GetNParty(); p++ {
 				if p != sourcePid {
@@ -281,78 +321,78 @@ func (netObj *Network) CollectiveBootstrapMat(cps *crypto.CryptoParams, cm crypt
 				}
 			}
 		} else {
-			ncols := netObj.ReceiveInt(sourcePid)
 			nrows := netObj.ReceiveInt(sourcePid)
-			cm = netObj.ReceiveCipherMatrix(cps, ncols, nrows, sourcePid)
+			ncols := netObj.ReceiveInt(sourcePid)
+			cm = netObj.ReceiveCipherMatrix(cps, nrows, ncols, sourcePid)
 		}
 	}
 
-	parameters := cps.Params
-	skShard := cps.Sk.Value
-	crpGen := netObj.GetCRPGen()
+	cm, _ = crypto.FlattenLevels(cps, cm)
 
-	cm, levelStart := crypto.FlattenLevels(cps, cm)
-	//log.LLvl1(time.Now().Format(time.RFC3339), "Bootstrap: dimensions", len(cm), "x", len(cm[0]), "input level", levelStart)
-
-	refProtocol := dckks.NewRefreshProtocol(parameters)
-
-	refSharesDecrypt := make([][]ring.Poly, len(cm))
-	crps := make([][]ring.Poly, len(cm))
-	refSharesRecrypt := make([][]ring.Poly, len(cm))
-
-	for i := range cm {
-		refSharesDecrypt[i] = make([]ring.Poly, len(cm[0]))
-		crps[i] = make([]ring.Poly, len(cm[0]))
-		refSharesRecrypt[i] = make([]ring.Poly, len(cm[0]))
-
-		for j := range cm[i] {
-			refShare1, refShare2 := refProtocol.AllocateShares(levelStart)
-
-			refSharesDecrypt[i][j] = *refShare1
-			refSharesRecrypt[i][j] = *refShare2
-			crps[i][j] = *crpGen.ReadNew()
-
-			refProtocol.GenShares(skShard, levelStart, netObj.GetNParty()-1, cm[i][j], parameters.Scale(),
-				&(crps[i][j]), &(refSharesDecrypt[i][j]), &(refSharesRecrypt[i][j]))
-
-		}
+	if !cm[0][0].Scale.Equal(cps.Params.DefaultScale()) {
+		panic("CollectiveBootstrapMat: input ciphertext scale differs from default; refresh bound would be miscomputed")
+	}
+	minLevel, logBound, ok := mpckks.GetMinimumLevelForRefresh(128, cps.Params.DefaultScale(), max(1, netObj.GetNParty()-1), cps.Params.Q())
+	if !ok || cm[0][0].Level() < minLevel {
+		panic(fmt.Sprintf("CollectiveBootstrapMat: ciphertext level %d below required refresh level %d", cm[0][0].Level(), minLevel))
 	}
 
-	refAgg1 := netObj.AggregateRefreshShareMat(refSharesDecrypt, levelStart)
-	refAgg2 := netObj.AggregateRefreshShareMat(refSharesRecrypt, parameters.MaxLevel())
+	rfp, err := mpckks.NewRefreshProtocol(cps.Params, cps.GetPrec(), cps.Params.Xe())
+	if err != nil {
+		panic(err)
+	}
 
+	crs := netObj.sharedCRS()
 	for i := range cm {
 		for j := range cm[i] {
-			//no communication
-			refProtocol.Decrypt(cm[i][j], &refAgg1[i][j])              // Masked decryption
-			refProtocol.Recode(cm[i][j], parameters.Scale())           // Masked re-encoding
-			refProtocol.Recrypt(cm[i][j], &crps[i][j], &refAgg2[i][j]) // Masked re-encryption
+			crp := rfp.SampleCRP(cps.Params.MaxLevel(), crs)
+			share := rfp.AllocateShare(cm[i][j].Level(), cps.Params.MaxLevel())
+			if err := rfp.GenShare(cps.Sk, logBound, cm[i][j], crp, &share); err != nil {
+				panic(err)
+			}
 
-			// Fix discrepancy in number of moduli
-			if len(cm[i][j].Value()[0].Coeffs) < len(cm[i][j].Value()[1].Coeffs) {
-				poly := ring.NewPoly(len(cm[i][j].Value()[0].Coeffs[0]), len(cm[i][j].Value()[0].Coeffs))
-				for pi := range poly.Coeffs {
-					for pj := range poly.Coeffs[0] {
-						poly.Coeffs[pi][pj] = cm[i][j].Value()[1].Coeffs[pi][pj]
+			agg := rfp.AllocateShare(cm[i][j].Level(), cps.Params.MaxLevel())
+			if netObj.GetPid() == netObj.GetHubPid() {
+				for p := 1; p < netObj.GetNParty(); p++ {
+					next := rfp.AllocateShare(cm[i][j].Level(), cps.Params.MaxLevel())
+					if p == netObj.GetPid() {
+						next = share
+					} else if err := next.UnmarshalBinary(netObj.receiveBinaryValue(p)); err != nil {
+						panic(err)
+					}
+					if err := rfp.AggregateShares(&next, &agg, &agg); err != nil {
+						panic(err)
 					}
 				}
-				cm[i][j].Value()[1] = poly
+
+				for p := 1; p < netObj.GetNParty(); p++ {
+					if p != netObj.GetPid() {
+						netObj.sendBinaryValue(agg, p)
+					}
+				}
+			} else {
+				netObj.sendBinaryValue(share, netObj.GetHubPid())
+				if err := agg.UnmarshalBinary(netObj.receiveBinaryValue(netObj.GetHubPid())); err != nil {
+					panic(err)
+				}
 			}
+			agg.MetaData = *cm[i][j].MetaData
+
+			out := cm[i][j].CopyNew()
+			if err := rfp.Finalize(cm[i][j], crp, agg, out); err != nil {
+				panic(err)
+			}
+			cm[i][j] = out
 		}
 	}
 
-	//log.LLvl1(time.Now().Format(time.RFC3339), "Bootstrap: output level", cm[0][0].Level())
-
 	return cm
-
 }
 
 // BootstrapMatAll: collective bootstrap for all parties (except 0)
 func (netObj *Network) BootstrapMatAll(cps *crypto.CryptoParams, cm crypto.CipherMatrix) crypto.CipherMatrix {
-
 	tmp := make(crypto.CipherMatrix, len(cm))
 
-	//TODO: optimize to run simultaneously
 	for sourcePid := 1; sourcePid < netObj.GetNParty(); sourcePid++ {
 		if netObj.GetPid() == sourcePid {
 			cm = netObj.CollectiveBootstrapMat(cps, cm, sourcePid)
@@ -378,68 +418,46 @@ func (netObj *Network) BootstrapVecAll(cps *crypto.CryptoParams, cv crypto.Ciphe
 	return cv
 }
 
-func (netObj ParallelNetworks) CollectiveRotKeyGen(parameters *ckks.Parameters, skShard *ckks.SecretKey,
-	crpGen []*ring.UniformSampler, rotTypes []crypto.RotationType) (rotKeys *ckks.RotationKeySet) {
+func (netObj ParallelNetworks) CollectiveRotKeyGen(parameters *ckks.Parameters, skShard *rlwe.SecretKey,
+	crsVec []sampling.PRNG, rotTypes []crypto.RotationType) (rotKeys []*rlwe.GaloisKey) {
 
-	slots := parameters.Slots()
-
-	sk := &skShard.SecretKey
+	slots := parameters.MaxSlots()
 
 	shiftMap := make(map[int]bool)
 	for _, rotType := range rotTypes {
-
-		var shift int
+		shift := rotType.Value
 		if rotType.Side == crypto.SideRight {
 			shift = slots - rotType.Value
-		} else {
-			shift = rotType.Value
 		}
-
 		shiftMap[shift] = true
 	}
 
-	gElems := make([]uint64, len(shiftMap))
-	i := 0
+	gElems := make([]uint64, 0, len(shiftMap)+1)
 	for k := range shiftMap {
-		gElems[i] = parameters.GaloisElementForColumnRotationBy(k)
-		i++
+		gElems = append(gElems, parameters.GaloisElementForRotation(k))
 	}
-	// Add rotation for taking the complex conjugate
-	gElems = append(gElems, parameters.GaloisElementForRowRotation())
-
-	// Need to sortInt otherwise different parties might have different ordering
+	gElems = append(gElems, parameters.GaloisElementForComplexConjugation())
 	sort.Slice(gElems, func(i, j int) bool { return gElems[i] < gElems[j] })
 
-	rotKeys = ckks.NewRotationKeySet(parameters, gElems)
-	//
-	//for ind, galEl := range gElems {
-	//	rtgProtocol := dckks.NewRotKGProtocol(parameters)
-	//	rtgShare := rtgProtocol.AllocateShares()
-	//
-	//	rtgCrp := make([]*ring.Poly, parameters.Beta())
-	//	for i := 0; i < parameters.Beta(); i++ {
-	//		rtgCrp[i] = crpGen[0].ReadNew()
-	//	}
-	//
-	//	rtgProtocol.GenShare(sk, galEl, rtgCrp, rtgShare)
-	//
-	//	rtgAgg := netObj[0].AggregateRotKeyShare(rtgShare)
-	//
-	//	rtgProtocol.GenRotationKey(rtgAgg, rtgCrp, rotKeys.Keys[galEl])
-	//	fmt.Println("Generate RotKey ", ind+1, "/", len(gElems), ", Galois element", galEl)
-	//}
-
-	/* Parallel version */
-	nproc := len(netObj)
-	jobChannels := make([]chan uint64, nproc)
-	for i := range jobChannels {
-		jobChannels[i] = make(chan uint64, 32)
+	if strings.TrimSpace(os.Getenv("SFGWAS_SERIAL_ROTKEYGEN")) != "" {
+		return netObj.collectiveRotKeyGenSerial(parameters, skShard, crsVec, gElems)
 	}
 
-	// Dispatcher
+	type rotJob struct {
+		idx   int
+		galEl uint64
+	}
+
+	rotKeys = make([]*rlwe.GaloisKey, len(gElems))
+	nproc := len(netObj)
+	jobChannels := make([]chan rotJob, nproc)
+	for i := range jobChannels {
+		jobChannels[i] = make(chan rotJob, 32)
+	}
+
 	go func() {
 		for ind, galEl := range gElems {
-			jobChannels[ind%nproc] <- galEl
+			jobChannels[ind%nproc] <- rotJob{idx: ind, galEl: galEl}
 			fmt.Println("Generate RotKey ", ind+1, "/", len(gElems), ", Galois element", galEl)
 		}
 		for _, c := range jobChannels {
@@ -447,57 +465,153 @@ func (netObj ParallelNetworks) CollectiveRotKeyGen(parameters *ckks.Parameters, 
 		}
 	}()
 
-	// Workers
 	var wg sync.WaitGroup
 	for thread := 0; thread < nproc; thread++ {
 		wg.Add(1)
-		go func(thread int, net *Network, crpGen *ring.UniformSampler) {
+		go func(thread int, net *Network, crs sampling.PRNG) {
 			defer wg.Done()
-			for galEl := range jobChannels[thread] {
-				rtgProtocol := dckks.NewRotKGProtocol(parameters)
-				rtgShare := rtgProtocol.AllocateShares()
+			gkg := multiparty.NewGaloisKeyGenProtocol(*parameters)
+			for job := range jobChannels[thread] {
+				share := gkg.AllocateShare()
+				crp := gkg.SampleCRP(crs)
 
-				rtgCrp := make([]*ring.Poly, parameters.Beta())
-				for i := 0; i < parameters.Beta(); i++ {
-					rtgCrp[i] = crpGen.ReadNew()
+				if net.GetPid() > 0 {
+					if err := gkg.GenShare(skShard, job.galEl, crp, &share); err != nil {
+						panic(err)
+					}
 				}
 
-				rtgProtocol.GenShare(sk, galEl, rtgCrp, rtgShare)
+				agg := gkg.AllocateShare()
+				agg.GaloisElement = job.galEl
+				pid := net.GetPid()
+				hubPid := net.GetHubPid()
 
-				rtgAgg := net.AggregateRotKeyShare(rtgShare)
+				if pid == 0 {
+					if hubPid > 0 {
+						if err := agg.UnmarshalBinary(net.receiveBinaryValue(hubPid)); err != nil {
+							panic(err)
+						}
+					}
+				} else if pid == hubPid {
+					for p := 1; p < net.GetNParty(); p++ {
+						next := gkg.AllocateShare()
+						if p == pid {
+							next = share
+						} else if err := next.UnmarshalBinary(net.receiveBinaryValue(p)); err != nil {
+							panic(err)
+						}
+						if err := gkg.AggregateShares(next, agg, &agg); err != nil {
+							panic(err)
+						}
+					}
 
-				rtgProtocol.GenRotationKey(rtgAgg, rtgCrp, rotKeys.Keys[galEl])
+					for p := 1; p < net.GetNParty(); p++ {
+						if p != pid {
+							net.sendBinaryValue(agg, p)
+						}
+					}
+				} else {
+					net.sendBinaryValue(share, hubPid)
+					if err := agg.UnmarshalBinary(net.receiveBinaryValue(hubPid)); err != nil {
+						panic(err)
+					}
+				}
+
+				gk := rlwe.NewGaloisKey(*parameters)
+				if err := gkg.GenGaloisKey(agg, crp, gk); err != nil {
+					panic(err)
+				}
+				rotKeys[job.idx] = gk
 			}
-		}(thread, netObj[thread], crpGen[thread])
+		}(thread, netObj[thread], crsVec[thread])
 	}
 	wg.Wait()
 
 	return
 }
 
-func (netObj *Network) CollectiveRelinKeyGen(params *ckks.Parameters, skShard *ckks.SecretKey, crpGen *ring.UniformSampler) (evk *ckks.RelinearizationKey) {
-	sk := &skShard.SecretKey
+func (netObj ParallelNetworks) collectiveRotKeyGenSerial(parameters *ckks.Parameters, skShard *rlwe.SecretKey,
+	crsVec []sampling.PRNG, gElems []uint64) (rotKeys []*rlwe.GaloisKey) {
 
-	prot := dckks.NewRKGProtocol(params)
-	ephSk, share1, share2 := prot.AllocateShares()
+	rotKeys = make([]*rlwe.GaloisKey, len(gElems))
+	net := netObj[0]
+	crs := crsVec[0]
+	gkg := multiparty.NewGaloisKeyGenProtocol(*parameters)
 
-	crp := make([]*ring.Poly, params.Beta())
-	for i := 0; i < params.Beta(); i++ {
-		crp[i] = crpGen.ReadNew()
+	for ind, galEl := range gElems {
+		fmt.Println("Generate RotKey ", ind+1, "/", len(gElems), ", Galois element", galEl)
+
+		share := gkg.AllocateShare()
+		crp := gkg.SampleCRP(crs)
+		if net.GetPid() > 0 {
+			if err := gkg.GenShare(skShard, galEl, crp, &share); err != nil {
+				panic(err)
+			}
+		}
+
+		agg := gkg.AllocateShare()
+		agg.GaloisElement = galEl
+		pid := net.GetPid()
+		hubPid := net.GetHubPid()
+
+		if pid == 0 {
+			if hubPid > 0 {
+				if err := agg.UnmarshalBinary(net.receiveBinaryValue(hubPid)); err != nil {
+					panic(err)
+				}
+			}
+		} else if pid == hubPid {
+			for p := 1; p < net.GetNParty(); p++ {
+				next := gkg.AllocateShare()
+				if p == pid {
+					next = share
+				} else if err := next.UnmarshalBinary(net.receiveBinaryValue(p)); err != nil {
+					panic(err)
+				}
+				if err := gkg.AggregateShares(next, agg, &agg); err != nil {
+					panic(err)
+				}
+			}
+
+			for p := 1; p < net.GetNParty(); p++ {
+				if p != pid {
+					net.sendBinaryValue(agg, p)
+				}
+			}
+		} else {
+			net.sendBinaryValue(share, hubPid)
+			if err := agg.UnmarshalBinary(net.receiveBinaryValue(hubPid)); err != nil {
+				panic(err)
+			}
+		}
+
+		gk := rlwe.NewGaloisKey(*parameters)
+		if err := gkg.GenGaloisKey(agg, crp, gk); err != nil {
+			panic(err)
+		}
+		rotKeys[ind] = gk
 	}
 
-	evk = ckks.NewRelinearizationKey(params)
+	return rotKeys
+}
+
+func (netObj *Network) CollectiveRelinKeyGen(params *ckks.Parameters, skShard *rlwe.SecretKey, crs sampling.PRNG) (evk *rlwe.RelinearizationKey) {
+	prot := multiparty.NewRelinearizationKeyGenProtocol(*params)
+	ephSk, share1, share2 := prot.AllocateShare()
+	crp := prot.SampleCRP(crs)
 
 	if netObj.GetPid() > 0 {
-		prot.GenShareRoundOne(sk, crp, ephSk, share1)
-		outRound1 := netObj.AggregateRelinKeyShare(share1, true)
-
-		prot.GenShareRoundTwo(ephSk, sk, outRound1, crp, share2)
-		outRound2 := netObj.AggregateRelinKeyShare(share2, true)
-
-		prot.GenRelinearizationKey(outRound1, outRound2, &evk.RelinearizationKey)
+		prot.GenShareRoundOne(skShard, crp, ephSk, &share1)
 	}
+	outRound1 := netObj.aggregateRelinearizationKeyGenShare(prot, share1)
 
+	if netObj.GetPid() > 0 {
+		prot.GenShareRoundTwo(ephSk, skShard, outRound1, &share2)
+	}
+	outRound2 := netObj.aggregateRelinearizationKeyGenShare(prot, share2)
+
+	evk = rlwe.NewRelinearizationKey(*params)
+	prot.GenRelinearizationKey(outRound1, outRound2, evk)
 	return
 }
 
@@ -517,34 +631,16 @@ func (netObj *Network) BroadcastCMat(cps *crypto.CryptoParams, cm crypto.CipherM
 		cm = netObj.ReceiveCipherMatrix(cps, numCtxRow, numCtxCol, sourcePid)
 	}
 	return cm
-
-}
-func (netObj *Network) BroadcastCVec(cps *crypto.CryptoParams, cv crypto.CipherVector, sourcePid int, numCtx int) crypto.CipherVector {
-	if netObj.GetPid() == sourcePid {
-		if len(cv) != numCtx {
-			panic("BroadcastCVec: len(cv) does not match numCtx")
-		}
-
-		for p := 1; p < netObj.GetNParty(); p++ {
-			if p != sourcePid {
-				netObj.SendCipherVector(cv, p)
-			}
-		}
-		cv = crypto.CopyEncryptedVector(cv)
-	} else if netObj.GetPid() > 0 {
-		cv = netObj.ReceiveCipherVector(cps, numCtx, sourcePid)
-	}
-	return cv
 }
 
-func (netObj *Network) BroadcastCiphertext(cps *crypto.CryptoParams, ct *ckks.Ciphertext, sourcePid int) *ckks.Ciphertext {
+func (netObj *Network) BroadcastCiphertext(cps *crypto.CryptoParams, ct *rlwe.Ciphertext, sourcePid int) *rlwe.Ciphertext {
 	if netObj.GetPid() == sourcePid {
 		for p := 1; p < netObj.GetNParty(); p++ {
 			if p != sourcePid {
 				netObj.SendCiphertext(ct, p)
 			}
 		}
-		ct = ct.CopyNew().Ciphertext()
+		ct = ct.CopyNew()
 	} else if netObj.GetPid() > 0 {
 		ct = netObj.ReceiveCiphertext(cps, sourcePid)
 	}
@@ -579,30 +675,23 @@ func SaveMatrixToFileWithPrintIndex(cps *crypto.CryptoParams, mpcObj *MPC, cm cr
 		log.LLvl1("Matrix decoded")
 
 		f, err := os.Create(filename)
-
 		if err != nil {
 			panic(err)
 		}
-
 		defer f.Close()
 
 		rows, cols := M.Dims()
-
 		for row := 0; row < rows; row++ {
 			line := make([]string, cols)
 			for col := 0; col < cols; col++ {
 				line[col] = fmt.Sprintf("%.6e", M.At(row, col))
 			}
-
 			f.WriteString(strings.Join(line, ",") + "\n")
 		}
 
 		f.Sync()
-
 		fmt.Println("Saved data to", filename)
-
 	}
-
 }
 
 func CSigmoidApprox(sourcePid int, net *Network, cryptoParams *crypto.CryptoParams, ctIn crypto.CipherVector,
@@ -614,60 +703,44 @@ func CSigmoidApprox(sourcePid int, net *Network, cryptoParams *crypto.CryptoPara
 	return res
 }
 
-func SigmoidApprox(sourcePid int, net *Network, cryptoParams *crypto.CryptoParams, ctIn *ckks.Ciphertext,
-	intv crypto.IntervalApprox, mutex *sync.Mutex) *ckks.Ciphertext {
-	var y *ckks.Ciphertext
+func SigmoidApprox(sourcePid int, net *Network, cryptoParams *crypto.CryptoParams, ctIn *rlwe.Ciphertext,
+	intv crypto.IntervalApprox, mutex *sync.Mutex) *rlwe.Ciphertext {
 
+	// Degree 0 is the inverse-sqrt normalization path: collectively decrypt, compute
+	// 1/sqrt in plaintext, re-encrypt (unchanged from v2).
 	if intv.Degree == 0 {
 		ctDecrypt := net.CollectiveDecrypt(cryptoParams, ctIn, sourcePid)
 		cdDecode := crypto.DecodeFloatVector(cryptoParams, crypto.PlainVector{ctDecrypt})
 		cdOut := make([]float64, len(cdDecode))
-		log.LLvl1("before approx result ", cdDecode[:300])
-		for i := 0; i < len(cdDecode); i++ {
+		for i := range cdDecode {
 			cdOut[i] = 1.0 / math.Sqrt(cdDecode[i])
 		}
-		log.LLvl1("approx result ", cdOut[:300])
 		cdOutEncrypted, _ := crypto.EncryptFloatVector(cryptoParams, cdOut)
 		return cdOutEncrypted[0]
-	} else {
+	}
 
-		cheby := ckks.Approximate(Sigmoid, complex(intv.A, 0), complex(intv.B, 0), intv.Degree)
-		// We evaluate the interpolated Chebyshev interpolant on y
-		// Change of variable
-		a := cheby.A()
-		b := cheby.B()
+	// Degree > 0: evaluate the sigmoid homomorphically via a Chebyshev approximation on
+	// [A, B] (restored from the v2 path; the v6 Chebyshev-basis evaluator folds the
+	// change-of-variable into the polynomial, so no manual rescale/shift is needed).
+	interval := bignum.Interval{Nodes: intv.Degree}
+	interval.A.SetFloat64(intv.A)
+	interval.B.SetFloat64(intv.B)
+	cheby := bignum.ChebyshevApproximation(Sigmoid, interval)
 
-		if ctIn.Level() < int(math.Ceil(math.Log2(float64(intv.Degree+1)))+1)+2 {
-			mutex.Lock()
-			ctIn = net.BootstrapVecAll(cryptoParams, crypto.CipherVector{ctIn})[0]
-			mutex.Unlock()
-		}
+	// Refresh if the remaining level cannot cover the polynomial's multiplicative depth.
+	if ctIn.Level() < cheby.Depth()+1 {
+		mutex.Lock()
+		ctIn = net.BootstrapVecAll(cryptoParams, crypto.CipherVector{ctIn})[0]
+		mutex.Unlock()
+	}
 
-		err := cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-			y = eval.MultByConstNew(ctIn.CopyNew().Ciphertext(), 2/(b-a))
-			if err := eval.Rescale(y, cryptoParams.Params.Scale(), y); err != nil {
-				panic(err)
-			}
-			eval.AddConst(y, (-a-b)/(b-a), y)
-			return nil
-		})
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		ctInCopy := y.CopyNew().Ciphertext()
-
-		err = cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
-			var err error
-			y, err = eval.EvaluateCheby(ctInCopy, cheby, ctInCopy.Scale())
-			if err != nil {
-				log.Fatal(err)
-			}
-			return err
-		})
-		if err != nil {
-			log.Fatal(err)
-		}
+	var y *rlwe.Ciphertext
+	if err := cryptoParams.WithEvaluator(func(eval *ckks.Evaluator) error {
+		var e error
+		y, e = polynomial.NewEvaluator(cryptoParams.Params, eval).Evaluate(ctIn, polynomial.NewPolynomial(cheby), cryptoParams.Params.DefaultScale())
+		return e
+	}); err != nil {
+		panic(err)
 	}
 	return y
 }

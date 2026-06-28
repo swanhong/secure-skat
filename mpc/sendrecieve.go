@@ -1,15 +1,64 @@
 package mpc
 
 import (
+	"encoding"
 	"encoding/binary"
 	"fmt"
 
 	mpc_core "github.com/hhcho/mpc-core"
 	"github.com/hhcho/sfgwas/crypto"
-	"github.com/ldsec/lattigo/v2/ring"
-
-	"github.com/ldsec/lattigo/v2/ckks"
+	"github.com/tuneinsight/lattigo/v6/core/rlwe"
+	"github.com/tuneinsight/lattigo/v6/ring"
 )
+
+const mheBinaryHeaderBytes = 8
+
+func (netObj *Network) SendPoly(p ring.Poly, toPid int) {
+	netObj.sendBinaryValue(p, toPid)
+}
+
+func (netObj *Network) ReceivePoly(fromPid int) ring.Poly {
+	var p ring.Poly
+	if err := p.UnmarshalBinary(netObj.receiveBinaryValue(fromPid)); err != nil {
+		panic(err)
+	}
+	return p
+}
+
+func (netObj *Network) sendBinaryValue(val encoding.BinaryMarshaler, toPid int) {
+	conn := netObj.conns[toPid]
+
+	payload, err := val.MarshalBinary()
+	if err != nil {
+		panic(err)
+	}
+
+	header := make([]byte, mheBinaryHeaderBytes)
+	for i := 0; i < mheBinaryHeaderBytes; i++ {
+		header[i] = byte(uint64(len(payload)) >> (8 * i))
+	}
+
+	WriteFull(&conn, header)
+	WriteFull(&conn, payload)
+	netObj.UpdateSenderLog(toPid, len(header)+len(payload))
+}
+
+func (netObj *Network) receiveBinaryValue(fromPid int) []byte {
+	conn := netObj.conns[fromPid]
+
+	header := make([]byte, mheBinaryHeaderBytes)
+	ReadFull(&conn, header)
+
+	var size uint64
+	for i := 0; i < mheBinaryHeaderBytes; i++ {
+		size |= uint64(header[i]) << (8 * i)
+	}
+
+	payload := make([]byte, size)
+	ReadFull(&conn, payload)
+	netObj.UpdateReceiverLog(fromPid, len(header)+len(payload))
+	return payload
+}
 
 // TODO signedness lost
 func (netObj *Network) SendInt(val, to int) {
@@ -38,7 +87,7 @@ func (netObj *Network) SendIntVector(v []uint64, to int) {
 }
 
 // SendCiphertext sends ciphertext over a connection
-func (netObj *Network) SendCiphertext(ct *ckks.Ciphertext, to int) {
+func (netObj *Network) SendCiphertext(ct *rlwe.Ciphertext, to int) {
 	conn := netObj.conns[to]
 
 	bytes, e := ct.MarshalBinary() //convert to bytes
@@ -112,7 +161,7 @@ func (netObj *Network) SendAllCryptoParams(cps *crypto.CryptoParams) {
 }
 
 // SendAllCiphertext sends ciphertext over to all parties
-func (netObj *Network) SendAllCiphertext(ct *ckks.Ciphertext, includeZero bool) {
+func (netObj *Network) SendAllCiphertext(ct *rlwe.Ciphertext, includeZero bool) {
 	for i := 0; i < netObj.NumParties; i++ {
 		if i == 0 && !includeZero {
 			continue
@@ -145,39 +194,6 @@ func (netObj *Network) SendAllCipherMatrix(cm crypto.CipherMatrix, includeZero b
 			netObj.SendCipherMatrix(cm, i)
 		}
 	}
-}
-
-func (netObj *Network) SendPoly(poly *ring.Poly, pid int) {
-	conn := netObj.conns[pid]
-	bytes, _ := poly.MarshalBinary() //convert to bytes
-
-	buf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(buf, uint32(len(bytes)))
-
-	WriteFull(&conn, buf)
-	WriteFull(&conn, bytes)
-
-	netObj.UpdateSenderLog(pid, len(buf)+len(bytes))
-}
-
-func (netObj *Network) SendPolyMat(poly [][]ring.Poly, pid int) {
-	conn := netObj.conns[pid]
-	//marshal poly
-	sizes, bytes := MarshalPolyMat(poly)
-
-	//send over sizes
-	sbuf := make([]byte, 8)
-
-	binary.LittleEndian.PutUint64(sbuf, uint64(len(sizes)))
-	WriteFull(&conn, sbuf)
-	WriteFull(&conn, sizes)
-
-	binary.LittleEndian.PutUint64(sbuf, uint64(len(bytes)))
-	WriteFull(&conn, sbuf)
-	WriteFull(&conn, bytes)
-
-	netObj.UpdateSenderLog(pid, 2*len(sbuf)+len(sizes)+len(bytes))
-
 }
 
 // SendRData sends ring/field elements to party p
@@ -232,7 +248,7 @@ func (netObj *Network) ReceiveIntVector(nElem, from int) []uint64 {
 }
 
 // // ReceiveCiphertext reads bytes sent over conn, and unmarshals it as a ciphertext
-func (netObj *Network) ReceiveCiphertext(cryptoParams *crypto.CryptoParams, from int) *ckks.Ciphertext {
+func (netObj *Network) ReceiveCiphertext(_ *crypto.CryptoParams, from int) *rlwe.Ciphertext {
 	conn := netObj.conns[from]
 
 	buf := make([]byte, 8)
@@ -241,7 +257,7 @@ func (netObj *Network) ReceiveCiphertext(cryptoParams *crypto.CryptoParams, from
 	data := make([]byte, sbyteSize)
 	ReadFull(&conn, data)
 
-	ct := ckks.NewCiphertext(cryptoParams.Params, 1, cryptoParams.Params.MaxLevel(), cryptoParams.Params.Scale())
+	ct := new(rlwe.Ciphertext)
 	e := ct.UnmarshalBinary(data)
 	checkError(e)
 
@@ -291,87 +307,6 @@ func (netObj *Network) ReceiveCipherMatrix(cryptoParams *crypto.CryptoParams, nv
 	netObj.UpdateReceiverLog(from, len(sbuf)+len(sdata)+len(cmbuf)+len(cdata))
 	return crypto.UnmarshalCM(cryptoParams, nv, nct, sdata, cdata)
 }
-
-func (netObj *Network) ReceivePoly(pid int) *ring.Poly {
-	conn := netObj.conns[pid]
-
-	buf := make([]byte, 4)
-	ReadFull(&conn, buf)
-
-	byteSize := binary.LittleEndian.Uint32(buf)
-	data := make([]byte, byteSize)
-	ReadFull(&conn, data)
-
-	out := new(ring.Poly)
-	out.UnmarshalBinary(data)
-
-	netObj.UpdateReceiverLog(pid, len(buf)+len(data))
-
-	return out
-}
-
-func (netObj *Network) ReceivePolyMat(pid int) [][]ring.Poly {
-	conn := netObj.conns[pid]
-
-	//sizes
-	buf := make([]byte, 8)
-	ReadFull(&conn, buf)
-	byteSize := binary.LittleEndian.Uint64(buf)
-	sizesData := make([]byte, byteSize)
-	ReadFull(&conn, sizesData)
-
-	//poly values
-	ReadFull(&conn, buf)
-	polyBytes := binary.LittleEndian.Uint64(buf)
-	polyData := make([]byte, polyBytes)
-	ReadFull(&conn, polyData)
-
-	netObj.UpdateReceiverLog(pid, 2*len(buf)+len(polyData)+len(sizesData))
-
-	return UnmarshalPolyMat(sizesData, polyData)
-}
-
-// func SendPolyMat(poly [][]*ring.Poly, pid int) {
-// 	conn := conns[pid]
-// 	//marshal poly
-// 	sizes, bytes := MarshalPolyMat(poly)
-
-// 	//send over sizes
-// 	sbuf := make([]byte, 8)
-
-// 	binary.LittleEndian.PutUint64(sbuf, uint64(len(sizes)))
-// 	WriteFull(&conn, sbuf)
-// 	WriteFull(&conn, sizes)
-
-// 	binary.LittleEndian.PutUint64(sbuf, uint64(len(bytes)))
-// 	WriteFull(&conn, sbuf)
-// 	WriteFull(&conn, bytes)
-
-// 	netObj.UpdateSenderLog(pid, len(bytes))
-
-// }
-
-// func ReceivePolyMat(pid int) [][]*ring.Poly {
-// 	conn := conns[pid]
-
-// 	//sizes
-// 	buf := make([]byte, 8)
-// 	ReadFull(&conn, buf)
-// 	byteSize := binary.LittleEndian.Uint64(buf)
-// 	sizesData := make([]byte, byteSize)
-// 	ReadFull(&conn, sizesData)
-
-// 	//poly values
-// 	ReadFull(&conn, buf)
-// 	polyBytes := binary.LittleEndian.Uint64(buf)
-// 	polyData := make([]byte, polyBytes)
-// 	ReadFull(&conn, polyData)
-
-// 	netObj.UpdateReceiverLog(pid, len(sizesData))
-// 	netObj.UpdateReceiverLog(pid, len(polyData))
-
-// 	return UnmarshalPolyMat(sizesData, polyData)
-// }
 
 //SEND AND RECEIVE FIELD VALUES
 
@@ -428,9 +363,9 @@ func (netObj *Network) ReceiveRElem(rtype mpc_core.RElem, p int) mpc_core.RElem 
 	return rtype.FromBytes(buf)
 }
 
-func (netObj *Network) ExchangeCiphertext(cryptoParams *crypto.CryptoParams, ct *ckks.Ciphertext, all bool) []*ckks.Ciphertext {
+func (netObj *Network) ExchangeCiphertext(cryptoParams *crypto.CryptoParams, ct *rlwe.Ciphertext, all bool) []*rlwe.Ciphertext {
 	pid := netObj.pid
-	aggData := make([]*ckks.Ciphertext, netObj.NumParties)
+	aggData := make([]*rlwe.Ciphertext, netObj.NumParties)
 	for i := 1; i < netObj.NumParties; i++ {
 		if !all && pid == 0 {
 			return nil

@@ -1,22 +1,26 @@
 package mpc
 
 import (
+	crand "crypto/rand"
 	"math/big"
 
 	mpc_core "github.com/hhcho/mpc-core"
-	"github.com/ldsec/lattigo/v2/utils"
-
-	// "go.dedis.ch/onet/v3/log"
 
 	"github.com/hhcho/sfgwas/crypto"
-
-	"github.com/ldsec/lattigo/v2/dckks"
-	"github.com/ldsec/lattigo/v2/ring"
-
-	//"github.com/hhcho/mpc-core"
-	"github.com/ldsec/lattigo/v2/ckks"
-	//"math/bits"
+	"github.com/tuneinsight/lattigo/v6/core/rlwe"
+	"github.com/tuneinsight/lattigo/v6/ring"
+	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
+	"github.com/tuneinsight/lattigo/v6/utils/sampling"
 )
+
+func plaintextFromPoly(cryptoParams *crypto.CryptoParams, poly ring.Poly, src *rlwe.Ciphertext, level int) *rlwe.Plaintext {
+	pt := ckks.NewPlaintext(cryptoParams.Params, level)
+	pt.Value = poly
+	pt.Element.Value[0] = poly
+	pt.Scale = src.Scale
+	pt.IsNTT = src.IsNTT
+	return pt
+}
 
 func (mpcObj *MPC) SSMultMat(a, b mpc_core.RMat) mpc_core.RMat {
 	ar, am := mpcObj.BeaverPartitionMat(a)
@@ -55,7 +59,141 @@ func (mpcObj *MPC) SSMultElemMat(a, b mpc_core.RMat) mpc_core.RMat {
 	return mpcObj.BeaverReconstructMat(x)
 }
 
-// Row-major
+// --- Secure share <-> ciphertext conversion (slot-domain, masked) ---
+//
+// Re-port of the v2 masked conversions (which used the patched Lattigo-v2 encoder methods
+// EncodeRVecNew/DecodeRVec) to stock Lattigo v6, via full-precision []*big.Float slot
+// encoding so field-sized masks survive. No party ever observes a cleartext value.
+
+// elemToSignedBigFloat returns the centered (signed) fixed-point real value of e.
+// Only the field types used by this codebase (LElem128/LElem256) are supported.
+func elemToSignedBigFloat(e mpc_core.RElem, fracBits int) *big.Float {
+	switch v := e.(type) {
+	case mpc_core.LElem256:
+		return v.ToSignedBigFloat(fracBits)
+	case mpc_core.LElem128:
+		return v.ToSignedBigFloat(fracBits)
+	default:
+		panic("mpc: SS<->cipher conversion only supports LElem128 or LElem256")
+	}
+}
+
+// signedBigFloatToElem converts a signed fixed-point real value back into a field
+// element: round(f * 2^fracBits) reduced modulo the field modulus. The explicit
+// reduction is required because RElem.FromBigInt does not reduce on construction.
+func signedBigFloatToElem(rtype mpc_core.RElem, f *big.Float, fracBits int) mpc_core.RElem {
+	scaled := new(big.Float).SetPrec(600).Mul(f, bigFloatPow2(fracBits))
+	half := new(big.Float).SetPrec(600).SetFloat64(0.5)
+	if scaled.Sign() >= 0 {
+		scaled.Add(scaled, half)
+	} else {
+		scaled.Sub(scaled, half)
+	}
+	r, _ := scaled.Int(nil)
+	r.Mod(r, rtype.Modulus())
+	return rtype.FromBigInt(r)
+}
+
+func bigFloatPow2(n int) *big.Float {
+	return new(big.Float).SetPrec(600).SetInt(new(big.Int).Lsh(big.NewInt(1), uint(n)))
+}
+
+// sampleCenteredMask draws a per-element uniform mask in (-bound/2, bound/2], stored
+// in the field representation. Each party samples its own mask locally.
+func sampleCenteredMask(rtype mpc_core.RElem, nrow, ncol int, bound *big.Int) mpc_core.RMat {
+	modulus := rtype.Modulus()
+	boundHalf := new(big.Int).Rsh(bound, 1)
+	mask := make(mpc_core.RMat, nrow)
+	for i := range mask {
+		mask[i] = make(mpc_core.RVec, ncol)
+		for j := range mask[i] {
+			t, err := crand.Int(crand.Reader, bound)
+			if err != nil {
+				panic(err)
+			}
+			if t.Cmp(boundHalf) >= 0 {
+				t.Sub(t, bound)
+			}
+			t.Mod(t, modulus)
+			mask[i][j] = rtype.FromBigInt(t)
+		}
+	}
+	return mask
+}
+
+// encodeElemSlotsToCM encrypts row-major slot-domain field shares into a CipherMatrix
+// under the collective public key, using full-precision big.Float encoding so that
+// field-sized (masked) values are represented exactly. scale/level set the encoding of
+// the resulting ciphertexts.
+func (mpcObj *MPC) encodeElemSlotsToCM(cryptoParams *crypto.CryptoParams, share mpc_core.RMat, scale rlwe.Scale, level int) crypto.CipherMatrix {
+	slots := cryptoParams.GetSlots()
+	fracBits := mpcObj.GetFracBits()
+	numCtxRow := len(share)
+	nElemCol := len(share[0])
+	numCtxCol := 1 + ((nElemCol - 1) / slots)
+
+	pm := make(crypto.PlainMatrix, numCtxRow)
+	for i := range pm {
+		pm[i] = make(crypto.PlainVector, numCtxCol)
+		for j := 0; j < numCtxCol; j++ {
+			start := j * slots
+			end := start + slots
+			if end > nElemCol {
+				end = nElemCol
+			}
+			buf := make([]*big.Float, slots)
+			for k := range buf {
+				buf[k] = new(big.Float)
+			}
+			for k := start; k < end; k++ {
+				buf[k-start] = elemToSignedBigFloat(share[i][k], fracBits)
+			}
+			pt := ckks.NewPlaintext(cryptoParams.Params, level)
+			pt.Scale = scale
+			if err := cryptoParams.WithEncoder(func(encoder *ckks.Encoder) error {
+				return encoder.Encode(buf, pt)
+			}); err != nil {
+				panic(err)
+			}
+			pm[i][j] = pt
+		}
+	}
+
+	return crypto.EncryptPlaintextMatrix(cryptoParams, pm)
+}
+
+// decodePlainToElemSlots decodes plaintexts back to slot-domain field elements
+// (nElemRow per row), reversing encodeElemSlotsToCM.
+func (mpcObj *MPC) decodePlainToElemSlots(cryptoParams *crypto.CryptoParams, rtype mpc_core.RElem, pm crypto.PlainMatrix, nElemRow int) mpc_core.RMat {
+	slots := cryptoParams.GetSlots()
+	fracBits := mpcObj.GetFracBits()
+	numCtxRow := len(pm)
+
+	out := mpc_core.InitRMat(rtype.Zero(), numCtxRow, nElemRow)
+	for i := range pm {
+		for j := range pm[i] {
+			buf := make([]*big.Float, slots)
+			for k := range buf {
+				buf[k] = new(big.Float)
+			}
+			if err := cryptoParams.WithEncoder(func(encoder *ckks.Encoder) error {
+				return encoder.Decode(pm[i][j], buf)
+			}); err != nil {
+				panic(err)
+			}
+			start := j * slots
+			for k := 0; k < slots && start+k < nElemRow; k++ {
+				out[i][start+k] = signedBigFloatToElem(rtype, buf[k], fracBits)
+			}
+		}
+	}
+	return out
+}
+
+// SSToCMat converts secret-shared values (row-major, slot-domain) into a CipherMatrix
+// encrypting the reconstructed value. Faithful to the v2 masked-share protocol: each
+// party masks its share, only x - Sum(mask_i) is revealed, and per-party encryptions of
+// the masked share are summed to Enc(x). No party observes x.
 func (mpcObj *MPC) SSToCMat(cryptoParams *crypto.CryptoParams, rm mpc_core.RMat) (cm crypto.CipherMatrix) {
 	if mpcObj.GetPid() == 0 {
 		cm = make(crypto.CipherMatrix, 1)
@@ -64,219 +202,152 @@ func (mpcObj *MPC) SSToCMat(cryptoParams *crypto.CryptoParams, rm mpc_core.RMat)
 	}
 
 	rtype := rm.Type().Zero()
-
 	if rtype.TypeID() != mpc_core.LElem256UniqueID && rtype.TypeID() != mpc_core.LElem128UniqueID {
 		panic("SSToCMat only supported for LElem128 or LElem256")
 	}
 
-	slots := cryptoParams.GetSlots()
 	numCtxRow := len(rm)
 	nElemCol := len(rm[0])
-	numCtxCol := 1 + ((nElemCol - 1) / slots)
 
-	// Pad RVec
-	//rvNew := mpc_core.InitRVec(rtype.Zero(), cryptoParams.GetSlots()*numCtxCol)
-	//for i := range rvNew {
-	//	rvNew[i] = rv[i % len(rv)]
-	//}
-	//rv = rvNew
+	// Bound masks so that x - Sum(mask_i) and the hub share never wrap the field
+	// (matches v2: modulus / (4 * #data-parties)).
+	bound := new(big.Int).Set(rtype.Modulus())
+	bound.Quo(bound, big.NewInt(int64(4*(mpcObj.GetNParty()-1))))
 
-	bound := rtype.Modulus()
-	bound.Quo(bound, big.NewInt(4*int64(mpcObj.GetNParty()-1)))
-	boundHalf := new(big.Int).Rsh(bound, 1)
-
-	mask := make(mpc_core.RMat, len(rm))
-	boundElem := rtype.FromBigInt(bound)
-	for i := range rm {
-		mask[i] = make(mpc_core.RVec, len(rm[0]))
-		for j := range rm[0] {
-			// log.LLvl1(time.Now().Format(time.RFC3339), "ss to cvec bound: ", bound)
-			tmp := ring.RandInt(bound)
-			mask[i][j] = rtype.FromBigInt(tmp)
-			if tmp.Cmp(boundHalf) >= 0 {
-				mask[i][j] = mask[i][j].Sub(boundElem)
-			}
-		}
-	}
+	mask := sampleCenteredMask(rtype, numCtxRow, nElemCol, bound)
 
 	rmMask := rm.Copy()
 	rmMask.Sub(mask)
-	rmMask = mpcObj.RevealSymMat(rmMask)
+	rmMask = mpcObj.RevealSymMat(rmMask) // reveals only x - Sum(mask_i)
 
 	var share mpc_core.RMat
-	if mpcObj.GetPid() == mpcObj.GetHubPid() { // share = (x - r) + r_i
+	if mpcObj.GetPid() == mpcObj.GetHubPid() {
 		share = rmMask
 		share.Add(mask)
-	} else { // share = r_i
+	} else {
 		share = mask
 	}
 
-	pm := make(crypto.PlainMatrix, numCtxRow)
-	for i := range pm {
-		pm[i] = make(crypto.PlainVector, numCtxCol)
-		cryptoParams.WithEncoder(func(encoder ckks.Encoder) error {
-			start := 0
-			end := slots
-			for j := 0; j < numCtxCol; j++ {
-				if end > nElemCol {
-					end = nElemCol
-				}
-
-				pm[i][j] = encoder.EncodeRVecNew(share[i][start:end], uint64(end-start), mpcObj.GetFracBits())
-
-				start += slots
-				end += slots
-			}
-			return nil
-		})
-	}
-
-	cm = crypto.EncryptPlaintextMatrix(cryptoParams, pm)
-
+	cm = mpcObj.encodeElemSlotsToCM(cryptoParams, share, cryptoParams.Params.DefaultScale(), cryptoParams.Params.MaxLevel())
 	return mpcObj.Network.AggregateCMat(cryptoParams, cm)
 }
 
 func (mpcObj *MPC) SSToCVec(cryptoParams *crypto.CryptoParams, rv mpc_core.RVec) (cv crypto.CipherVector) {
 	return mpcObj.SSToCMat(cryptoParams, mpc_core.RMat{rv})[0]
 }
-func (mpcObj *MPC) SStoCiphertext(cryptoParams *crypto.CryptoParams, rv mpc_core.RVec) *ckks.Ciphertext {
+
+func (mpcObj *MPC) SStoCiphertext(cryptoParams *crypto.CryptoParams, rv mpc_core.RVec) *rlwe.Ciphertext {
 	return mpcObj.SSToCVec(cryptoParams, rv)[0]
 }
 
 func (mpcObj *MPC) CMatToSS(cryptoParams *crypto.CryptoParams, rtype mpc_core.RElem, cm crypto.CipherMatrix, sourcePid, numCtxRow, numCtxCol, nElemRow int) (rm mpc_core.RMat) {
-	slots := cryptoParams.GetSlots()
-	fracBits := mpcObj.GetFracBits()
-
 	rm = mpc_core.InitRMat(rtype.Zero(), numCtxRow, nElemRow)
 	if mpcObj.GetPid() == 0 {
 		return
+	}
+	if rtype.TypeID() != mpc_core.LElem256UniqueID && rtype.TypeID() != mpc_core.LElem128UniqueID {
+		panic("CMatToSS only supported for LElem128 or LElem256")
 	}
 
 	if sourcePid > 0 {
 		cm = mpcObj.Network.BroadcastCMat(cryptoParams, cm, sourcePid, numCtxRow, numCtxCol)
 	}
-	cm, levelStart := crypto.FlattenLevels(cryptoParams, cm)
-	ctMask := crypto.CopyEncryptedMatrix(cm)
 
-	paramN := cryptoParams.Params.N()
+	cm, level := crypto.FlattenLevels(cryptoParams, cm)
 
-	dckksContext := dckks.NewContext(cryptoParams.Params)
-	shareDecrypt := make([][]*ring.Poly, numCtxRow)
-	for i := range shareDecrypt {
-		shareDecrypt[i] = make([]*ring.Poly, numCtxCol)
-		for j := range shareDecrypt[i] {
-			shareDecrypt[i][j] = dckksContext.RingQ.NewPolyLvl(levelStart)
-		}
+	ringQ := cryptoParams.Params.RingQ().AtLevel(level)
+	nCoeffs := cryptoParams.Params.N()
+	nParty := mpcObj.GetNParty()
+
+	// v2 mask bound = (product of active Q moduli) / (2 * #data-parties).
+	bound := new(big.Int).Set(cryptoParams.Params.RingQ().ModulusAtLevel[level])
+	bound.Quo(bound, big.NewInt(int64(2*(nParty-1))))
+	if bound.Sign() <= 0 {
+		panic("CMatToSS: ciphertext level too low to mask securely")
 	}
-	maskBigint := make([][][]*big.Int, numCtxRow)
-	for i := range maskBigint {
-		maskBigint[i] = make([][]*big.Int, numCtxCol)
-		for j := range maskBigint[i] {
-			maskBigint[i][j] = make([]*big.Int, paramN)
-		}
-	}
-
-	context := dckksContext.RingQ
-
-	prng, _ := utils.NewPRNG()
-	sampler := ring.NewGaussianSampler(prng)
-
-	bound := ring.NewUint(context.Modulus[0])
-	for i := 1; i < levelStart+1; i++ {
-		bound.Mul(bound, ring.NewUint(context.Modulus[i]))
-	}
-	bound.Quo(bound, ring.NewUint(2*uint64(mpcObj.GetNParty()-1)))
-
-	//fmt.Println("CMatToSS: Bound bit length ", bound.BitLen())
-
-	// Check if there is enough space in ct for masks
-	//if bound.Cmp(##) < 0 {
-	//	panic(fmt.Sprintf("Attempted SS conversion on a ciphertext without enough levels -> %d", levelStart))
-	//}
-
 	boundHalf := new(big.Int).Rsh(bound, 1)
 
-	var sign int
-	for k := range cm {
-		for i := range cm[k] {
-			for j := range maskBigint[k][i] {
-				// TODO: check relation between coeff size and decoded output size
-				m := ring.RandInt(bound)
-				sign = m.Cmp(boundHalf)
-				if sign == 1 || sign == 0 {
+	// Private smudge sampler (independent PRNG, never the shared CRS).
+	prng, err := sampling.NewPRNG()
+	if err != nil {
+		panic(err)
+	}
+	gauss := ring.NewGaussianSampler(prng, cryptoParams.Params.RingQ(), ring.DiscreteGaussian{Sigma: 3.19, Bound: 19}, false).AtLevel(level)
+
+	// Per ciphertext, build the masked partial-decryption share h0 = sk*c1 + mask + e
+	// (coefficient-domain mask, NTT'd), keeping each mask poly locally for the decode.
+	maskPolys := make([][]ring.Poly, numCtxRow)
+	shares := make([][]ring.Poly, numCtxRow)
+	for i := range cm {
+		maskPolys[i] = make([]ring.Poly, len(cm[i]))
+		shares[i] = make([]ring.Poly, len(cm[i]))
+		for j := range cm[i] {
+			maskBig := make([]*big.Int, nCoeffs)
+			for t := range maskBig {
+				m, cerr := crand.Int(crand.Reader, bound)
+				if cerr != nil {
+					panic(cerr)
+				}
+				if m.Cmp(boundHalf) >= 0 {
 					m.Sub(m, bound)
 				}
-				maskBigint[k][i][j] = m
+				maskBig[t] = m
 			}
+			maskPoly := ringQ.NewPoly()
+			ringQ.SetCoefficientsBigint(maskBig, maskPoly)
+			ringQ.NTT(maskPoly, maskPoly)
+			maskPolys[i][j] = maskPoly
+
+			h0 := *maskPoly.CopyNew()
+			ringQ.MulCoeffsMontgomeryThenAdd(cryptoParams.Sk.Value.Q, cm[i][j].Value[1], h0)
+			eNoise := gauss.ReadNew()
+			ringQ.NTT(eNoise, eNoise)
+			ringQ.Add(h0, eNoise, h0)
+			shares[i][j] = h0
 		}
 	}
 
-	for k := range cm {
-		for i := range cm[k] {
-			// h0 = mask (at level min)
-			context.SetCoefficientsBigintLvl(levelStart, maskBigint[k][i], shareDecrypt[k][i])
-			context.NTTLvl(levelStart, shareDecrypt[k][i], shareDecrypt[k][i])
-
-			ctMask[k][i].SetValue([]*ring.Poly{shareDecrypt[k][i].CopyNew(), context.NewPoly()})
-
-			// h0 = sk*c1 + mask
-			context.MulCoeffsMontgomeryAndAddLvl(levelStart, cryptoParams.Sk.Value, cm[k][i].Value()[1], shareDecrypt[k][i])
-
-			// h0 = sk*c1 + mask + e0
-			tmp := sampler.ReadNew(dckksContext.RingQ, 3.19, 19)
-			dckksContext.RingQ.NTT(tmp, tmp)
-
-			context.AddLvl(levelStart, shareDecrypt[k][i], tmp, shareDecrypt[k][i])
-		}
+	// Aggregate the decryption shares across parties: agg = sk*c1 + Sum mask + Sum e.
+	agg := make([][]ring.Poly, numCtxRow)
+	for i := range shares {
+		agg[i] = mpcObj.Network.AggregateDecryptShareVec(cryptoParams, shares[i], level)
 	}
 
-	// TODO: communicate in one batch
-	agg := make([][]*ring.Poly, len(shareDecrypt))
-	for i := range shareDecrypt {
-		agg[i] = mpcObj.Network.AggregateRefreshShareVec(shareDecrypt[i], levelStart)
-	}
-
-	pt := make(crypto.PlainMatrix, numCtxRow)
-	ptMask := make(crypto.PlainMatrix, numCtxRow)
+	// c0 + agg encodes the masked plaintext (x + Sum mask); decode it and the local mask
+	// to the field (linear big.Float slot decode = v2's patched DecodeRVec).
+	slots := cryptoParams.GetSlots()
+	maskWidth := len(cm[0]) * slots
+	pmSum := make(crypto.PlainMatrix, numCtxRow)
+	pmMask := make(crypto.PlainMatrix, numCtxRow)
 	for i := range cm {
-		pt[i] = make(crypto.PlainVector, numCtxCol)
-		ptMask[i] = make(crypto.PlainVector, numCtxCol)
-
+		pmSum[i] = make(crypto.PlainVector, len(cm[i]))
+		pmMask[i] = make(crypto.PlainVector, len(cm[i]))
 		for j := range cm[i] {
-			ctOut := cm[i][j].CopyNew().Ciphertext()
-			context.AddLvl(levelStart, ctOut.Value()[0], agg[i][j], ctOut.Value()[0])
-
-			pt[i][j] = ctOut.Plaintext()
-			ptMask[i][j] = ctMask[i][j].Plaintext()
+			sumPoly := *cm[i][j].Value[0].CopyNew()
+			ringQ.Add(sumPoly, agg[i][j], sumPoly)
+			pmSum[i][j] = plaintextFromPoly(cryptoParams, sumPoly, cm[i][j], level)
+			pmMask[i][j] = plaintextFromPoly(cryptoParams, maskPolys[i][j], cm[i][j], level)
 		}
 	}
 
-	rm = mpc_core.InitRMat(rtype.Zero(), numCtxRow, nElemRow)
-	cryptoParams.WithEncoder(func(encoder ckks.Encoder) error {
-		for i := range pt {
-			for j := range pt[i] {
-				var rvOut mpc_core.RVec
-				if mpcObj.GetPid() == mpcObj.GetHubPid() {
-					rvOut = encoder.DecodeRVec(rtype, pt[i][j], uint64(slots), fracBits)
-				} else {
-					rvOut = mpc_core.InitRVec(rtype.Zero(), slots)
-				}
-				rvMask := encoder.DecodeRVec(rtype, ptMask[i][j], uint64(slots), fracBits)
-				rvOut.Sub(rvMask)
+	decodedMask := mpcObj.decodePlainToElemSlots(cryptoParams, rtype, pmMask, maskWidth)
 
-				start := j * slots
-				end := start + slots
-				if end > nElemRow {
-					end = nElemRow
-				}
+	// v2 sign convention: hub = decode(x + Sum mask) - mask_hub ; others = -mask_i.
+	var shareFull mpc_core.RMat
+	if mpcObj.GetPid() == mpcObj.GetHubPid() {
+		shareFull = mpcObj.decodePlainToElemSlots(cryptoParams, rtype, pmSum, maskWidth)
+		shareFull.Sub(decodedMask)
+	} else {
+		shareFull = mpc_core.InitRMat(rtype.Zero(), numCtxRow, maskWidth)
+		shareFull.Sub(decodedMask)
+	}
 
-				for k := 0; k < end-start; k++ {
-					rm[i][start+k] = rvOut[k]
-				}
-			}
+	// Output only the nElemRow data slots (element k lives at flat index k).
+	for i := range rm {
+		for j := 0; j < nElemRow; j++ {
+			rm[i][j] = shareFull[i][j]
 		}
-		return nil
-	})
+	}
 	return
 }
 
@@ -284,6 +355,6 @@ func (mpcObj *MPC) CVecToSS(cryptoParams *crypto.CryptoParams, rtype mpc_core.RE
 	return mpcObj.CMatToSS(cryptoParams, rtype, crypto.CipherMatrix{cv}, sourcePid, 1, numCtx, nElem)[0]
 }
 
-func (mpcObj *MPC) CiphertextToSS(cryptoParams *crypto.CryptoParams, rtype mpc_core.RElem, ct *ckks.Ciphertext, sourcePid, N int) (rv mpc_core.RVec) {
-	return mpcObj.CVecToSS(cryptoParams, rtype, crypto.CipherVector{ct}, sourcePid, 1, N)
+func (mpcObj *MPC) CiphertextToSS(cryptoParams *crypto.CryptoParams, rtype mpc_core.RElem, ct *rlwe.Ciphertext, sourcePid, n int) (rv mpc_core.RVec) {
+	return mpcObj.CVecToSS(cryptoParams, rtype, crypto.CipherVector{ct}, sourcePid, 1, n)
 }
