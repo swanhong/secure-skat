@@ -903,3 +903,317 @@ func TestLowRankNullModel(t *testing.T) {
 		mpcObj.Network.CollectiveDecryptVec(cps, nil, 1)
 	}
 }
+
+// --- low-rank score + weights (skat.go lowRankPartyScore / lowRankSignedWeight) ---
+
+// Key-free low-rank score s = Gᵀy₀ − (GᵀX)β̂ vs gonum oracle on the full (G,X,y), center 0.
+func TestLowRankScore(t *testing.T) {
+	prot := InitProtocolForTest(t)
+	if prot == nil {
+		return
+	}
+	defer prot.SyncAndTerminate(true)
+
+	mpcObj := prot.mpcObj[0]
+	cps := prot.cps
+	pid := mpcObj.GetPid()
+
+	nParties := prot.GetConfig().NumMainParties
+	nIndsAll := prot.GetConfig().NumInds
+	numCov := prot.GetGwasParams().NumCov()
+	c := numCov + 1
+	const m = 12
+
+	nIndsTotal := 0
+	for p := 1; p <= nParties; p++ {
+		nIndsTotal += nIndsAll[p]
+	}
+
+	r := rand.New(rand.NewSource(11))
+	fullCov := mat.NewDense(nIndsTotal, numCov, nil)
+	fullG := mat.NewDense(nIndsTotal, m, nil)
+	fullY := make([]float64, nIndsTotal)
+	maf := make([]float64, m)
+	for j := 0; j < m; j++ {
+		maf[j] = 0.05 + 0.4*r.Float64()
+	}
+	for i := 0; i < nIndsTotal; i++ {
+		yi := 0.0 // mean-0 phenotype (mimics centering)
+		for j := 0; j < numCov; j++ {
+			v := r.NormFloat64()
+			fullCov.Set(i, j, v)
+			yi += (0.3 + 0.2*float64(j)) * v
+		}
+		fullY[i] = yi + 1.5*r.NormFloat64()
+		for j := 0; j < m; j++ {
+			d := 0.0
+			if r.Float64() < maf[j] {
+				d++
+			}
+			if r.Float64() < maf[j] {
+				d++
+			}
+			fullG.Set(i, j, d)
+		}
+	}
+
+	offset := 0
+	for p := 1; p < pid; p++ {
+		offset += nIndsAll[p]
+	}
+	if pid > 0 {
+		n := nIndsAll[pid]
+		localCov := fullCov.Slice(offset, offset+n, 0, numCov).(*mat.Dense)
+		localY := mat.NewDense(n, 1, append([]float64(nil), fullY[offset:offset+n]...))
+		prot.SetPhenoAndCov(localY, localCov)
+	} else {
+		prot.SetPhenoAndCov(nil, nil)
+	}
+
+	assocTest := prot.InitAssociationTests(nil)
+	null := assocTest.computeBetaHatEnc()
+
+	var SBlock crypto.CipherMatrix
+	if pid > 0 {
+		n := nIndsAll[pid]
+		localX := mat.NewDense(n, c, nil)
+		localY0 := make([]float64, n)
+		localG := mat.NewDense(n, m, nil)
+		for i := 0; i < n; i++ {
+			localX.Set(i, 0, 1.0)
+			for j := 0; j < numCov; j++ {
+				localX.Set(i, j+1, fullCov.At(offset+i, j))
+			}
+			localY0[i] = fullY[offset+i]
+			for j := 0; j < m; j++ {
+				localG.Set(i, j, fullG.At(offset+i, j))
+			}
+		}
+		lc := LocalContract(localG, localX, localY0)
+		SBlock = crypto.CipherMatrix{assocTest.lowRankPartyScore(lc.GtX, lc.Gty0, null)}
+	}
+
+	sAggr := mpcObj.Network.AggregateCMat(cps, SBlock)
+	if pid > 0 && len(sAggr) > 0 && len(sAggr[0]) > 0 &&
+		mpcObj.Network.CanCollectiveBootstrap(cps, sAggr[0][0].Level()) {
+		sAggr = mpcObj.Network.CollectiveBootstrapMat(cps, sAggr, -1)
+	}
+
+	var sEnc crypto.CipherVector
+	if pid > 0 && len(sAggr) > 0 {
+		sEnc = sAggr[0]
+	}
+	if pid == 1 {
+		sDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, sEnc, 1))[:m]
+
+		fullX := mat.NewDense(nIndsTotal, c, nil)
+		for i := 0; i < nIndsTotal; i++ {
+			fullX.Set(i, 0, 1.0)
+			for j := 0; j < numCov; j++ {
+				fullX.Set(i, j+1, fullCov.At(i, j))
+			}
+		}
+		y0v := mat.NewVecDense(nIndsTotal, fullY)
+		var xtx mat.Dense
+		xtx.Mul(fullX.T(), fullX)
+		var xty mat.VecDense
+		xty.MulVec(fullX.T(), y0v)
+		var beta mat.VecDense
+		if err := beta.SolveVec(&xtx, &xty); err != nil {
+			t.Fatalf("oracle solve: %v", err)
+		}
+		var gty0 mat.VecDense
+		gty0.MulVec(fullG.T(), y0v)
+		var gtx mat.Dense
+		gtx.Mul(fullG.T(), fullX)
+		var gtxBeta mat.VecDense
+		gtxBeta.MulVec(&gtx, &beta)
+
+		maxAbs, maxOracle := 0.0, 0.0
+		for j := 0; j < m; j++ {
+			oracle := gty0.AtVec(j) - gtxBeta.AtVec(j)
+			gap := math.Abs(sDec[j] - oracle)
+			if gap > maxAbs {
+				maxAbs = gap
+			}
+			if a := math.Abs(oracle); a > maxOracle {
+				maxOracle = a
+			}
+		}
+		rel := maxAbs / maxOracle
+		t.Logf("score max |gap|=%.2e rel=%.2e (max|s|=%.3f)", maxAbs, rel, maxOracle)
+		const tol = 1e-3
+		if rel > tol {
+			t.Errorf("score secure vs oracle rel %.3e exceeds tol %.1e", rel, tol)
+		}
+	} else if pid > 0 {
+		mpcObj.Network.CollectiveDecryptVec(cps, sEnc, 1)
+	} else {
+		mpcObj.Network.CollectiveDecryptVec(cps, nil, 1)
+	}
+}
+
+// dosage fixture shared by the two weight tests (seed 23; some ALT-major af to test min/flip).
+func weightFixtureDosage(t *testing.T, prot *ProtocolInfo, pid int, m int) ([]float64, *mat.Dense, int) {
+	nParties := prot.GetConfig().NumMainParties
+	nIndsAll := prot.GetConfig().NumInds
+	nIndsTotal := 0
+	for p := 1; p <= nParties; p++ {
+		nIndsTotal += nIndsAll[p]
+	}
+
+	r := rand.New(rand.NewSource(23))
+	fullG := mat.NewDense(nIndsTotal, m, nil)
+	af := make([]float64, m)
+	for j := 0; j < m; j++ {
+		af[j] = 0.05 + 0.9*r.Float64()
+	}
+	for i := 0; i < nIndsTotal; i++ {
+		for j := 0; j < m; j++ {
+			d := 0.0
+			if r.Float64() < af[j] {
+				d++
+			}
+			if r.Float64() < af[j] {
+				d++
+			}
+			fullG.Set(i, j, d)
+		}
+	}
+
+	offset := 0
+	for p := 1; p < pid; p++ {
+		offset += nIndsAll[p]
+	}
+	if pid > 0 {
+		n := nIndsAll[pid]
+		prot.SetPhenoAndCov(mat.NewDense(n, 1, nil), mat.NewDense(n, prot.GetGwasParams().NumCov(), nil))
+	} else {
+		prot.SetPhenoAndCov(nil, nil)
+	}
+
+	dosage := make([]float64, m)
+	if pid > 0 {
+		n := nIndsAll[pid]
+		for i := 0; i < n; i++ {
+			for j := 0; j < m; j++ {
+				dosage[j] += fullG.At(offset+i, j)
+			}
+		}
+	}
+	return dosage, fullG, nIndsTotal
+}
+
+// Unsigned weights w_j = 25(1−MAF)^24 vs oracle.
+func TestLowRankWeights(t *testing.T) {
+	prot := InitProtocolForTest(t)
+	if prot == nil {
+		return
+	}
+	defer prot.SyncAndTerminate(true)
+
+	mpcObj := prot.mpcObj[0]
+	cps := prot.cps
+	pid := mpcObj.GetPid()
+	const m = 12
+
+	dosage, fullG, nIndsTotal := weightFixtureDosage(t, prot, pid, m)
+	assocTest := prot.InitAssociationTests(nil)
+
+	_, _, w24 := assocTest.weightsCalculation(dosage, m)
+	weightEnc := mpcObj.SSToCVec(cps, w24)
+
+	if pid == 1 {
+		wDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, weightEnc, 1))[:m]
+		twoN := float64(2 * nIndsTotal)
+		maxAbs, maxRelSig := 0.0, 0.0
+		for j := 0; j < m; j++ {
+			var colSum float64
+			for i := 0; i < nIndsTotal; i++ {
+				colSum += fullG.At(i, j)
+			}
+			pbar := colSum / twoN
+			maf := math.Min(pbar, 1-pbar)
+			wOracle := 25.0 * math.Pow(1-maf, 24)
+			abs := math.Abs(wDec[j] - wOracle)
+			if abs > maxAbs {
+				maxAbs = abs
+			}
+			if wOracle > 1e-2 {
+				if rel := abs / wOracle; rel > maxRelSig {
+					maxRelSig = rel
+				}
+			}
+		}
+		t.Logf("weights maxAbs=%.2e maxRelSig=%.2e", maxAbs, maxRelSig)
+		const absTol, relTol = 1e-3, 1e-3
+		if maxAbs > absTol || maxRelSig > relTol {
+			t.Errorf("weights: maxAbs=%.3e maxRelSig=%.3e", maxAbs, maxRelSig)
+		}
+	} else if pid > 0 {
+		mpcObj.Network.CollectiveDecryptVec(cps, weightEnc, 1)
+	} else {
+		mpcObj.Network.CollectiveDecryptVec(cps, nil, 1)
+	}
+}
+
+// Minor-allele-oriented weight ŵ_j = t_j·w_j (t = −1 iff p̄>½) vs oracle; fixture flips some.
+func TestLowRankSignedWeight(t *testing.T) {
+	prot := InitProtocolForTest(t)
+	if prot == nil {
+		return
+	}
+	defer prot.SyncAndTerminate(true)
+
+	mpcObj := prot.mpcObj[0]
+	cps := prot.cps
+	pid := mpcObj.GetPid()
+	const m = 12
+
+	dosage, fullG, nIndsTotal := weightFixtureDosage(t, prot, pid, m)
+	assocTest := prot.InitAssociationTests(nil)
+
+	signedEnc := mpcObj.SSToCVec(cps, assocTest.lowRankSignedWeight(dosage, m))
+
+	if pid == 1 {
+		wDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, signedEnc, 1))[:m]
+		twoN := float64(2 * nIndsTotal)
+		nFlipped := 0
+		maxAbs, maxRelSig := 0.0, 0.0
+		for j := 0; j < m; j++ {
+			var colSum float64
+			for i := 0; i < nIndsTotal; i++ {
+				colSum += fullG.At(i, j)
+			}
+			pbar := colSum / twoN
+			maf := math.Min(pbar, 1-pbar)
+			sign := 1.0
+			if pbar > 0.5 {
+				sign = -1.0
+				nFlipped++
+			}
+			wOracle := sign * 25.0 * math.Pow(1-maf, 24)
+			abs := math.Abs(wDec[j] - wOracle)
+			if abs > maxAbs {
+				maxAbs = abs
+			}
+			if math.Abs(wOracle) > 1e-2 {
+				if rel := abs / math.Abs(wOracle); rel > maxRelSig {
+					maxRelSig = rel
+				}
+			}
+		}
+		t.Logf("signed weights maxAbs=%.2e maxRelSig=%.2e flipped %d/%d", maxAbs, maxRelSig, nFlipped, m)
+		if nFlipped == 0 {
+			t.Fatalf("fixture exercised no flips; orientation not tested")
+		}
+		const absTol, relTol = 1e-3, 1e-3
+		if maxAbs > absTol || maxRelSig > relTol {
+			t.Errorf("signed weights: maxAbs=%.3e maxRelSig=%.3e", maxAbs, maxRelSig)
+		}
+	} else if pid > 0 {
+		mpcObj.Network.CollectiveDecryptVec(cps, signedEnc, 1)
+	} else {
+		mpcObj.Network.CollectiveDecryptVec(cps, nil, 1)
+	}
+}

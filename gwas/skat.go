@@ -327,6 +327,59 @@ func (ast *AssocTest) computeNullRSSEnc(null lowRankNull) crypto.CipherVector {
 	return crypto.CSub(cps, y0ty0Enc, dotVec)
 }
 
+// --- low-rank key-free secure score + oriented weight ---
+
+// lowRankPartyScore returns this party's encrypted score s = Enc(Gᵀy₀) − Σ_ℓ (GᵀX)[:,ℓ]·Enc(β̂_ℓ)
+// from its plaintext contraction × the shared β̂. Each term is plaintext×cipher (key-free). pid-0 → nil.
+func (ast *AssocTest) lowRankPartyScore(GtX *mat.Dense, Gty0 []float64, null lowRankNull) crypto.CipherVector {
+	cps := ast.general.cps
+	m := len(Gty0)
+	if m == 0 {
+		return nil
+	}
+
+	sEnc, _ := crypto.EncryptFloatVector(cps, Gty0)
+
+	for j := 0; j < null.c; j++ {
+		col := make([]float64, m)
+		for k := 0; k < m; k++ {
+			col[k] = GtX.At(k, j)
+		}
+		colPlain, _ := crypto.EncodeFloatVector(cps, col)
+		term := crypto.CPMult(cps, crypto.CipherVector{null.betaRep[j]}, colPlain)
+
+		sEnc, term = alignCipherVectorLevels(cps, sEnc, term)
+		sEnc = crypto.CSub(cps, sEnc, term)
+	}
+	return sEnc
+}
+
+// lowRankSignedWeight returns the minor-allele-oriented weight ŵ_j = t_j·w_j (t_j=−1 iff p̄_j>½),
+// folding the orientation into the weight so ScoreCalculation gives both Q (sign²=1) and the
+// R::SKAT-oriented Burden from one vector. Returned in SS.
+func (ast *AssocTest) lowRankSignedWeight(dosageSum []float64, nsnps int) mpc_core.RVec {
+	mpcObj := ast.general.mpcObj[0]
+	rtype := mpcObj.GetRType()
+	fracBits := mpcObj.GetFracBits()
+
+	pVec, pBarVec, w24 := ast.weightsCalculation(dosageSum, nsnps)
+
+	// noFlip = 1 iff 1−p̄ ≥ p̄ (p̄ ≤ ½); NotLessThan(≥) matches the oracle's strict p̄>½ flip.
+	noFlip := mpcObj.NotLessThan(pVec, pBarVec, mpcObj.GetBooleanShareFlag())
+	noFlip.MulScalar(rtype.FromFloat64(1.0, fracBits))
+
+	// sign = 2·noFlip − 1 ∈ {+1,−1}; public −1 subtracted on the HUB ONLY (SS convention).
+	sign := noFlip.Copy()
+	sign.MulScalar(rtype.FromFloat64(2.0, 0))
+	if mpcObj.GetPid() == mpcObj.GetHubPid() {
+		one := mpc_core.InitRVec(rtype.FromFloat64(1.0, fracBits), nsnps)
+		sign.Sub(one)
+	}
+
+	signed := mpcObj.SSMultElemVec(sign, w24)
+	return mpcObj.TruncVec(signed, mpcObj.GetDataBits(), fracBits)
+}
+
 func (ast *AssocTest) skatNumInds() []int {
 	filtNumInds := ast.general.gwasParams.FiltNumInds()
 	if len(filtNumInds) == ast.general.config.NumMainParties+1 {
@@ -459,7 +512,8 @@ func (ast *AssocTest) computeResidual() crypto.CipherMatrix {
 }
 
 // weightsCalculation computes the shared beta-density term used by the SKAT score.
-func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (mpc_core.RVec, mpc_core.RVec) {
+// weightsCalculation returns (pVec=1−p̄, pBarVec=p̄, w24=25(1−MAF)^24), all in secret shares.
+func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (mpc_core.RVec, mpc_core.RVec, mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
 	rtype := mpcObj.GetRType()
@@ -528,28 +582,25 @@ func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (
 	w24.MulScalar(betaConst)
 	w24 = mpcObj.TruncVec(w24, mpcObj.GetDataBits(), mpcObj.GetFracBits())
 
-	return p_j, w24
+	return pVec, p_j, w24
 }
 
 // ScoreCalculation calculates the final SKAT Score statistic iteratively
-func (ast *AssocTest) ScoreCalculation(S_vec crypto.CipherVector, w_enc crypto.CipherVector) (crypto.CipherVector, crypto.CipherVector) {
+// ScoreCalculation returns Q=Σw²s² and Burden=Σw·s (1-elem CipherVectors), plus the
+// intermediates S2/w2/w2S2/wS for debug.
+func (ast *AssocTest) ScoreCalculation(S_vec crypto.CipherVector, w_enc crypto.CipherVector) (
+	crypto.CipherVector, crypto.CipherVector, crypto.CipherVector, crypto.CipherVector, crypto.CipherVector, crypto.CipherVector) {
 	cryptoParams := ast.general.cps
 
-	// Compute [s_j^2]
 	S2 := crypto.CMult(cryptoParams, S_vec, S_vec)
-
-	// Compute [w_j^2] and then [w_j^2 * s_j^2]
 	w2 := crypto.CMult(cryptoParams, w_enc, w_enc)
 	w2S2 := crypto.CMult(cryptoParams, w2, S2)
-
-	// Sum across all SNPs in this block
 	qSkatBlock := crypto.InnerSumAll(cryptoParams, w2S2)
 
-	// Compute [w_j * s_j] for Burden
 	wS := crypto.CMult(cryptoParams, w_enc, S_vec)
 	qBurdenBlock := crypto.InnerSumAll(cryptoParams, wS)
 
-	return crypto.CipherVector{qSkatBlock}, crypto.CipherVector{qBurdenBlock}
+	return crypto.CipherVector{qSkatBlock}, crypto.CipherVector{qBurdenBlock}, S2, w2, w2S2, wS
 }
 
 // Main SKAT computation function calling separated steps
@@ -624,7 +675,7 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 		}
 
 		// Step 3: weightsCalculation
-		_, w_block_RVec := ast.weightsCalculation(dosageSum, nsnps_block)
+		_, _, w_block_RVec := ast.weightsCalculation(dosageSum, nsnps_block)
 
 		// Aggregate across parties
 		S_block_aggr := mpcObj.Network.AggregateCMat(cryptoParams, S_block)
@@ -644,7 +695,7 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat crypto.CipherVector, qBurde
 			}
 
 			// Step 4: ScoreCalculation
-			qBlockRes, qBurdenBlockRes := ast.ScoreCalculation(S_vec, w_enc)
+			qBlockRes, qBurdenBlockRes, _, _, _, _ := ast.ScoreCalculation(S_vec, w_enc)
 
 			if debug {
 				SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{qBlockRes}, 1, -1, ast.general.OutPath(fmt.Sprintf("qBlock_block%d.txt", block)))
