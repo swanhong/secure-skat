@@ -35,7 +35,7 @@ type SKATPlainResult struct {
 	Burden float64
 }
 
-func SKATPlainLowRank(G, X *mat.Dense, y []float64) SKATPlainResult {
+func SKATPlain(G, X *mat.Dense, y []float64) SKATPlainResult {
 	n, c := X.Dims()
 	_, m := G.Dims()
 	yv := mat.NewVecDense(n, y)

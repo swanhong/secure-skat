@@ -99,11 +99,11 @@ func directSKAT(G, X *mat.Dense, y []float64) (q, burden, rss float64) {
 
 func approxEqual(a, b, tol float64) bool { return math.Abs(a-b) <= tol*(1+math.Abs(b)) }
 
-func TestSKATPlainLowRankMatchesDirect(t *testing.T) {
+func TestSKATPlainMatchesDirect(t *testing.T) {
 	G, X, y := plainFixture()
 	wantQ, wantB, wantRSS := directSKAT(G, X, y)
 
-	got := SKATPlainLowRank(G, X, y)
+	got := SKATPlain(G, X, y)
 
 	if !approxEqual(got.RSS, wantRSS, 1e-9) {
 		t.Errorf("RSS: got %.12g want %.12g", got.RSS, wantRSS)
@@ -116,9 +116,9 @@ func TestSKATPlainLowRankMatchesDirect(t *testing.T) {
 	}
 }
 
-func TestSKATPlainLowRankDof(t *testing.T) {
+func TestSKATPlainDof(t *testing.T) {
 	G, X, y := plainFixture()
-	got := SKATPlainLowRank(G, X, y)
+	got := SKATPlain(G, X, y)
 	if got.Dof != 6-2 { // n − c, intercept counted in c
 		t.Errorf("dof: got %d want %d", got.Dof, 4)
 	}

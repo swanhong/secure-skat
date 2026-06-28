@@ -61,7 +61,7 @@ func TestSKATPlainL2(t *testing.T) {
 		y[i] = yMat.At(i, 0)
 	}
 
-	r := SKATPlainLowRank(G, X, y)
+	r := SKATPlain(G, X, y)
 
 	out := fmt.Sprintf("Q=%.12e\nBurden=%.12e\nRSS=%.12e\ndof=%d\nsigma2=%.12e\n",
 		r.Q, r.Burden, r.RSS, r.Dof, r.Sigma2)

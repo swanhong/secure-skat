@@ -458,7 +458,7 @@ func (g *ProtocolInfo) SetPhenoAndCov(pheno, cov *mat.Dense) {
 // Burden (slot b = block b's per-gene statistic). The trailing nils are legacy slots.
 func (g *ProtocolInfo) ComputeSKATStatistics() (crypto.CipherVector, crypto.CipherVector, crypto.CipherMatrix, []bool) {
 	assocTest := g.InitAssociationTests(nil) // SKAT does not use PCA
-	q, b := assocTest.ComputeSKATStatisticsLowRankPerBlock()
+	q, b := assocTest.ComputeSKATStatisticsPerBlock()
 	return q, b, nil, nil
 }
 

@@ -555,7 +555,7 @@ func matApprox(t *testing.T, name string, got, want *mat.Dense, tol float64) {
 }
 
 // LocalContract matches gonum on the full cohort (correctness).
-func TestLowRankLocalMatchesGonum(t *testing.T) {
+func TestSKATLocalMatchesGonum(t *testing.T) {
 	G, X, y := plainFixture()
 	n, _ := X.Dims()
 	yv := mat.NewVecDense(n, y)
@@ -593,7 +593,7 @@ func TestLowRankLocalMatchesGonum(t *testing.T) {
 }
 
 // n-independence invariant: Σ over party row-slices == full cohort.
-func TestLowRankLocalPartyAdditivity(t *testing.T) {
+func TestSKATLocalPartyAdditivity(t *testing.T) {
 	G, X, y := plainFixture() // n=6
 	full := LocalContract(G, X, y)
 
@@ -676,7 +676,7 @@ func TestLocalNullEquationsNilParty0(t *testing.T) {
 
 // Secure low-rank null model: computeBetaHatEnc + computeNullRSSEnc, decrypted on the
 // hub and compared to the plaintext gonum β̂/RSS on the same full (X,y). No genotypes.
-func TestLowRankNullModel(t *testing.T) {
+func TestSKATNullModel(t *testing.T) {
 	prot := InitProtocolForTest(t)
 	if prot == nil {
 		return
@@ -784,10 +784,10 @@ func TestLowRankNullModel(t *testing.T) {
 	}
 }
 
-// --- low-rank score + weights (skat.go lowRankPartyScore / lowRankSignedWeight) ---
+// --- low-rank score + weights (skat.go partyScore / signedWeight) ---
 
 // Key-free low-rank score s = Gᵀy₀ − (GᵀX)β̂ vs gonum oracle on the full (G,X,y), center 0.
-func TestLowRankScore(t *testing.T) {
+func TestSKATScore(t *testing.T) {
 	prot := InitProtocolForTest(t)
 	if prot == nil {
 		return
@@ -870,7 +870,7 @@ func TestLowRankScore(t *testing.T) {
 			}
 		}
 		lc := LocalContract(localG, localX, localY0)
-		SBlock = crypto.CipherMatrix{assocTest.lowRankPartyScore(lc.GtX, lc.Gty0, null)}
+		SBlock = crypto.CipherMatrix{assocTest.partyScore(lc.GtX, lc.Gty0, null)}
 	}
 
 	sAggr := mpcObj.Network.AggregateCMat(cps, SBlock)
@@ -985,7 +985,7 @@ func weightFixtureDosage(t *testing.T, prot *ProtocolInfo, pid int, m int) ([]fl
 }
 
 // Unsigned weights w_j = 25(1−MAF)^24 vs oracle.
-func TestLowRankWeights(t *testing.T) {
+func TestSKATWeights(t *testing.T) {
 	prot := InitProtocolForTest(t)
 	if prot == nil {
 		return
@@ -1038,7 +1038,7 @@ func TestLowRankWeights(t *testing.T) {
 }
 
 // Minor-allele-oriented weight ŵ_j = t_j·w_j (t = −1 iff p̄>½) vs oracle; fixture flips some.
-func TestLowRankSignedWeight(t *testing.T) {
+func TestSKATSignedWeight(t *testing.T) {
 	prot := InitProtocolForTest(t)
 	if prot == nil {
 		return
@@ -1053,7 +1053,7 @@ func TestLowRankSignedWeight(t *testing.T) {
 	dosage, fullG, nIndsTotal := weightFixtureDosage(t, prot, pid, m)
 	assocTest := prot.InitAssociationTests(nil)
 
-	signedEnc := mpcObj.SSToCVec(cps, assocTest.lowRankSignedWeight(dosage, m))
+	signedEnc := mpcObj.SSToCVec(cps, assocTest.signedWeight(dosage, m))
 
 	if pid == 1 {
 		wDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, signedEnc, 1))[:m]
@@ -1098,11 +1098,11 @@ func TestLowRankSignedWeight(t *testing.T) {
 	}
 }
 
-// --- low-rank driver (skat.go ComputeSKATStatisticsLowRank, file-backed) ---
+// --- low-rank driver (skat.go ComputeSKATStatistics, file-backed) ---
 
 // File-backed driver E2E: reads per-party "blocks"-format genotype fixtures, runs the full
 // low-rank path over 3 blocks, and compares decrypted Q/Burden to the plaintext oracle.
-func TestLowRankDriverE2E(t *testing.T) {
+func TestSKATDriverE2E(t *testing.T) {
 	prot := InitProtocolForTest(t)
 	if prot == nil {
 		return
@@ -1191,7 +1191,7 @@ func TestLowRankDriverE2E(t *testing.T) {
 	}
 
 	assocTest := prot.InitAssociationTests(nil)
-	qOut, bOut := assocTest.ComputeSKATStatisticsLowRank()
+	qOut, bOut := assocTest.ComputeSKATStatistics()
 
 	if pid == 1 {
 		qDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, qOut, 1))[0]
@@ -1204,7 +1204,7 @@ func TestLowRankDriverE2E(t *testing.T) {
 				fullX.Set(i, j+1, fullCov.At(i, j))
 			}
 		}
-		oracle := SKATPlainLowRank(fullG, fullX, fullY)
+		oracle := SKATPlain(fullG, fullX, fullY)
 
 		qRel := math.Abs(qDec-oracle.Q) / math.Abs(oracle.Q)
 		bRel := math.Abs(bDec-oracle.Burden) / math.Abs(oracle.Burden)

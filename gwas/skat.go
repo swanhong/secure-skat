@@ -187,8 +187,8 @@ func (ln localNull) matrices(c int) (xtx [][]float64, xty []float64, y0ty0 float
 	return xtx, xty, ln.Y0ty0
 }
 
-// lowRankNull holds the secure null-model results from the c-dim aggregates.
-type lowRankNull struct {
+// skatNull holds the secure null-model results from the c-dim aggregates.
+type skatNull struct {
 	betaHat  crypto.CipherVector // β̂ in slots 0..c-1
 	betaRep  crypto.CipherVector // betaRep[ℓ] = Enc(β̂_ℓ) in every slot (for the score)
 	xtyEnc   crypto.CipherVector // global Xᵀy₀ (kept for RSS)
@@ -197,13 +197,13 @@ type lowRankNull struct {
 	center   float64 // public centering constant, reused by the score
 }
 
-// lowRankRidgeRel: tiny Tikhonov ridge on the XᵀX diagonal (hub, once, intercept excluded)
+// ridgeRel: tiny Tikhonov ridge on the XᵀX diagonal (hub, once, intercept excluded)
 // to keep the inverse finite on a singular design; negligible on a well-conditioned one.
-const lowRankRidgeRel = 1e-6
+const ridgeRel = 1e-6
 
 // computeBetaHatEnc computes β̂ = (XᵀX)⁻¹Xᵀy₀ as an encrypted c-vector from the cross-party
 // normal equations — only the c-dim aggregates cross the secure boundary, n never does.
-func (ast *AssocTest) computeBetaHatEnc() lowRankNull {
+func (ast *AssocTest) computeBetaHatEnc() skatNull {
 	cps := ast.general.cps
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
@@ -227,7 +227,7 @@ func (ast *AssocTest) computeBetaHatEnc() lowRankNull {
 		for k := 1; k < c; k++ {
 			trace += xtxLocal[k][k]
 		}
-		eps := lowRankRidgeRel * (trace / float64(c))
+		eps := ridgeRel * (trace / float64(c))
 		for k := 1; k < c; k++ {
 			xtxLocal[k][k] += eps
 		}
@@ -290,7 +290,7 @@ func (ast *AssocTest) computeBetaHatEnc() lowRankNull {
 		}
 	}
 
-	return lowRankNull{betaHat: betaHat, betaRep: betaRep, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
+	return skatNull{betaHat: betaHat, betaRep: betaRep, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
 }
 
 // maskFirstSlots zeros slots >= c, keeping 0..c-1 — used before InnerSumAll so the
@@ -309,7 +309,7 @@ func (ast *AssocTest) maskFirstSlots(v crypto.CipherVector, c int) crypto.Cipher
 
 // computeNullRSSEnc returns RSS = y₀ᵀy₀ − (Xᵀy₀)ᵀβ̂ as a 1-element CipherVector (the
 // orthogonality identity makes this exact without touching n). pid 0 returns nil.
-func (ast *AssocTest) computeNullRSSEnc(null lowRankNull) crypto.CipherVector {
+func (ast *AssocTest) computeNullRSSEnc(null skatNull) crypto.CipherVector {
 	cps := ast.general.cps
 	pid := ast.general.mpcObj[0].GetPid()
 
@@ -329,9 +329,9 @@ func (ast *AssocTest) computeNullRSSEnc(null lowRankNull) crypto.CipherVector {
 
 // --- low-rank key-free secure score + oriented weight ---
 
-// lowRankPartyScore returns this party's encrypted score s = Enc(Gᵀy₀) − Σ_ℓ (GᵀX)[:,ℓ]·Enc(β̂_ℓ)
+// partyScore returns this party's encrypted score s = Enc(Gᵀy₀) − Σ_ℓ (GᵀX)[:,ℓ]·Enc(β̂_ℓ)
 // from its plaintext contraction × the shared β̂. Each term is plaintext×cipher (key-free). pid-0 → nil.
-func (ast *AssocTest) lowRankPartyScore(GtX *mat.Dense, Gty0 []float64, null lowRankNull) crypto.CipherVector {
+func (ast *AssocTest) partyScore(GtX *mat.Dense, Gty0 []float64, null skatNull) crypto.CipherVector {
 	cps := ast.general.cps
 	m := len(Gty0)
 	if m == 0 {
@@ -354,10 +354,10 @@ func (ast *AssocTest) lowRankPartyScore(GtX *mat.Dense, Gty0 []float64, null low
 	return sEnc
 }
 
-// lowRankSignedWeight returns the minor-allele-oriented weight ŵ_j = t_j·w_j (t_j=−1 iff p̄_j>½),
+// signedWeight returns the minor-allele-oriented weight ŵ_j = t_j·w_j (t_j=−1 iff p̄_j>½),
 // folding the orientation into the weight so ScoreCalculation gives both Q (sign²=1) and the
 // R::SKAT-oriented Burden from one vector. Returned in SS.
-func (ast *AssocTest) lowRankSignedWeight(dosageSum []float64, nsnps int) mpc_core.RVec {
+func (ast *AssocTest) signedWeight(dosageSum []float64, nsnps int) mpc_core.RVec {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
 	fracBits := mpcObj.GetFracBits()
@@ -488,9 +488,9 @@ func (ast *AssocTest) readGenoBlockLocal(b int) *mat.Dense {
 	return G
 }
 
-// lowRankNullSetup runs the secure null model (β̂ + RSS) and builds the block-independent
+// nullSetup runs the secure null model (β̂ + RSS) and builds the block-independent
 // per-party design X=[1|cov] and centered y₀ (empty on pid 0).
-func (ast *AssocTest) lowRankNullSetup() (null lowRankNull, nullRSS crypto.CipherVector, X *mat.Dense, y0 []float64) {
+func (ast *AssocTest) nullSetup() (null skatNull, nullRSS crypto.CipherVector, X *mat.Dense, y0 []float64) {
 	null = ast.computeBetaHatEnc()
 	nullRSS = ast.computeNullRSSEnc(null)
 	if ast.general.mpcObj[0].GetPid() > 0 {
@@ -504,10 +504,10 @@ func (ast *AssocTest) lowRankNullSetup() (null lowRankNull, nullRSS crypto.Ciphe
 	return
 }
 
-// lowRankBlockStat computes one block's raw statistics as 1-elem RVecs: qRawSS = Σ ŵ²s²
+// blockStat computes one block's raw statistics as 1-elem RVecs: qRawSS = Σ ŵ²s²
 // and bLinSS = Σ ŵ·s (burden linear term, squared by the caller). Local plaintext
 // contraction → key-free score → AggregateCMat → oriented weights → ScoreCalculation → SS.
-func (ast *AssocTest) lowRankBlockStat(b, nsnps int, null lowRankNull, X *mat.Dense, y0 []float64) (qRawSS, bLinSS mpc_core.RVec) {
+func (ast *AssocTest) blockStat(b, nsnps int, null skatNull, X *mat.Dense, y0 []float64) (qRawSS, bLinSS mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	cps := ast.general.cps
 	pid := mpcObj.GetPid()
@@ -516,7 +516,7 @@ func (ast *AssocTest) lowRankBlockStat(b, nsnps int, null lowRankNull, X *mat.De
 	dosage := make([]float64, nsnps)
 	if pid > 0 {
 		lc := LocalContract(ast.readGenoBlockLocal(b), X, y0)
-		SBlock = crypto.CipherMatrix{ast.lowRankPartyScore(lc.GtX, lc.Gty0, null)}
+		SBlock = crypto.CipherMatrix{ast.partyScore(lc.GtX, lc.Gty0, null)}
 		dosage = lc.DosageSum
 	}
 
@@ -525,7 +525,7 @@ func (ast *AssocTest) lowRankBlockStat(b, nsnps int, null lowRankNull, X *mat.De
 		mpcObj.Network.CanCollectiveBootstrap(cps, sAggr[0][0].Level()) {
 		sAggr = mpcObj.Network.CollectiveBootstrapMat(cps, sAggr, -1)
 	}
-	weightEnc := mpcObj.SSToCVec(cps, ast.lowRankSignedWeight(dosage, nsnps))
+	weightEnc := mpcObj.SSToCVec(cps, ast.signedWeight(dosage, nsnps))
 
 	var qRaw, bLin crypto.CipherVector
 	if pid > 0 && len(sAggr) > 0 {
@@ -534,14 +534,14 @@ func (ast *AssocTest) lowRankBlockStat(b, nsnps int, null lowRankNull, X *mat.De
 	return ast.scalarCiphertextToShares(qRaw), ast.scalarCiphertextToShares(bLin)
 }
 
-// ComputeSKATStatisticsLowRank returns the whole-genome secure SKAT (Q) and Burden as
+// ComputeSKATStatistics returns the whole-genome secure SKAT (Q) and Burden as
 // 1-elem CipherVectors (Σ over all blocks, scaled by 1/(2σ̂²)). Caller collectively decrypts.
-func (ast *AssocTest) ComputeSKATStatisticsLowRank() (qStat, qBurden crypto.CipherVector) {
+func (ast *AssocTest) ComputeSKATStatistics() (qStat, qBurden crypto.CipherVector) {
 	mpcObj := ast.general.mpcObj[0]
 	cps := ast.general.cps
 	rtype := mpcObj.GetRType()
 
-	null, nullRSS, X, y0 := ast.lowRankNullSetup()
+	null, nullRSS, X, y0 := ast.nullSetup()
 
 	finalQSS := mpc_core.InitRVec(rtype.Zero(), 1)
 	finalBurdenSS := mpc_core.InitRVec(rtype.Zero(), 1)
@@ -550,7 +550,7 @@ func (ast *AssocTest) ComputeSKATStatisticsLowRank() (qStat, qBurden crypto.Ciph
 		if nsnps == 0 {
 			continue
 		}
-		qRawSS, bLinSS := ast.lowRankBlockStat(b, nsnps, null, X, y0)
+		qRawSS, bLinSS := ast.blockStat(b, nsnps, null, X, y0)
 		finalQSS.Add(qRawSS)
 		finalBurdenSS.Add(bLinSS)
 	}
@@ -564,16 +564,16 @@ func (ast *AssocTest) ComputeSKATStatisticsLowRank() (qStat, qBurden crypto.Ciph
 	return mpcObj.SSToCVec(cps, finalQSS), mpcObj.SSToCVec(cps, finalBurdenSS)
 }
 
-// ComputeSKATStatisticsLowRankPerBlock returns per-block Q and Burden (slot b = block b's
+// ComputeSKATStatisticsPerBlock returns per-block Q and Burden (slot b = block b's
 // statistic, scaled by the common 1/(2σ̂²)) — the per-gene secure SKAT statistics.
-func (ast *AssocTest) ComputeSKATStatisticsLowRankPerBlock() (qPerBlock, burdenPerBlock crypto.CipherVector) {
+func (ast *AssocTest) ComputeSKATStatisticsPerBlock() (qPerBlock, burdenPerBlock crypto.CipherVector) {
 	mpcObj := ast.general.mpcObj[0]
 	cps := ast.general.cps
 	rtype := mpcObj.GetRType()
 	hub := mpcObj.GetPid() == mpcObj.GetHubPid()
 
 	t0 := time.Now()
-	null, nullRSS, X, y0 := ast.lowRankNullSetup()
+	null, nullRSS, X, y0 := ast.nullSetup()
 	if hub {
 		log.LLvl1(fmt.Sprintf(">>> [secure] null model (β̂, RSS) done (%.1fs)", time.Since(t0).Seconds()))
 	}
@@ -588,7 +588,7 @@ func (ast *AssocTest) ComputeSKATStatisticsLowRankPerBlock() (qPerBlock, burdenP
 			continue
 		}
 		tb := time.Now()
-		q, bl := ast.lowRankBlockStat(b, nsnps, null, X, y0)
+		q, bl := ast.blockStat(b, nsnps, null, X, y0)
 		qBlockSS[b] = q[0]
 		bLinBlockSS[b] = bl[0]
 		done++
