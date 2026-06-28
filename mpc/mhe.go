@@ -16,6 +16,7 @@ import (
 	"github.com/tuneinsight/lattigo/v6/core/rlwe"
 	"github.com/tuneinsight/lattigo/v6/multiparty"
 	"github.com/tuneinsight/lattigo/v6/multiparty/mpckks"
+	"github.com/tuneinsight/lattigo/v6/ring"
 	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 	"github.com/tuneinsight/lattigo/v6/utils/bignum"
 	"github.com/tuneinsight/lattigo/v6/utils/sampling"
@@ -210,6 +211,8 @@ func (netObj *Network) CollectivePubKeyGen(parameters *ckks.Parameters, skShard 
 	return
 }
 
+var decryptFlooding = ring.DiscreteGaussian{Sigma: 6.36, Bound: 38}
+
 func (netObj *Network) CollectiveDecryptMat(cps *crypto.CryptoParams, cm crypto.CipherMatrix, sourcePid int) (pm crypto.PlainMatrix) {
 	pid := netObj.GetPid()
 	if pid == 0 {
@@ -242,7 +245,7 @@ func (netObj *Network) CollectiveDecryptMat(cps *crypto.CryptoParams, cm crypto.
 
 	tmp, level := crypto.FlattenLevels(cps, tmp)
 
-	ksp, err := multiparty.NewKeySwitchProtocol(cps.Params, cps.Params.Xe())
+	ksp, err := multiparty.NewKeySwitchProtocol(cps.Params, decryptFlooding)
 	if err != nil {
 		panic(err)
 	}
@@ -282,7 +285,7 @@ func (netObj *Network) CollectiveDecrypt(cps *crypto.CryptoParams, ct *rlwe.Ciph
 		tmp = netObj.BroadcastCiphertext(cps, ct, sourcePid)
 	}
 
-	ksp, err := multiparty.NewKeySwitchProtocol(cps.Params, cps.Params.Xe())
+	ksp, err := multiparty.NewKeySwitchProtocol(cps.Params, decryptFlooding)
 	if err != nil {
 		panic(err)
 	}
