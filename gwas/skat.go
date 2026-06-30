@@ -2,6 +2,7 @@ package gwas
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	mpc_core "github.com/hhcho/mpc-core"
@@ -635,7 +636,6 @@ func (ast *AssocTest) zeroPlainVectorForNonDataParty() crypto.PlainVector {
 	return pv
 }
 
-
 // weightsCalculation computes the shared beta-density term used by the SKAT score.
 // weightsCalculation returns (pVec=1−p̄, pBarVec=p̄, w24=25(1−MAF)^24), all in secret shares.
 func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (mpc_core.RVec, mpc_core.RVec, mpc_core.RVec) {
@@ -728,3 +728,117 @@ func (ast *AssocTest) ScoreCalculation(S_vec crypto.CipherVector, w_enc crypto.C
 	return crypto.CipherVector{qSkatBlock}, crypto.CipherVector{qBurdenBlock}, S2, w2, w2S2, wS
 }
 
+// --- federated SKAT with party-private variants ---
+//
+// Two parties hold partially-overlapping variants; one party's list is PUBLIC. Per gene a variant
+// is shared (both), public_only (public-list party only — other contributes 0) or private (private
+// party only, never shared). MVP+AoU is the motivating instance (MVP=public list, AoU=private).
+//
+//	per-gene Q = PART A (secure over the public list) + PART B (private, computed locally)
+//
+// Both parts are raw Σŵ²s²; the common 1/(2σ̂²) is applied once at the end. Equals the pooled
+// single-cohort SKAT; plaintext oracle = SKATFederatedPrivate (skat_plain.go).
+
+// skatBetaWeight is the plaintext SKAT weight w_j = 25·(1−MAF)^24, MAF = min(p̄,1−p̄),
+// p̄ = dosageSum_j/(2N); unsigned (Q only, sign²=1).
+func skatBetaWeight(dosageSum []float64, totalInds int) []float64 {
+	w := make([]float64, len(dosageSum))
+	twoN := float64(2 * totalInds)
+	for j, d := range dosageSum {
+		p := d / twoN
+		maf := math.Min(p, 1-p)
+		w[j] = 25.0 * math.Pow(1-maf, 24)
+	}
+	return w
+}
+
+// privateQRaw returns the private party's local raw Q = Σ w² s² (ciphertext, scalar in slot 0) for
+// one gene's private variants: key-free score (β̂ stays encrypted) × plaintext weight, no
+// AggregateCMat. Enc(0) for an empty gene. Called only on the private party.
+func (ast *AssocTest) privateQRaw(G *mat.Dense, null skatNull, X *mat.Dense, y0 []float64) crypto.CipherVector {
+	cps := ast.general.cps
+
+	var m int
+	if G != nil {
+		_, m = G.Dims()
+	}
+	if m == 0 {
+		z, _ := crypto.EncryptFloatVector(cps, []float64{0})
+		return z
+	}
+
+	lc := LocalContract(G, X, y0)
+	s := ast.partyScore(lc.GtX, lc.Gty0, null)
+	wEnc, _ := crypto.EncryptFloatVector(cps, skatBetaWeight(lc.DosageSum, ast.skatTotalNumInds()))
+
+	s, wEnc = alignCipherVectorLevels(cps, s, wEnc)
+	q, _, _, _, _, _ := ast.ScoreCalculation(s, wEnc)
+	return q
+}
+
+// privateBlockStat returns one gene's private-variant raw Q as a 1-elem SS RVec. The private party
+// computes it locally (privateQRaw); CiphertextToSS reshares from privatePid (the other party gets
+// only the ciphertext, pid 0 sits out). Must run for EVERY gene — the Enc(0) on empty genes keeps
+// which genes have private variants indistinguishable.
+func (ast *AssocTest) privateBlockStat(G *mat.Dense, null skatNull, X *mat.Dense, y0 []float64, privatePid int) mpc_core.RVec {
+	mpcObj := ast.general.mpcObj[0]
+	rtype := mpcObj.GetRType()
+
+	var ct *rlwe.Ciphertext
+	if mpcObj.GetPid() == privatePid {
+		if q := ast.privateQRaw(G, null, X, y0); len(q) > 0 {
+			ct = q[0]
+		}
+	}
+	return mpcObj.CiphertextToSS(ast.general.cps, rtype, ct, privatePid, 1)
+}
+
+// ComputeSKATFederatedPrivate returns per-gene Q (slot b = gene/block b). genoBlocks hold the
+// public-list genotypes (the private party's aligned, public_only cols = 0); privateOnly[b] is the
+// private party's private-variant genotypes for gene b (only read on privatePid, must be nil or
+// length GenoNumBlocks). Caller collectively decrypts the result.
+//
+// ponytail: privateOnly injected as dense per-gene matrices (real deployment would stream them);
+// fine until the private set outgrows memory. Genes absent from the public list (no block) are out
+// of scope — the public gene/block set is defined by the public-list party.
+func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, privatePid int) crypto.CipherVector {
+	mpcObj := ast.general.mpcObj[0]
+	cps := ast.general.cps
+	rtype := mpcObj.GetRType()
+
+	null, nullRSS, X, y0 := ast.nullSetup()
+
+	nB := ast.general.config.GenoNumBlocks
+	if mpcObj.GetPid() == privatePid && privateOnly != nil && len(privateOnly) != nB {
+		panic(fmt.Sprintf("ComputeSKATFederatedPrivate: privateOnly has %d blocks, want %d", len(privateOnly), nB))
+	}
+	qBlockSS := mpc_core.InitRVec(rtype.Zero(), nB)
+	for b := 0; b < nB; b++ {
+		acc := mpc_core.InitRVec(rtype.Zero(), 1)
+
+		// PART A: secure SKAT over the public list (existing per-block path).
+		if nsnps := ast.skatBlockNumSnps(b); nsnps > 0 {
+			qA, _ := ast.blockStat(b, nsnps, null, X, y0)
+			acc.Add(qA)
+		}
+
+		// PART B: private variants for this gene (uniform across all genes).
+		var G *mat.Dense
+		if mpcObj.GetPid() == privatePid && b < len(privateOnly) {
+			G = privateOnly[b]
+		}
+		acc.Add(ast.privateBlockStat(G, null, X, y0, privatePid))
+
+		qBlockSS[b] = acc[0]
+	}
+
+	// Common 1/(2σ̂²) applied once (linear, distributes over A+B).
+	if scaleSS, ok := ast.general.rareVariantScaleShares(nullRSS); ok {
+		scaleVec := mpc_core.InitRVec(rtype.Zero(), nB)
+		for b := 0; b < nB; b++ {
+			scaleVec[b] = scaleSS[0].Copy()
+		}
+		qBlockSS = mpcObj.TruncVec(mpcObj.SSMultElemVec(qBlockSS, scaleVec), mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	}
+	return mpcObj.SSToCVec(cps, qBlockSS)
+}

@@ -107,3 +107,116 @@ func SKATPlain(G, X *mat.Dense, y []float64) SKATPlainResult {
 		Burden: sumWS * sumWS * scale,
 	}
 }
+
+// --- federated SKAT with party-private variants: plaintext oracle ---
+//
+// Plaintext mirror of the secure ComputeSKATFederatedPrivate (skat.go); equals the pooled
+// single-cohort SKAT Q. See that doc for the design.
+
+// FedParty is one party's plaintext data. Variants are columns of G, each labelled by Gene and
+// Role ∈ {"shared","public_only","private"}; ID aligns shared variants across parties.
+type FedParty struct {
+	G    *mat.Dense // n × m genotypes (dosages)
+	X    *mat.Dense // n × c design (intercept + covariates)
+	Y    []float64  // n phenotype
+	ID   []string   // m variant ids
+	Gene []string   // m gene per variant
+	Role []string   // m role
+}
+
+// SKATFederatedPrivate returns per-gene Q. pub.ID is the public list (shared + public_only);
+// priv.ID is shared + private. Shared variants share the same ID across parties.
+func SKATFederatedPrivate(pub, priv FedParty) map[string]float64 {
+	np, c := pub.X.Dims()
+	nq, _ := priv.X.Dims()
+	N := float64(np + nq)
+
+	// ---- shared null model: pooled aggregates (covariates only) ----
+	var XtX, tmp mat.Dense
+	XtX.Mul(pub.X.T(), pub.X)
+	tmp.Mul(priv.X.T(), priv.X)
+	XtX.Add(&XtX, &tmp) // Xp'Xp + Xq'Xq
+
+	var xtyP, xtyQ mat.VecDense
+	xtyP.MulVec(pub.X.T(), mat.NewVecDense(np, pub.Y))
+	xtyQ.MulVec(priv.X.T(), mat.NewVecDense(nq, priv.Y))
+	xty := mat.NewVecDense(c, nil)
+	xty.AddVec(&xtyP, &xtyQ) // Xp'yp + Xq'yq
+
+	var beta mat.VecDense
+	if err := beta.SolveVec(&XtX, xty); err != nil {
+		panic(err)
+	}
+	rp := fedResidual(pub.X, pub.Y, &beta)
+	rq := fedResidual(priv.X, priv.Y, &beta)
+	rss := fedDot(pub.Y, pub.Y) + fedDot(priv.Y, priv.Y) - mat.Dot(xty, &beta)
+	sigma2 := rss / float64(np+nq-c)
+
+	qCol := make(map[string]int, len(priv.ID))
+	for j, id := range priv.ID {
+		qCol[id] = j
+	}
+
+	Q := make(map[string]float64)
+	add := func(gene string, score, count float64) {
+		p := count / (2 * N)
+		w := 25 * math.Pow(1-math.Min(p, 1-p), 24)
+		Q[gene] += w * w * score * score / (2 * sigma2)
+	}
+
+	// ---- PART A: secure over the public list (the private party adds its shared cols) ----
+	for k := range pub.ID {
+		score := fedColDot(pub.G, k, rp)
+		count := fedColSum(pub.G, k)
+		if pub.Role[k] == "shared" {
+			j := qCol[pub.ID[k]]
+			score += fedColDot(priv.G, j, rq) // private party's local contribution (federated sum)
+			count += fedColSum(priv.G, j)
+		}
+		add(pub.Gene[k], score, count)
+	}
+	// ---- PART B: private variants, local to the private party ----
+	for j := range priv.ID {
+		if priv.Role[j] == "private" {
+			add(priv.Gene[j], fedColDot(priv.G, j, rq), fedColSum(priv.G, j))
+		}
+	}
+	return Q
+}
+
+func fedResidual(X *mat.Dense, y []float64, beta *mat.VecDense) []float64 {
+	n, _ := X.Dims()
+	var fit mat.VecDense
+	fit.MulVec(X, beta)
+	r := make([]float64, n)
+	for i := range r {
+		r[i] = y[i] - fit.AtVec(i)
+	}
+	return r
+}
+
+func fedColDot(G *mat.Dense, k int, v []float64) float64 {
+	n, _ := G.Dims()
+	s := 0.0
+	for i := 0; i < n; i++ {
+		s += G.At(i, k) * v[i]
+	}
+	return s
+}
+
+func fedColSum(G *mat.Dense, k int) float64 {
+	n, _ := G.Dims()
+	s := 0.0
+	for i := 0; i < n; i++ {
+		s += G.At(i, k)
+	}
+	return s
+}
+
+func fedDot(a, b []float64) float64 {
+	s := 0.0
+	for i := range a {
+		s += a[i] * b[i]
+	}
+	return s
+}

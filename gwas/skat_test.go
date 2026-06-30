@@ -1219,3 +1219,273 @@ func TestSKATDriverE2E(t *testing.T) {
 		mpcObj.Network.CollectiveDecryptVec(cps, bOut, 1)
 	}
 }
+
+// TestSKATFederatedPrivate drives the secure federated per-gene SKAT Q for heterogeneous variant
+// sets (pid1 = public-list party, pid2 = private-variant party; MVP+AoU is the motivating instance)
+// and asserts it equals the plaintext oracle SKATFederatedPrivate AND the pooled single-cohort
+// SKATPlain, per gene. Every party regenerates the same full fixture (seed) and injects only its
+// own slice; pid1 reconstructs both oracles from the full data.
+func TestSKATFederatedPrivate(t *testing.T) {
+	prot := InitProtocolForTest(t)
+	if prot == nil {
+		return
+	}
+	defer prot.SyncAndTerminate(true)
+
+	mpcObj := prot.mpcObj[0]
+	cps := prot.cps
+	pid := mpcObj.GetPid()
+	const privatePid = 2
+
+	numCov := prot.GetGwasParams().NumCov()
+	c := numCov + 1
+	nIndsAll := prot.GetConfig().NumInds
+	nPub, nPriv := nIndsAll[1], nIndsAll[2]
+
+	const nGenes = 3
+	const nShared, nPubOnly, nPrivOnly = 2, 2, 2
+	const pubPerGene = nShared + nPubOnly // public list per gene
+
+	// --- full fixture, identical on every party (seed) ---
+	r := rand.New(rand.NewSource(71))
+	drawCohort := func(n int) (*mat.Dense, []float64) {
+		cov := mat.NewDense(n, numCov, nil)
+		y := make([]float64, n)
+		for i := 0; i < n; i++ {
+			yi := 0.0
+			for j := 0; j < numCov; j++ {
+				v := r.NormFloat64()
+				cov.Set(i, j, v)
+				yi += (0.3 + 0.2*float64(j)) * v
+			}
+			y[i] = yi + 1.5*r.NormFloat64()
+		}
+		return cov, y
+	}
+	drawDosage := func(n int, af float64) []float64 {
+		col := make([]float64, n)
+		for i := 0; i < n; i++ {
+			d := 0.0
+			if r.Float64() < af {
+				d++
+			}
+			if r.Float64() < af {
+				d++
+			}
+			col[i] = d
+		}
+		return col
+	}
+
+	pubCov, pubY := drawCohort(nPub)
+	privCov, privY := drawCohort(nPriv)
+
+	// Per gene: public columns [shared×nShared, public_only×nPubOnly]; private party's shared-side
+	// columns; private-only columns. Shared variants are the same id measured in both cohorts.
+	pubCols := make([][][]float64, nGenes)        // [gene][col(=pubPerGene)][sample(nPub)]
+	privSharedCols := make([][][]float64, nGenes) // [gene][nShared][sample(nPriv)]
+	privOnlyCols := make([][][]float64, nGenes)   // [gene][nPrivOnly][sample(nPriv)]
+	for g := 0; g < nGenes; g++ {
+		pubCols[g] = make([][]float64, pubPerGene)
+		privSharedCols[g] = make([][]float64, nShared)
+		for k := 0; k < nShared; k++ { // shared: both cohorts
+			af := 0.05 + 0.4*r.Float64()
+			pubCols[g][k] = drawDosage(nPub, af)
+			privSharedCols[g][k] = drawDosage(nPriv, af)
+		}
+		for k := 0; k < nPubOnly; k++ { // public_only: public cohort only
+			af := 0.05 + 0.4*r.Float64()
+			pubCols[g][nShared+k] = drawDosage(nPub, af)
+		}
+		privOnlyCols[g] = make([][]float64, nPrivOnly)
+		for k := 0; k < nPrivOnly; k++ { // private: private cohort only
+			af := 0.05 + 0.4*r.Float64()
+			privOnlyCols[g][k] = drawDosage(nPriv, af)
+		}
+	}
+
+	geneName := func(g int) string { return "gene" + string(rune('0'+g)) }
+
+	prot.GetConfig().GenoNumBlocks = nGenes
+	prot.GetConfig().GenoFileFormat = "blocks"
+
+	// --- per-party injection ---
+	var privateOnly []*mat.Dense
+	switch pid {
+	case 1: // public-list party: public-list genotypes, no private variants
+		prot.SetPhenoAndCov(mat.NewDense(nPub, 1, append([]float64(nil), pubY...)), pubCov)
+		streams, sizes := writeGeneStreams(t, nPub, nGenes, pubPerGene, func(g, col int) []float64 {
+			return pubCols[g][col]
+		})
+		prot.genoBlocks = streams
+		prot.genoBlockSizes = sizes
+	case 2: // private party: public-list genotypes ALIGNED (public_only cols = 0) + private dense
+		prot.SetPhenoAndCov(mat.NewDense(nPriv, 1, append([]float64(nil), privY...)), privCov)
+		streams, sizes := writeGeneStreams(t, nPriv, nGenes, pubPerGene, func(g, col int) []float64 {
+			if col < nShared {
+				return privSharedCols[g][col]
+			}
+			return make([]float64, nPriv) // public_only aligned to 0
+		})
+		prot.genoBlocks = streams
+		prot.genoBlockSizes = sizes
+		privateOnly = make([]*mat.Dense, nGenes)
+		for g := 0; g < nGenes; g++ {
+			G := mat.NewDense(nPriv, nPrivOnly, nil)
+			for k := 0; k < nPrivOnly; k++ {
+				G.SetCol(k, privOnlyCols[g][k])
+			}
+			privateOnly[g] = G
+		}
+	default: // pid 0
+		prot.SetPhenoAndCov(nil, nil)
+		prot.genoBlockSizes = make([]int, nGenes)
+	}
+
+	assocTest := prot.InitAssociationTests(nil)
+	qOut := assocTest.ComputeSKATFederatedPrivate(privateOnly, privatePid)
+
+	if pid != 1 {
+		mpcObj.Network.CollectiveDecryptVec(cps, qOut, 1)
+		return
+	}
+
+	qDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, qOut, 1))[:nGenes]
+
+	// --- oracle 1: SKATFederatedPrivate (the secure spec) ---
+	pub := buildFedParty(pubCov, pubY, c, nGenes, pubPerGene,
+		func(g, col int) []float64 { return pubCols[g][col] },
+		func(g, col int) (id, gene, role string) {
+			if col < nShared {
+				return varID(g, "shr", col), geneName(g), "shared"
+			}
+			return varID(g, "pub", col-nShared), geneName(g), "public_only"
+		})
+	privCount := nShared + nPrivOnly
+	priv := buildFedParty(privCov, privY, c, nGenes, privCount,
+		func(g, col int) []float64 {
+			if col < nShared {
+				return privSharedCols[g][col]
+			}
+			return privOnlyCols[g][col-nShared]
+		},
+		func(g, col int) (id, gene, role string) {
+			if col < nShared {
+				return varID(g, "shr", col), geneName(g), "shared"
+			}
+			return varID(g, "prv", col-nShared), geneName(g), "private"
+		})
+	oracleQ := SKATFederatedPrivate(pub, priv)
+
+	// --- oracle 2: pooled per-gene SKATPlain (independent code path) ---
+	Xpool := mat.NewDense(nPub+nPriv, c, nil)
+	ypool := make([]float64, nPub+nPriv)
+	for i := 0; i < nPub; i++ {
+		Xpool.Set(i, 0, 1.0)
+		for j := 0; j < numCov; j++ {
+			Xpool.Set(i, j+1, pubCov.At(i, j))
+		}
+		ypool[i] = pubY[i]
+	}
+	for i := 0; i < nPriv; i++ {
+		Xpool.Set(nPub+i, 0, 1.0)
+		for j := 0; j < numCov; j++ {
+			Xpool.Set(nPub+i, j+1, privCov.At(i, j))
+		}
+		ypool[nPub+i] = privY[i]
+	}
+
+	const tol = 5e-3
+	for g := 0; g < nGenes; g++ {
+		// pooled union genotypes for gene g: shared (both), public_only (pub rows), private (priv rows).
+		union := nShared + nPubOnly + nPrivOnly
+		Gp := mat.NewDense(nPub+nPriv, union, nil)
+		col := 0
+		for k := 0; k < nShared; k++ {
+			for i := 0; i < nPub; i++ {
+				Gp.Set(i, col, pubCols[g][k][i])
+			}
+			for i := 0; i < nPriv; i++ {
+				Gp.Set(nPub+i, col, privSharedCols[g][k][i])
+			}
+			col++
+		}
+		for k := 0; k < nPubOnly; k++ {
+			for i := 0; i < nPub; i++ {
+				Gp.Set(i, col, pubCols[g][nShared+k][i])
+			}
+			col++
+		}
+		for k := 0; k < nPrivOnly; k++ {
+			for i := 0; i < nPriv; i++ {
+				Gp.Set(nPub+i, col, privOnlyCols[g][k][i])
+			}
+			col++
+		}
+		pooled := SKATPlain(Gp, Xpool, ypool).Q
+
+		secure := qDec[g]
+		oref := oracleQ[geneName(g)]
+		relOracle := math.Abs(secure-oref) / math.Max(math.Abs(oref), 1e-12)
+		relPool := math.Abs(secure-pooled) / math.Max(math.Abs(pooled), 1e-12)
+		t.Logf("%s: secure=%.6f oracle=%.6f pooled=%.6f relOracle=%.2e relPool=%.2e",
+			geneName(g), secure, oref, pooled, relOracle, relPool)
+		if relOracle > tol || relPool > tol {
+			t.Errorf("%s: secure Q rel oracle=%.3e pooled=%.3e (tol %.0e)", geneName(g), relOracle, relPool, tol)
+		}
+	}
+}
+
+func varID(g int, role string, k int) string {
+	return "g" + string(rune('0'+g)) + "_" + role + string(rune('0'+k))
+}
+
+// writeGeneStreams writes nGenes row-major int8 genotype blocks (n × mPerGene) to temp files and
+// opens them. colFn(gene, col) returns that column's n dosages.
+func writeGeneStreams(t *testing.T, n, nGenes, mPerGene int, colFn func(g, col int) []float64) ([]*GenoFileStream, []int) {
+	dir := t.TempDir()
+	streams := make([]*GenoFileStream, nGenes)
+	sizes := make([]int, nGenes)
+	for g := 0; g < nGenes; g++ {
+		buf := make([]byte, n*mPerGene)
+		for col := 0; col < mPerGene; col++ {
+			cdat := colFn(g, col)
+			for i := 0; i < n; i++ {
+				buf[i*mPerGene+col] = byte(int8(cdat[i]))
+			}
+		}
+		path := filepath.Join(dir, "geno.") + string(rune('0'+g)) + ".bin"
+		if err := os.WriteFile(path, buf, 0644); err != nil {
+			t.Fatalf("write geno fixture: %v", err)
+		}
+		streams[g] = NewGenoFileStream(path, uint64(n), uint64(mPerGene), false)
+		sizes[g] = mPerGene
+	}
+	return streams, sizes
+}
+
+// buildFedParty assembles a FedParty (oracle input) with mPerGene columns per gene.
+func buildFedParty(cov *mat.Dense, y []float64, c, nGenes, mPerGene int,
+	colFn func(g, col int) []float64, labelFn func(g, col int) (id, gene, role string)) FedParty {
+	n, numCov := cov.Dims()
+	m := nGenes * mPerGene
+	X := mat.NewDense(n, c, nil)
+	for i := 0; i < n; i++ {
+		X.Set(i, 0, 1.0)
+		for j := 0; j < numCov; j++ {
+			X.Set(i, j+1, cov.At(i, j))
+		}
+	}
+	G := mat.NewDense(n, m, nil)
+	ids := make([]string, m)
+	genes := make([]string, m)
+	roles := make([]string, m)
+	for g := 0; g < nGenes; g++ {
+		for col := 0; col < mPerGene; col++ {
+			j := g*mPerGene + col
+			G.SetCol(j, colFn(g, col))
+			ids[j], genes[j], roles[j] = labelFn(g, col)
+		}
+	}
+	return FedParty{G: G, X: X, Y: y, ID: ids, Gene: genes, Role: roles}
+}
