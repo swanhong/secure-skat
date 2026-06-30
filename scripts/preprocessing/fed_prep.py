@@ -44,6 +44,7 @@ ANCESTRY = os.path.expanduser(os.environ.get("FED_ANCESTRY",
 PHENO_CSV = os.path.expanduser(os.environ.get("FED_PHENO", "~/fed_prep_in/pheno.csv"))
 PHENO_COL = os.environ.get("FED_PHENO_COL", "inv_LDLC_final_mgdl_6sd_masked")  # LDL, inverse-normal (continuous)
 OUT_DIR = os.path.expanduser(os.environ.get("FED_OUT", "~/fed_prep_out"))
+KEYS_PATH = os.path.expanduser(os.environ.get("FED_KEYS", "~/secure-skat/example_data/keys"))  # MPC PRG seeds (data-independent, reusable)
 N_PCS = 5                    # first N PCs from ancestry_preds pca_features used as covariates (age/sex deferred)
 N_SUB = 5000                 # samples per cohort (secure is n-independent; keeps blocks small)
 N_GENES = 20
@@ -95,8 +96,80 @@ def load_ancestry_pcs(path, n_pcs):
 
 
 def write_cov(fam_ids, pcs, out_path):
-    """n x n_pcs covariates (ancestry PCs) in geno (.fam) row order. Eligible filter guarantees presence."""
-    np.savetxt(out_path, np.asarray([pcs[sid] for sid in fam_ids]))
+    """n x n_pcs covariates (ancestry PCs) in geno (.fam) row order; TAB-separated (Go LoadMatrixFromFile)."""
+    np.savetxt(out_path, np.asarray([pcs[sid] for sid in fam_ids]), delimiter="\t")
+
+
+def write_config_helpers(gene_keys, chrom, out_dir):
+    """Files the Go 'blocks' config needs: geno_block_size_file (m per gene) + snp_position_file
+    (chrom<TAB>pos per variant in block order; values unused by SKAT but the file must exist)."""
+    sizes = [len(g) for g in gene_keys]
+    write_lines(f"{out_dir}/block_sizes.txt", [str(s) for s in sizes])
+    cnum = chrom.replace("chr", "")
+    with open(f"{out_dir}/pos.txt", "w") as f:
+        for keys in gene_keys:
+            for k in keys:
+                f.write(f"{cnum}\t{k.split(':')[1]}\n")  # key = chr:pos:ref:alt
+    print(f"  num_snps={sum(sizes)} -> block_sizes.txt + pos.txt in {out_dir}")
+    return sum(sizes)
+
+
+def write_configs(out_dir, num_snps, keys_path):
+    """Generate the sfgwas skat_fed config (global + party 0/1/2) with paths into out_dir, so the
+    data dims (num_snps/num_inds/num_covs) always match the data. Run: SFGWAS_CONFIG_PATH=<out>/config."""
+    cfg = f"{out_dir}/config"
+    os.makedirs(cfg, exist_ok=True)
+    glob = f"""num_main_parties = 2
+hub_party_id = 1
+debug = false
+ckks_params = "PN14QP438"
+mpc_num_threads = 2
+mpc_field_size = 256
+mpc_data_bits = 60
+mpc_frac_bits = 30
+div_sqrt_max_len = 1000000
+mpc_boolean_shares = true
+num_inds = [0, {N_SUB}, {N_SUB}]
+num_snps = {num_snps}
+num_covs = {N_PCS}
+cov_all_ones = false
+geno_file_format = "blocks"
+geno_num_blocks = {N_GENES}
+binary_pheno = false
+private_pid = 2
+skip_qc = true
+skip_pca = true
+use_logistic = false
+binding_ipaddr = "0.0.0.0"
+
+[servers.party0]
+ipaddr = "127.0.0.1"
+ports = {{party1 = "8020", party2 = "8040"}}
+[servers.party1]
+ipaddr = "127.0.0.1"
+ports = {{party2 = "8060"}}
+[servers.party2]
+ipaddr = "127.0.0.1"
+ports = {{}}
+"""
+    open(f"{cfg}/configGlobal.toml", "w").write(glob)
+    for pid, sub in [(0, None), (1, "A"), (2, "B")]:
+        loc = (f'shared_keys_path = "{keys_path}"\n'
+               f'output_dir = "{out_dir}/out/party{pid}"\n'
+               f'cache_dir = "{out_dir}/cache/party{pid}"\n'
+               f'local_num_threads = 4\nmemory_limit = 6000000000\n'
+               f'assoc_num_blocks_parallel = 1\n')
+        if sub:  # data parties only
+            loc += (f'geno_binary_file_prefix = "{out_dir}/{sub}/geno"\n'
+                    f'geno_num_blocks = {N_GENES}\n'
+                    f'geno_block_size_file = "{out_dir}/block_sizes.txt"\n'
+                    f'pheno_file = "{out_dir}/{sub}/pheno.txt"\n'
+                    f'covar_file = "{out_dir}/{sub}/cov.txt"\n'
+                    f'snp_position_file = "{out_dir}/pos.txt"\n')
+        if pid == 2:
+            loc += f'private_only_prefix = "{out_dir}/B/priv.%d.bin"\n'
+        open(f"{cfg}/configLocal.Party{pid}.toml", "w").write(loc)
+    print(f"  config -> {cfg}  (run: SFGWAS_MODE=skat_fed SFGWAS_CONFIG_PATH={cfg})")
 
 
 def load_pheno(path, col):
@@ -196,6 +269,8 @@ def run():
     # (5) write genotype blocks + real covariates (5 PCs) + real LDL phenotype, all geno-row order
     print("run (real AoU pgen):")
     write_blocks(gene_keys, priv_keys, roles_all, A_geno, B_geno, keycol, OUT_DIR)
+    num_snps = write_config_helpers(gene_keys, CHR, OUT_DIR)
+    write_configs(OUT_DIR, num_snps, KEYS_PATH)
     write_cov(Afam, pcs, f"{OUT_DIR}/A/cov.txt")
     write_cov(Bfam, pcs, f"{OUT_DIR}/B/cov.txt")
     write_pheno(Afam, pheno, f"{OUT_DIR}/A/pheno.txt")
