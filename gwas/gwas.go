@@ -88,6 +88,10 @@ type Config struct {
 	CovFile    string `toml:"covar_file"`
 	SnpPosFile string `toml:"snp_position_file"`
 
+	// skat_fed: private party id + fmt prefix of its per-gene private-variant block files.
+	PrivatePid        int    `toml:"private_pid"`
+	PrivateOnlyPrefix string `toml:"private_only_prefix"`
+
 	UsePrecomputedGenoCount bool   `toml:"use_precomputed_geno_count"`
 	GenoCountFile           string `toml:"geno_count_file"`
 	SampleKeepFile          string `toml:"sample_keep_file"`
@@ -440,6 +444,37 @@ func (g *ProtocolInfo) runRareVariant() (skat, burden []float64) {
 		burden = crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, burdenEnc, -1))[:nB]
 	}
 	return
+}
+
+// runFederatedPrivate runs skat_fed (private party loads its blocks); per-gene Q, nil on pid 0.
+func (g *ProtocolInfo) runFederatedPrivate() []float64 {
+	mpcObj := g.mpcObj[0]
+	pid := mpcObj.GetPid()
+	privatePid := g.config.PrivatePid
+
+	var privateOnly []*mat.Dense
+	if pid == privatePid && g.config.PrivateOnlyPrefix != "" {
+		n, _ := g.pheno.Dims()
+		blocks, err := loadDenseBlocks(g.config.PrivateOnlyPrefix, g.config.GenoNumBlocks, n)
+		if err != nil {
+			panic(err)
+		}
+		privateOnly = blocks
+	}
+
+	q := g.InitAssociationTests(nil).ComputeSKATFederatedPrivate(privateOnly, privatePid)
+	if pid == 0 {
+		return nil
+	}
+	return crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, q, -1))[:g.config.GenoNumBlocks]
+}
+
+// SKATFederatedPrivate runs the federated-private per-gene SKAT, saving per-gene Q.
+func (g *ProtocolInfo) SKATFederatedPrivate() {
+	q := g.runFederatedPrivate()
+	if g.mpcObj[0].GetPid() > 0 {
+		SaveFloatVectorToFile(g.OutPath("skat_fed_out.txt"), q)
+	}
 }
 
 // SKAT runs the per-block SKAT test, saving per-block Q and Burden.

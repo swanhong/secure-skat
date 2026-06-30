@@ -88,8 +88,10 @@ func RunProtocol() {
 			rho = v
 		}
 		prot.SKATO(rho)
+	case "skat_fed":
+		prot.SKATFederatedPrivate()
 	default:
-		panic(fmt.Sprintf("unsupported SFGWAS_MODE: %s (gwas|skat|burden|skato)", mode))
+		panic(fmt.Sprintf("unsupported SFGWAS_MODE: %s (gwas|skat|burden|skato|skat_fed)", mode))
 	}
 
 	prot.SyncAndTerminate(true)

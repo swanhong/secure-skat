@@ -1232,9 +1232,7 @@ func TestSKATFederatedPrivate(t *testing.T) {
 	}
 	defer prot.SyncAndTerminate(true)
 
-	mpcObj := prot.mpcObj[0]
-	cps := prot.cps
-	pid := mpcObj.GetPid()
+	pid := prot.mpcObj[0].GetPid()
 	const privatePid = 2
 
 	numCov := prot.GetGwasParams().NumCov()
@@ -1348,22 +1346,12 @@ func TestSKATFederatedPrivate(t *testing.T) {
 		prot.genoBlockSizes = make([]int, nGenes)
 	}
 
-	assocTest := prot.InitAssociationTests(nil)
-	var privateOnly []*mat.Dense
-	if pid == privatePid {
-		var err error
-		if privateOnly, err = loadDenseBlocks(privPrefix, nGenes, nPriv); err != nil {
-			t.Fatalf("loadDenseBlocks: %v", err)
-		}
-	}
-	qOut := assocTest.ComputeSKATFederatedPrivate(privateOnly, privatePid)
-
+	prot.GetConfig().PrivatePid = privatePid
+	prot.GetConfig().PrivateOnlyPrefix = privPrefix // "" except on the private party
+	qDec := prot.runFederatedPrivate()
 	if pid != 1 {
-		mpcObj.Network.CollectiveDecryptVec(cps, qOut, 1)
 		return
 	}
-
-	qDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, qOut, 1))[:nGenes]
 
 	// --- oracle 1: SKATFederatedPrivate (the secure spec) ---
 	pub := buildFedParty(pubCov, pubY, c, nGenes, pubPerGene,
