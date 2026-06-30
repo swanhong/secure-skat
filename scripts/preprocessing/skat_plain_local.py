@@ -40,19 +40,19 @@ def build_party_blocks(gene_keys, priv_keys, roles, A_geno, B_geno, keycol):
         pub = gene_keys[g]
         priv = priv_keys[g]
         # PART A blocks, columns in public-list order
-        A_blk = np.zeros((nA, len(pub)), dtype=np.float64)
-        B_alg = np.zeros((nB, len(pub)), dtype=np.float64)
+        A_blk = np.zeros((nA, len(pub)), dtype=A_geno.dtype)
+        B_alg = np.zeros((nB, len(pub)), dtype=A_geno.dtype)
         for k, key in enumerate(pub):
             A_blk[:, k] = A_geno[:, keycol[key]]               # A has the whole public list
             if roles[key] == "shared":
                 B_alg[:, k] = B_geno[:, keycol[key]]           # shared -> B data; public_only -> stays 0
         # PART B block (B private)
-        B_prv = np.zeros((nB, len(priv)), dtype=np.float64)
+        B_prv = np.zeros((nB, len(priv)), dtype=A_geno.dtype)
         for k, key in enumerate(priv):
             B_prv[:, k] = B_geno[:, keycol[key]]
         # pooled union (shared both; public_only A only; private B only)
         union = pub + priv
-        U = np.zeros((nA + nB, len(union)), dtype=np.float64)
+        U = np.zeros((nA + nB, len(union)), dtype=A_geno.dtype)
         for k, key in enumerate(union):
             if roles[key] in ("shared", "public_only"):
                 U[:nA, k] = A_geno[:, keycol[key]]

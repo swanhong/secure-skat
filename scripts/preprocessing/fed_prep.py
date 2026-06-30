@@ -136,7 +136,7 @@ def plink_extract_to_int8(pgen, keep_file, keys_file, n, out_prefix):
         raise SystemExit(f"plink emitted {len(fam_ids)} samples != requested {n} ({out_prefix})")
     m = len(bim_keys)
     sh(f"python3 {here}/../plinkBedToBinary.py {out_prefix}.bed {n} {m} {out_prefix}.bin")
-    g = np.fromfile(f"{out_prefix}.bin", dtype=np.int8).reshape(n, m).astype(float)
+    g = np.fromfile(f"{out_prefix}.bin", dtype=np.int8).reshape(n, m)
     g[g < 0] = 0  # missing -> 0 (matches Go loader)
     return g, bim_keys, fam_ids
 
@@ -187,6 +187,7 @@ def run():
     Bg, Bk, Bfam = plink_extract_to_int8(PGEN, f"{OUT_DIR}/B.keep", f"{OUT_DIR}/B_keys.txt",
                                          N_SUB, f"{OUT_DIR}/B_geno")
     A_geno, B_geno, keycol = merge_cohort_columns(Ag, Ak, Bg, Bk)
+    del Ag, Bg  # free pre-merge matrices (RAM-tight workbench)
     # drop any keys plink2 didn't emit (monomorphic/filtered) so build never KeyErrors
     present = set(keycol)
     gene_keys = [[k for k in g if k in present] for g in gene_keys]
@@ -263,7 +264,8 @@ def merge_cohort_columns(Ag, Ak, Bg, Bk):
     assert len(set(Ak)) == len(Ak) and len(set(Bk)) == len(Bk), "duplicate variant key in a cohort .bim"
     keys = list(dict.fromkeys(Ak + Bk))
     keycol = {k: i for i, k in enumerate(keys)}
-    A = np.zeros((Ag.shape[0], len(keys))); B = np.zeros((Bg.shape[0], len(keys)))
+    A = np.zeros((Ag.shape[0], len(keys)), dtype=Ag.dtype)
+    B = np.zeros((Bg.shape[0], len(keys)), dtype=Bg.dtype)
     for j, k in enumerate(Ak):
         A[:, keycol[k]] = Ag[:, j]
     for j, k in enumerate(Bk):
