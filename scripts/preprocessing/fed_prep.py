@@ -37,7 +37,8 @@ from skat_plain_local import build_party_blocks
 CHR = os.environ.get("FED_CHR", "chr22")
 PGEN = os.path.expanduser(os.environ.get("FED_PGEN",
     f"~/workspace/vwb-aou-datasets-controlled/v8/wgs/short_read/snpindel/exome/pgen/exome.{CHR}"))
-GENCODE = os.path.expanduser(os.environ.get("FED_GENCODE", "~/Projects/mvp-secure/gencode/gencode_v44_pc_genes.bed"))
+GENCODE = os.path.expanduser(os.environ.get("FED_GENCODE",  # public GENCODE v44 pc-gene coords, committed next to this script
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "gencode_v44_pc_genes.bed")))
 ANCESTRY = os.path.expanduser(os.environ.get("FED_ANCESTRY",
     "~/workspace/vwb-aou-datasets-controlled/v8/wgs/short_read/snpindel/aux/ancestry/echo_v4_r2.ancestry_preds.tsv"))
 PHENO_CSV = os.path.expanduser(os.environ.get("FED_PHENO", "~/fed_prep_in/pheno.csv"))
@@ -120,13 +121,15 @@ def write_pheno(fam_ids, pheno, out_path):
     np.savetxt(out_path, np.asarray([pheno[sid] for sid in fam_ids]))
 
 
-def plink_extract_to_int8(pgen_keyed, keep_file, keys_file, n, out_prefix):
-    """plink2 --keep --extract -> .bed -> plinkBedToBinary -> int8; returns (n x m matrix, keys).
-    m is read from the output .bim (plink2 may drop variants); plink2 keeps the pgen's variant
-    order, not the --extract order, so the caller reorders by the returned keys."""
+def plink_extract_to_int8(pgen, keep_file, keys_file, n, out_prefix):
+    """plink2 (set-var-ids + biallelic + keep + extract) -> .bed -> plinkBedToBinary -> int8;
+    returns (n x m matrix, keys, fam_ids). Re-applies --set-all-var-ids on the ORIGINAL pgen so the
+    extracted IDs match the keyed .pvar -- avoids rewriting the full keyed pgen. plink2 keeps the
+    pgen's variant order, not --extract order, so the caller reorders by the returned keys."""
     here = os.path.dirname(os.path.abspath(__file__))
-    sh(f"{PLINK2} --pfile {pgen_keyed} --keep {keep_file} --extract {keys_file} "
-       f"--indiv-sort none --make-bed --out {out_prefix}")
+    sh(f"{PLINK2} --pfile {pgen} --max-alleles 2 --min-alleles 2 "
+       f"--set-all-var-ids '@:#:$r:$a' --new-id-max-allele-len {MAX_ALLELE_LEN} "
+       f"--keep {keep_file} --extract {keys_file} --indiv-sort none --make-bed --out {out_prefix}")
     bim_keys = [ln.split('\t')[1] for ln in open(f"{out_prefix}.bim")]
     fam_ids = [ln.split()[1] for ln in open(f"{out_prefix}.fam")]  # col2 = IID = research_id; geno-row order
     if len(fam_ids) != n:  # plink dropped samples -> g (reshaped n×m) would misalign cov/pheno
@@ -143,11 +146,10 @@ def run():
     rng = np.random.default_rng(SEED)
     os.makedirs(OUT_DIR, exist_ok=True)
 
-    # (1) biallelic + chr:pos:ref:alt keys (handles the empty AoU ID column)
     keyed = f"{OUT_DIR}/{CHR}_keyed"
     sh(f"{PLINK2} --pfile {PGEN} --max-alleles 2 --min-alleles 2 "
        f"--set-all-var-ids '@:#:$r:$a' --new-id-max-allele-len {MAX_ALLELE_LEN} "
-       f"--make-pgen --out {keyed}")
+       f"--make-just-pvar --out {keyed}")
 
     # (2) gene -> PASS variants (read keyed .pvar; map to GENCODE genes)
     genes = load_gencode_genes(GENCODE, CHR, N_GENES)
@@ -156,7 +158,7 @@ def run():
     # (3) eligible = geno ∩ pheno(LDL) ∩ ancestry(PC); split into cohort A/B; per-gene role split
     pcs = load_ancestry_pcs(ANCESTRY, N_PCS)
     pheno = load_pheno(PHENO_CSV, PHENO_COL)
-    psam = [ln.split()[0] for ln in open(f"{keyed}.psam") if not ln.startswith("#")]
+    psam = [ln.split()[0] for ln in open(f"{PGEN}.psam") if not ln.startswith("#")]  # samples unchanged by keying
     gset = set(psam)
     eligible = [s for s in psam if s in pheno and s in pcs]
     # per-component + pairwise counts so a person_id!=research_id namespace mismatch is visible
@@ -180,9 +182,9 @@ def run():
     write_lines(f"{OUT_DIR}/B_keys.txt", B_extract)
 
     # (4) extract genotypes (plink2 -> int8), reorder to a single key->column map
-    Ag, Ak, Afam = plink_extract_to_int8(keyed, f"{OUT_DIR}/A.keep", f"{OUT_DIR}/A_keys.txt",
+    Ag, Ak, Afam = plink_extract_to_int8(PGEN, f"{OUT_DIR}/A.keep", f"{OUT_DIR}/A_keys.txt",
                                          N_SUB, f"{OUT_DIR}/A_geno")
-    Bg, Bk, Bfam = plink_extract_to_int8(keyed, f"{OUT_DIR}/B.keep", f"{OUT_DIR}/B_keys.txt",
+    Bg, Bk, Bfam = plink_extract_to_int8(PGEN, f"{OUT_DIR}/B.keep", f"{OUT_DIR}/B_keys.txt",
                                          N_SUB, f"{OUT_DIR}/B_geno")
     A_geno, B_geno, keycol = merge_cohort_columns(Ag, Ak, Bg, Bk)
     # drop any keys plink2 didn't emit (monomorphic/filtered) so build never KeyErrors
