@@ -479,8 +479,8 @@ func denseFromStream(gfs *GenoFileStream) *mat.Dense {
 		}
 		rows = append(rows, fr)
 	}
-	if len(rows) == 0 {
-		return mat.NewDense(0, 0, nil)
+	if len(rows) == 0 || len(rows[0]) == 0 {
+		return nil // empty block (e.g. gene with no private variants); callers treat nil as empty
 	}
 	G := mat.NewDense(len(rows), len(rows[0]), nil)
 	for i := range rows {
@@ -508,6 +508,10 @@ func loadDenseBlocks(prefix string, nGenes, n int) ([]*mat.Dense, error) {
 			return nil, fmt.Errorf("loadDenseBlocks: %s size %d not divisible by n=%d", path, fi.Size(), n)
 		}
 		m := int(fi.Size()) / n
+		if m == 0 {
+			blocks[b] = nil // gene with no private variants; privateQRaw(nil) -> Enc(0)
+			continue
+		}
 		blocks[b] = denseFromStream(NewGenoFileStream(path, uint64(n), uint64(m), false))
 	}
 	return blocks, nil
