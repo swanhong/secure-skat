@@ -45,6 +45,7 @@ PHENO_CSV = os.path.expanduser(os.environ.get("FED_PHENO", "~/fed_prep_in/pheno.
 PHENO_COL = os.environ.get("FED_PHENO_COL", "inv_LDLC_final_mgdl_6sd_masked")  # LDL, inverse-normal (continuous)
 OUT_DIR = os.path.expanduser(os.environ.get("FED_OUT", "~/fed_prep_out"))
 KEYS_PATH = os.path.expanduser(os.environ.get("FED_KEYS", "~/secure-skat/example_data/keys"))  # MPC PRG seeds (data-independent, reusable)
+PORT_BASE = int(os.environ.get("FED_PORT_BASE", "22000"))  # avoid Dataproc/Hadoop ports (8020=HDFS, 8030s=YARN, ...)
 N_PCS = 5                    # first N PCs from ancestry_preds pca_features used as covariates (age/sex deferred)
 N_SUB = 5000                 # samples per cohort (secure is n-independent; keeps blocks small)
 N_GENES = 20
@@ -119,6 +120,7 @@ def write_configs(out_dir, num_snps, keys_path):
     data dims (num_snps/num_inds/num_covs) always match the data. Run: SFGWAS_CONFIG_PATH=<out>/config."""
     cfg = f"{out_dir}/config"
     os.makedirs(cfg, exist_ok=True)
+    p1, p2, p3 = PORT_BASE + 20, PORT_BASE + 40, PORT_BASE + 60  # 0-1, 0-2, 1-2 pair bases
     glob = f"""num_main_parties = 2
 hub_party_id = 1
 debug = false
@@ -144,10 +146,10 @@ binding_ipaddr = "0.0.0.0"
 
 [servers.party0]
 ipaddr = "127.0.0.1"
-ports = {{party1 = "8020", party2 = "8040"}}
+ports = {{party1 = "{p1}", party2 = "{p2}"}}
 [servers.party1]
 ipaddr = "127.0.0.1"
-ports = {{party2 = "8060"}}
+ports = {{party2 = "{p3}"}}
 [servers.party2]
 ipaddr = "127.0.0.1"
 ports = {{}}
