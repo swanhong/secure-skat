@@ -46,6 +46,7 @@ PHENO_COL = os.environ.get("FED_PHENO_COL", "inv_LDLC_final_mgdl_6sd_masked")  #
 OUT_DIR = os.path.expanduser(os.environ.get("FED_OUT", "~/fed_prep_out"))
 KEYS_PATH = os.path.expanduser(os.environ.get("FED_KEYS", "~/secure-skat/example_data/keys"))  # MPC PRG seeds (data-independent, reusable)
 PORT_BASE = int(os.environ.get("FED_PORT_BASE", "22000"))  # avoid Dataproc/Hadoop ports (8020=HDFS, 8030s=YARN, ...)
+CKKS_PARAMS = os.environ.get("FED_CKKS", "PN14QP438")  # PN13QP218 = ~half RAM (slots 4096 > max gene m); on RAM-tight boxes
 N_PCS = 5                    # first N PCs from ancestry_preds pca_features used as covariates (age/sex deferred)
 N_SUB = 5000                 # samples per cohort (secure is n-independent; keeps blocks small)
 N_GENES = 20
@@ -124,7 +125,7 @@ def write_configs(out_dir, num_snps, keys_path):
     glob = f"""num_main_parties = 2
 hub_party_id = 1
 debug = false
-ckks_params = "PN14QP438"
+ckks_params = "{CKKS_PARAMS}"
 mpc_num_threads = 2
 mpc_field_size = 256
 mpc_data_bits = 60
