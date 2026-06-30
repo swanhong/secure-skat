@@ -1310,7 +1310,7 @@ func TestSKATFederatedPrivate(t *testing.T) {
 	prot.GetConfig().GenoFileFormat = "blocks"
 
 	// --- per-party injection ---
-	var privateOnly []*mat.Dense
+	var privPrefix string // private-only block files (only the private party); "" elsewhere
 	switch pid {
 	case 1: // public-list party: public-list genotypes, no private variants
 		prot.SetPhenoAndCov(mat.NewDense(nPub, 1, append([]float64(nil), pubY...)), pubCov)
@@ -1329,20 +1329,33 @@ func TestSKATFederatedPrivate(t *testing.T) {
 		})
 		prot.genoBlocks = streams
 		prot.genoBlockSizes = sizes
-		privateOnly = make([]*mat.Dense, nGenes)
+		// private-only blocks → per-gene int8 files (the skat_fed mode loads these).
+		privDir := t.TempDir()
 		for g := 0; g < nGenes; g++ {
-			G := mat.NewDense(nPriv, nPrivOnly, nil)
-			for k := 0; k < nPrivOnly; k++ {
-				G.SetCol(k, privOnlyCols[g][k])
+			buf := make([]byte, nPriv*nPrivOnly)
+			for i := 0; i < nPriv; i++ {
+				for k := 0; k < nPrivOnly; k++ {
+					buf[i*nPrivOnly+k] = byte(int8(privOnlyCols[g][k][i]))
+				}
 			}
-			privateOnly[g] = G
+			if err := os.WriteFile(fmt.Sprintf("%s/priv.%d.bin", privDir, g), buf, 0644); err != nil {
+				t.Fatalf("write priv block: %v", err)
+			}
 		}
+		privPrefix = fmt.Sprintf("%s/priv.%%d.bin", privDir)
 	default: // pid 0
 		prot.SetPhenoAndCov(nil, nil)
 		prot.genoBlockSizes = make([]int, nGenes)
 	}
 
 	assocTest := prot.InitAssociationTests(nil)
+	var privateOnly []*mat.Dense
+	if pid == privatePid {
+		var err error
+		if privateOnly, err = loadDenseBlocks(privPrefix, nGenes, nPriv); err != nil {
+			t.Fatalf("loadDenseBlocks: %v", err)
+		}
+	}
 	qOut := assocTest.ComputeSKATFederatedPrivate(privateOnly, privatePid)
 
 	if pid != 1 {
@@ -1438,6 +1451,50 @@ func TestSKATFederatedPrivate(t *testing.T) {
 
 func varID(g int, role string, k int) string {
 	return "g" + string(rune('0'+g)) + "_" + role + string(rune('0'+k))
+}
+
+// loadDenseBlocks reads per-gene int8 genotype block files (row-major n×m_b, m_b inferred from
+// file size / n) into dense matrices — the file-loading side of the skat_fed mode.
+func TestLoadDenseBlocks(t *testing.T) {
+	dir := t.TempDir()
+	const n = 4
+	g0 := [][]float64{{0, 1}, {2, 0}, {1, 1}, {0, 2}}          // 4×2
+	g1 := [][]float64{{1, 0, 2}, {0, 1, 0}, {2, 2, 1}, {1, 0, 0}} // 4×3
+	writeBlock := func(b int, rows [][]float64) {
+		m := len(rows[0])
+		buf := make([]byte, n*m)
+		for i := 0; i < n; i++ {
+			for j := 0; j < m; j++ {
+				buf[i*m+j] = byte(int8(rows[i][j]))
+			}
+		}
+		if err := os.WriteFile(fmt.Sprintf("%s/blk.%d.bin", dir, b), buf, 0644); err != nil {
+			t.Fatalf("write block: %v", err)
+		}
+	}
+	writeBlock(0, g0)
+	writeBlock(1, g1)
+
+	blocks, err := loadDenseBlocks(dir+"/blk.%d.bin", 2, n)
+	if err != nil {
+		t.Fatalf("loadDenseBlocks: %v", err)
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("nGenes: got %d want 2", len(blocks))
+	}
+	for b, want := range [][][]float64{g0, g1} {
+		gr, gc := blocks[b].Dims()
+		if gr != n || gc != len(want[0]) {
+			t.Fatalf("block %d dims: got %dx%d want %dx%d", b, gr, gc, n, len(want[0]))
+		}
+		for i := range want {
+			for j := range want[i] {
+				if got := blocks[b].At(i, j); got != want[i][j] {
+					t.Errorf("block %d [%d,%d]: got %v want %v", b, i, j, got, want[i][j])
+				}
+			}
+		}
+	}
 }
 
 // writeGeneStreams writes nGenes row-major int8 genotype blocks (n × mPerGene) to temp files and

@@ -3,6 +3,7 @@ package gwas
 import (
 	"fmt"
 	"math"
+	"os"
 	"time"
 
 	mpc_core "github.com/hhcho/mpc-core"
@@ -456,10 +457,9 @@ func (ast *AssocTest) openBlockGenoStream(b int) *GenoFileStream {
 	return NewGenoFileStream(tmp, uint64(numInd), uint64(nsnps), true)
 }
 
-// readGenoBlockLocal streams this party's genotype block b into a dense matrix
-// (samples × variants), missing (negative) dosages → 0. Empty on pid 0 or an empty block.
-func (ast *AssocTest) readGenoBlockLocal(b int) *mat.Dense {
-	gfs := ast.openBlockGenoStream(b)
+// denseFromStream reads a genotype stream into a dense matrix (samples × variants), missing
+// (negative) dosages → 0. nil/empty stream yields a 0×0 matrix.
+func denseFromStream(gfs *GenoFileStream) *mat.Dense {
 	if gfs == nil {
 		return mat.NewDense(0, 0, nil)
 	}
@@ -487,6 +487,36 @@ func (ast *AssocTest) readGenoBlockLocal(b int) *mat.Dense {
 		G.SetRow(i, rows[i])
 	}
 	return G
+}
+
+// loadDenseBlocks reads nGenes per-gene int8 genotype block files into dense matrices for the
+// federated-private private side. path b = fmt.Sprintf(prefix, b), row-major n×m_b with m_b
+// inferred from file size / n (int8 = 1 byte/cell). ponytail: dense load — see warning.md (full-N
+// needs streaming; #4 subsamples n so this is fine).
+func loadDenseBlocks(prefix string, nGenes, n int) ([]*mat.Dense, error) {
+	if n <= 0 {
+		return nil, fmt.Errorf("loadDenseBlocks: n=%d must be positive", n)
+	}
+	blocks := make([]*mat.Dense, nGenes)
+	for b := 0; b < nGenes; b++ {
+		path := fmt.Sprintf(prefix, b)
+		fi, err := os.Stat(path)
+		if err != nil {
+			return nil, err
+		}
+		if fi.Size()%int64(n) != 0 {
+			return nil, fmt.Errorf("loadDenseBlocks: %s size %d not divisible by n=%d", path, fi.Size(), n)
+		}
+		m := int(fi.Size()) / n
+		blocks[b] = denseFromStream(NewGenoFileStream(path, uint64(n), uint64(m), false))
+	}
+	return blocks, nil
+}
+
+// readGenoBlockLocal streams this party's genotype block b into a dense matrix
+// (samples × variants), missing (negative) dosages → 0. Empty on pid 0 or an empty block.
+func (ast *AssocTest) readGenoBlockLocal(b int) *mat.Dense {
+	return denseFromStream(ast.openBlockGenoStream(b))
 }
 
 // nullSetup runs the secure null model (β̂ + RSS) and builds the block-independent
