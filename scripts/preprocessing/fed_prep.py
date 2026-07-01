@@ -47,6 +47,8 @@ OUT_DIR = os.path.expanduser(os.environ.get("FED_OUT", "~/fed_prep_out"))
 KEYS_PATH = os.path.expanduser(os.environ.get("FED_KEYS", "~/secure-skat/example_data/keys"))  # MPC PRG seeds (data-independent, reusable)
 PORT_BASE = int(os.environ.get("FED_PORT_BASE", "22000"))  # avoid Dataproc/Hadoop ports (8020=HDFS, 8030s=YARN, ...)
 CKKS_PARAMS = os.environ.get("FED_CKKS", "PN14QP438")  # PN13QP218 = ~half RAM (slots 4096 > max gene m); on RAM-tight boxes
+DATA_BITS = int(os.environ.get("FED_DATABITS", "60"))  # MPC fixed-point total bits; raise if large-n aggregates overflow
+FRAC_BITS = int(os.environ.get("FED_FRACBITS", "30"))  # fractional bits (integer range = DATA_BITS-FRAC_BITS)
 N_PCS = int(os.environ.get("FED_NPCS", "5"))     # first N PCs from ancestry_preds as covariates (age/sex deferred)
 N_SUB = int(os.environ.get("FED_NSUB", "5000"))  # samples per cohort; <= eligible//2. secure is n-independent
 N_GENES = int(os.environ.get("FED_NGENES", "20"))  # genes (spread across chrom); >= chrom total picks all
@@ -135,8 +137,8 @@ debug = false
 ckks_params = "{CKKS_PARAMS}"
 mpc_num_threads = 2
 mpc_field_size = 256
-mpc_data_bits = 60
-mpc_frac_bits = 30
+mpc_data_bits = {DATA_BITS}
+mpc_frac_bits = {FRAC_BITS}
 div_sqrt_max_len = 1000000
 mpc_boolean_shares = true
 num_inds = [0, {N_SUB}, {N_SUB}]
