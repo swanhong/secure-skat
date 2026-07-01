@@ -45,10 +45,14 @@ Qplain = federated_Q_from_blocks(
 Qsec = np.atleast_1d(np.loadtxt(f"{OUT}/out/party2/skat_fed_out.txt"))
 
 print(f"  nA={nA} nB={nB} genes={ng}")
-print(f"{'gene':>4} {'Q_secure':>16} {'Q_plain':>16} {'rel':>10}")
+print(f"{'gene':>4} {'Q_secure':>16} {'Q_plain':>16} {'rel':>10}  status")
 ok = True
 for b in range(ng):
-    rel = abs(Qsec[b] - Qplain[b]) / max(abs(Qplain[b]), 1e-9)
-    ok &= rel < 1e-2
-    print(f"{b:>4} {Qsec[b]:>16.4f} {Qplain[b]:>16.4f} {rel:>10.2e}")
-print("MATCH (secure == plaintext, rel<1e-2)" if ok else "MISMATCH -- investigate")
+    d = abs(Qsec[b] - Qplain[b])
+    rel = d / max(abs(Qplain[b]), 1e-9)
+    # np.isclose semantics: atol handles near-zero Q (e.g. monomorphic 1-variant gene, Q~0,
+    # where rel is meaningless); rtol handles the CKKS precision at scale.
+    match = d <= 1.0 + 1e-2 * abs(Qplain[b])
+    ok &= match
+    print(f"{b:>4} {Qsec[b]:>16.4f} {Qplain[b]:>16.4f} {rel:>10.2e}  {'ok' if match else 'MISMATCH'}")
+print("MATCH (secure == plaintext)" if ok else "MISMATCH -- investigate")

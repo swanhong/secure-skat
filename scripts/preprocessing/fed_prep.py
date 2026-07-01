@@ -47,9 +47,9 @@ OUT_DIR = os.path.expanduser(os.environ.get("FED_OUT", "~/fed_prep_out"))
 KEYS_PATH = os.path.expanduser(os.environ.get("FED_KEYS", "~/secure-skat/example_data/keys"))  # MPC PRG seeds (data-independent, reusable)
 PORT_BASE = int(os.environ.get("FED_PORT_BASE", "22000"))  # avoid Dataproc/Hadoop ports (8020=HDFS, 8030s=YARN, ...)
 CKKS_PARAMS = os.environ.get("FED_CKKS", "PN14QP438")  # PN13QP218 = ~half RAM (slots 4096 > max gene m); on RAM-tight boxes
-N_PCS = 5                    # first N PCs from ancestry_preds pca_features used as covariates (age/sex deferred)
-N_SUB = 5000                 # samples per cohort (secure is n-independent; keeps blocks small)
-N_GENES = 20
+N_PCS = int(os.environ.get("FED_NPCS", "5"))     # first N PCs from ancestry_preds as covariates (age/sex deferred)
+N_SUB = int(os.environ.get("FED_NSUB", "5000"))  # samples per cohort; <= eligible//2. secure is n-independent
+N_GENES = int(os.environ.get("FED_NGENES", "20"))  # genes (spread across chrom); >= chrom total picks all
 SEED = 71
 FRAC_SHARED, FRAC_PUBONLY = 0.6, 0.2   # rest = private
 PLINK2 = os.environ.get("PLINK2", "plink2")   # override: PLINK2=/path/to/plink2 python3 fed_prep.py
@@ -75,11 +75,18 @@ def write_blocks(gene_keys, priv_keys, roles, A_geno, B_geno, keycol, out_dir):
         write_int8_block(f"{out_dir}/A/geno.{g}.bin", A_blocks[g])
         write_int8_block(f"{out_dir}/B/geno.{g}.bin", B_aligned[g])
         write_int8_block(f"{out_dir}/B/priv.{g}.bin", B_priv[g])
+    shared_m = [sum(1 for k in g if roles[k] == "shared") for g in gene_keys]
+    pubonly_m = [sum(1 for k in g if roles[k] == "public_only") for g in gene_keys]
+    priv_m = [b.shape[1] for b in B_priv]
     json.dump({"n_genes": len(gene_keys),
-               "pub_m": [len(k) for k in gene_keys],
-               "priv_m": [b.shape[1] for b in B_priv]},
+               "pub_m": [len(k) for k in gene_keys],  # public list = shared + public_only
+               "priv_m": priv_m,
+               "shared_m": shared_m,        # intersection (both cohorts)
+               "pubonly_m": pubonly_m},     # public-list party only
               open(f"{out_dir}/manifest.json", "w"), indent=2)
     print(f"  wrote blocks + manifest -> {out_dir}")
+    print(f"  variants: shared(intersection)={sum(shared_m)} public_only={sum(pubonly_m)} "
+          f"private={sum(priv_m)} total={sum(shared_m) + sum(pubonly_m) + sum(priv_m)}")
 
 
 def load_ancestry_pcs(path, n_pcs):
