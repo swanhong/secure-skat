@@ -840,14 +840,18 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	cps := ast.general.cps
 	rtype := mpcObj.GetRType()
 
+	tStart := time.Now()
 	null, nullRSS, X, y0 := ast.nullSetup()
+	log.LLvl1(fmt.Sprintf("[skat_fed] null model: %v", time.Since(tStart).Round(time.Millisecond)))
 
 	nB := ast.general.config.GenoNumBlocks
 	if mpcObj.GetPid() == privatePid && privateOnly != nil && len(privateOnly) != nB {
 		panic(fmt.Sprintf("ComputeSKATFederatedPrivate: privateOnly has %d blocks, want %d", len(privateOnly), nB))
 	}
 	qBlockSS := mpc_core.InitRVec(rtype.Zero(), nB)
+	tBlocks := time.Now()
 	for b := 0; b < nB; b++ {
+		tb := time.Now()
 		acc := mpc_core.InitRVec(rtype.Zero(), 1)
 
 		// PART A: secure SKAT over the public list (existing per-block path).
@@ -864,7 +868,9 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		acc.Add(ast.privateBlockStat(G, null, X, y0, privatePid))
 
 		qBlockSS[b] = acc[0]
+		log.LLvl1(fmt.Sprintf("[skat_fed] block %d/%d: %v", b+1, nB, time.Since(tb).Round(time.Millisecond)))
 	}
+	log.LLvl1(fmt.Sprintf("[skat_fed] all %d blocks: %v", nB, time.Since(tBlocks).Round(time.Millisecond)))
 
 	// Common 1/(2σ̂²) applied once (linear, distributes over A+B).
 	if scaleSS, ok := ast.general.rareVariantScaleShares(nullRSS); ok {
@@ -874,5 +880,6 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		}
 		qBlockSS = mpcObj.TruncVec(mpcObj.SSMultElemVec(qBlockSS, scaleVec), mpcObj.GetDataBits(), mpcObj.GetFracBits())
 	}
+	log.LLvl1(fmt.Sprintf("[skat_fed] total compute: %v", time.Since(tStart).Round(time.Millisecond)))
 	return mpcObj.SSToCVec(cps, qBlockSS)
 }

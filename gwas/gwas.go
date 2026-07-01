@@ -462,11 +462,16 @@ func (g *ProtocolInfo) runFederatedPrivate() []float64 {
 		privateOnly = blocks
 	}
 
+	tRun := time.Now()
 	q := g.InitAssociationTests(nil).ComputeSKATFederatedPrivate(privateOnly, privatePid)
 	if pid == 0 {
 		return nil
 	}
-	return crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, q, -1))[:g.config.GenoNumBlocks]
+	tDec := time.Now()
+	out := crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, q, -1))[:g.config.GenoNumBlocks]
+	log.LLvl1(fmt.Sprintf("[skat_fed] decrypt: %v | total run: %v",
+		time.Since(tDec).Round(time.Millisecond), time.Since(tRun).Round(time.Millisecond)))
+	return out
 }
 
 // SKATFederatedPrivate runs the federated-private per-gene SKAT, saving per-gene Q.

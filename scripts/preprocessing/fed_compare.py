@@ -10,6 +10,7 @@ A CKKS match is ~1e-3; we flag rel > 1e-2.
 """
 import json
 import os
+import time
 
 import numpy as np
 
@@ -39,9 +40,11 @@ nA = len(np.loadtxt(f"{OUT}/A/pheno.txt"))
 nB = len(np.loadtxt(f"{OUT}/B/pheno.txt"))
 XA, yA = load_xy("A", nA)
 XB, yB = load_xy("B", nB)
+t0 = time.perf_counter()
 Qplain = federated_Q_from_blocks(
     load_blocks("A", "geno", nA, ng), load_blocks("B", "geno", nB, ng),
     load_blocks("B", "priv", nB, ng), XA, yA, XB, yB)
+print(f"  plaintext federated_Q: {time.perf_counter() - t0:.2f}s")
 Qsec = np.atleast_1d(np.loadtxt(f"{OUT}/out/party2/skat_fed_out.txt"))
 
 print(f"  nA={nA} nB={nB} genes={ng}")
