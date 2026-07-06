@@ -873,13 +873,15 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	log.LLvl1(fmt.Sprintf("[skat_fed] all %d blocks: %v", nB, time.Since(tBlocks).Round(time.Millisecond)))
 
 	// Common 1/(2σ̂²) applied once (linear, distributes over A+B).
-	if scaleSS, ok := ast.general.rareVariantScaleShares(nullRSS); ok {
-		scaleVec := mpc_core.InitRVec(rtype.Zero(), nB)
-		for b := 0; b < nB; b++ {
-			scaleVec[b] = scaleSS[0].Copy()
-		}
-		qBlockSS = mpcObj.TruncVec(mpcObj.SSMultElemVec(qBlockSS, scaleVec), mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	scaleSS, ok := ast.general.rareVariantScaleShares(nullRSS)
+	if !ok {
+		panic("ComputeSKATFederatedPrivate: div undefined (dof = n-c <= 0); need more samples than covariates")
 	}
+	scaleVec := mpc_core.InitRVec(rtype.Zero(), nB)
+	for b := 0; b < nB; b++ {
+		scaleVec[b] = scaleSS[0].Copy()
+	}
+	qBlockSS = mpcObj.TruncVec(mpcObj.SSMultElemVec(qBlockSS, scaleVec), mpcObj.GetDataBits(), mpcObj.GetFracBits())
 	log.LLvl1(fmt.Sprintf("[skat_fed] total compute: %v", time.Since(tStart).Round(time.Millisecond)))
 	return mpcObj.SSToCVec(cps, qBlockSS)
 }

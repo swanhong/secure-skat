@@ -35,14 +35,14 @@ from skat_plain_local import build_party_blocks
 
 # ---- config (env-overridable; defaults = AoU Workbench Controlled-Tier layout, which AoU
 CHR = os.environ.get("FED_CHR", "chr22")
-PGEN = os.path.expanduser(os.environ.get("FED_PGEN",
-    f"~/workspace/vwb-aou-datasets-controlled/v8/wgs/short_read/snpindel/exome/pgen/exome.{CHR}"))
+_V9 = "~/workspace/vwb-aou-datasets-controlled-v9/v9/wgs/short_read/snpindel"
+PGEN = os.path.expanduser(os.environ.get("FED_PGEN", f"{_V9}/exome/pgen/exome.{CHR}"))
 GENCODE = os.path.expanduser(os.environ.get("FED_GENCODE",  # public GENCODE v44 pc-gene coords, committed next to this script
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "gencode_v44_pc_genes.bed")))
-ANCESTRY = os.path.expanduser(os.environ.get("FED_ANCESTRY",
-    "~/workspace/vwb-aou-datasets-controlled/v8/wgs/short_read/snpindel/aux/ancestry/echo_v4_r2.ancestry_preds.tsv"))
-PHENO_CSV = os.path.expanduser(os.environ.get("FED_PHENO", "~/fed_prep_in/pheno.csv"))
-PHENO_COL = os.environ.get("FED_PHENO_COL", "inv_LDLC_final_mgdl_6sd_masked")  # LDL, inverse-normal (continuous)
+ANCESTRY = os.path.expanduser(os.environ.get("FED_ANCESTRY", f"{_V9}/aux/ancestry/ancestry_preds.tsv"))
+PHENO_CSV = os.path.expanduser(os.environ.get("FED_PHENO",
+    "~/workspace/gwas-data-wgs/pheno/v9_final_lipid_med_corrected_short_read_tot.csv"))
+PHENO_COL = os.environ.get("FED_PHENO_COL", "LDLC_final_mgdl_6sd_masked")  # LDL (mg/dL), continuous
 OUT_DIR = os.path.expanduser(os.environ.get("FED_OUT", "~/fed_prep_out"))
 KEYS_PATH = os.path.expanduser(os.environ.get("FED_KEYS", "~/secure-skat/example_data/keys"))  # MPC PRG seeds (data-independent, reusable)
 PORT_BASE = int(os.environ.get("FED_PORT_BASE", "22000"))  # avoid Dataproc/Hadoop ports (8020=HDFS, 8030s=YARN, ...)
@@ -277,6 +277,9 @@ def run():
     present = set(keycol)
     gene_keys = [[k for k in g if k in present] for g in gene_keys]
     priv_keys = [[k for k in p if k in present] for p in priv_keys]
+    # PART A (public list) and PART B (private) MUST be disjoint per gene, else Q double-counts.
+    for pub, priv in zip(gene_keys, priv_keys):
+        assert not (set(pub) & set(priv)), "public-list and private variant sets overlap -> Q double-count"
 
     # (5) write genotype blocks + real covariates (5 PCs) + real LDL phenotype, all geno-row order
     print("run (real AoU pgen):")
@@ -360,5 +363,51 @@ def merge_cohort_columns(Ag, Ak, Bg, Bk):
     return A, B, keycol
 
 
+def count_variants(pvar, genes):
+    """per-gene count of PASS biallelic variants in the RAW pvar (position-based, no plink2/keys)."""
+    counts = {name: 0 for name in genes}
+    for ln in open(pvar):
+        if ln.startswith("#"):
+            continue
+        f = ln.rstrip("\n").split("\t")
+        pos, alt, flt = int(f[1]), f[4], f[5]
+        if flt not in ("PASS", ".") or "," in alt:   # PASS + biallelic only
+            continue
+        for name, (lo, hi) in genes.items():
+            if lo <= pos < hi:
+                counts[name] += 1
+                break
+    return {k: v for k, v in counts.items() if v > 0}
+
+
+def check():
+    """Dry-run: report sizes (sample N, eligible intersection, per-gene variant counts, A/B split)
+    from the real files WITHOUT plink2 extraction or the secure run. Sanity-check before a full run."""
+    geno = {ln.split()[0] for ln in open(f"{PGEN}.psam") if not ln.startswith("#")}
+    anc = set(load_ancestry_pcs(ANCESTRY, N_PCS))
+    phe = set(load_pheno(PHENO_CSV, PHENO_COL))
+    elig = geno & anc & phe
+    print(f"samples: geno={len(geno)}  ancestry(PC)={len(anc)}  pheno(LDL)={len(phe)}")
+    print(f"  pairwise: geno∩pheno={len(geno & phe)}  geno∩anc={len(geno & anc)}  anc∩pheno={len(anc & phe)}")
+    print(f"  eligible (geno∩anc∩pheno) = {len(elig)}   (need ≥ 2*N_SUB = {2 * N_SUB})")
+    if len(elig) < 2 * N_SUB:
+        print("  !! eligible < 2*N_SUB → lower FED_NSUB, or person_id!=research_id namespace mismatch")
+
+    genes = load_gencode_genes(GENCODE, CHR, N_GENES)
+    counts = count_variants(f"{PGEN}.pvar", genes)
+    tot = sum(counts.values())
+    print(f"\nvariants (PASS biallelic, {CHR}, {len(counts)} genes with data): total m={tot}")
+    pub_tot = priv_tot = 0
+    for name, m in counts.items():
+        sh_ = round(FRAC_SHARED * m)
+        pu_ = round(FRAC_PUBONLY * m)
+        pr_ = m - sh_ - pu_
+        pub_tot += sh_ + pu_
+        priv_tot += pr_
+        print(f"  {name:<18} m={m:<5} shared={sh_:<4} public_only={pu_:<4} private={pr_}")
+    print(f"  => A public-list m={pub_tot}   B private m={priv_tot}   (synthetic {FRAC_SHARED:.0%}/{FRAC_PUBONLY:.0%}/rest split)")
+
+
 if __name__ == "__main__":
-    run()
+    import sys
+    check() if "--check" in sys.argv else run()

@@ -1,12 +1,13 @@
 #!/bin/bash
 # End-to-end federated-private SKAT (#4 benchmark): prep -> build -> secure 3-party -> compare.
 #
-#   PLINK2=$HOME/plink2 bash run_fed.sh                 # full run (default N_SUB etc.)
-#   PLINK2=$HOME/plink2 FED_NSUB=38000 bash run_fed.sh  # scale n
-#   FED_DATABITS=100 SKIP_PREP=1 bash run_fed.sh        # reuse blocks, rerun secure w/ more fixed-point range
+#   PLINK2=$HOME/plink2 bash run_fed.sh                                  # full run (default N_SUB etc.)
+#   PLINK2=$HOME/plink2 FED_NSUB=38000 FED_DATABITS=100 bash run_fed.sh  # scale n (needs more fixed-point range)
+#   SKIP_PREP=1 SKIP_BUILD=1 bash run_fed.sh                             # reuse existing blocks+config, rerun secure
 #
-# All FED_* / PLINK2 env vars pass through to fed_prep (data + config are generated to match).
-# SKIP_PREP=1 skips fed_prep (reuse existing ~/fed_prep_out); SKIP_BUILD=1 skips go build.
+# FED_* / PLINK2 env vars are BAKED into ~/fed_prep_out/config by fed_prep (data_bits, ports, ckks,
+# dims), so FED_DATABITS etc. only take effect when fed_prep runs; with SKIP_PREP=1 the existing
+# config is reused as-is. SKIP_BUILD=1 skips go build.
 set -eo pipefail
 
 REPO=$(cd "$(dirname "$0")" && pwd)

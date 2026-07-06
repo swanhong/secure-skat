@@ -460,6 +460,8 @@ func (g *ProtocolInfo) runFederatedPrivate() []float64 {
 			panic(err)
 		}
 		privateOnly = blocks
+	} else if pid == privatePid {
+		log.LLvl1("[skat_fed] WARNING: private_pid set but private_only_prefix empty -> PART B (private variants) is EMPTY")
 	}
 
 	tRun := time.Now()
