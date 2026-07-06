@@ -28,6 +28,7 @@ import json
 import math
 import os
 import subprocess
+import time
 
 import numpy as np
 
@@ -231,11 +232,14 @@ def run():
     """Real prep on the workbench. Reads AoU pgen, splits into 2 cohorts, writes genotype blocks."""
     rng = np.random.default_rng(SEED)
     os.makedirs(OUT_DIR, exist_ok=True)
+    tmr = {}
+    t = time.perf_counter()
 
     keyed = f"{OUT_DIR}/{CHR}_keyed"
     sh(f"{PLINK2} --pfile {PGEN} --max-alleles 2 --min-alleles 2 "
        f"--set-all-var-ids '@:#:$r:$a' --new-id-max-allele-len {MAX_ALLELE_LEN} "
        f"--make-just-pvar --out {keyed}")
+    tmr["keying"] = time.perf_counter() - t; t = time.perf_counter()
 
     # (2) gene -> PASS variants (read keyed .pvar; map to GENCODE genes)
     genes = load_gencode_genes(GENCODE, CHR, N_GENES)
@@ -266,12 +270,15 @@ def run():
     B_extract = [k for k in all_keys if roles_all[k] in ("shared", "private")]
     write_lines(f"{OUT_DIR}/A_keys.txt", A_extract)
     write_lines(f"{OUT_DIR}/B_keys.txt", B_extract)
+    tmr["setup"] = time.perf_counter() - t; t = time.perf_counter()
 
     # (4) extract genotypes (plink2 -> int8), reorder to a single key->column map
     Ag, Ak, Afam = plink_extract_to_int8(PGEN, f"{OUT_DIR}/A.keep", f"{OUT_DIR}/A_keys.txt",
                                          N_SUB, f"{OUT_DIR}/A_geno")
+    tmr["extract_A"] = time.perf_counter() - t; t = time.perf_counter()
     Bg, Bk, Bfam = plink_extract_to_int8(PGEN, f"{OUT_DIR}/B.keep", f"{OUT_DIR}/B_keys.txt",
                                          N_SUB, f"{OUT_DIR}/B_geno")
+    tmr["extract_B"] = time.perf_counter() - t; t = time.perf_counter()
     A_geno, B_geno, keycol = merge_cohort_columns(Ag, Ak, Bg, Bk)
     del Ag, Bg  # free pre-merge matrices (RAM-tight workbench)
     # drop any keys plink2 didn't emit (monomorphic/filtered) so build never KeyErrors
@@ -292,6 +299,9 @@ def run():
     write_pheno(Afam, pheno, f"{OUT_DIR}/A/pheno.txt")
     write_pheno(Bfam, pheno, f"{OUT_DIR}/B/pheno.txt")
     print(f"  wrote cov ({N_PCS} PCs) + pheno (LDL) -> {OUT_DIR}/{{A,B}}/")
+    tmr["write"] = time.perf_counter() - t
+    print("  [prep timing] " + " | ".join(f"{k} {v:.1f}s" for k, v in tmr.items())
+          + f" | total {sum(tmr.values()):.1f}s")
 
 
 # ---- helpers ----

@@ -58,4 +58,11 @@ for b in range(ng):
     match = d <= 1.0 + 1e-2 * abs(Qplain[b])
     ok &= match
     print(f"{b:>4} {Qsec[b]:>16.4f} {Qplain[b]:>16.4f} {rel:>10.2e}  {'ok' if match else 'MISMATCH'}")
+
+# R^2 of secure vs plaintext (plaintext = truth): 1 - SS_res/SS_tot.
+qs, qp = np.asarray(Qsec[:ng], float), np.asarray(Qplain[:ng], float)
+ss_tot = float(np.sum((qp - qp.mean()) ** 2))
+r2 = 1 - float(np.sum((qs - qp) ** 2)) / ss_tot if ss_tot > 0 else float("nan")
+maxrel = max(abs(qs[b] - qp[b]) / max(abs(qp[b]), 1e-9) for b in range(ng))
+print(f"\nR^2 (secure vs plaintext) = {r2:.6f}   |   max rel = {maxrel:.2e}")
 print("MATCH (secure == plaintext)" if ok else "MISMATCH -- investigate")

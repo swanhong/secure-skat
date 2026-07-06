@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"time"
 
 	mpc_core "github.com/hhcho/mpc-core"
@@ -235,6 +236,7 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 		}
 	}
 
+	tNull := time.Now()
 	xtxEnc, _, _, err := crypto.EncryptFloatMatrixRow(cps, xtxLocal)
 	if err != nil {
 		panic(err)
@@ -254,10 +256,14 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 		y0ty0Enc = nil
 	}
 	xtxEnc = mpcObj.Network.CollectiveBootstrapMat(cps, xtxEnc, -1)
+	log.LLvl1(fmt.Sprintf("[skat_fed]   null: encrypt+AggregateCMat(XtX,Xty,y0ty0)+bootstrap %v", time.Since(tNull).Round(time.Millisecond)))
+	tNull = time.Now()
 
 	// Invert XᵀX in SS (c rows × 1 ct, c data slots), then β̂ = (XᵀX)⁻¹·Xᵀy₀.
 	xtxSS := mpcObj.CMatToSS(cps, rtype, xtxEnc, -1, c, 1, c)
 	invSS, _ := mpcObj.MatrixInverseSymPos(xtxSS)
+	log.LLvl1(fmt.Sprintf("[skat_fed]   null: XtX->SS + MatrixInverseSymPos(EigenDecomp) %v", time.Since(tNull).Round(time.Millisecond)))
+	tNull = time.Now()
 
 	var xtyCt *rlwe.Ciphertext
 	if len(xtyEnc) > 0 {
@@ -292,6 +298,7 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 		}
 	}
 
+	log.LLvl1(fmt.Sprintf("[skat_fed]   null: Xty->SS + beta=inv*Xty + betaRep %v", time.Since(tNull).Round(time.Millisecond)))
 	return skatNull{betaHat: betaHat, betaRep: betaRep, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
 }
 
@@ -491,8 +498,7 @@ func denseFromStream(gfs *GenoFileStream) *mat.Dense {
 
 // loadDenseBlocks reads nGenes per-gene int8 genotype block files into dense matrices for the
 // federated-private private side. path b = fmt.Sprintf(prefix, b), row-major n×m_b with m_b
-// inferred from file size / n (int8 = 1 byte/cell). ponytail: dense load — see warning.md (full-N
-// needs streaming; #4 subsamples n so this is fine).
+// inferred from file size / n (int8 = 1 byte/cell).
 func loadDenseBlocks(prefix string, nGenes, n int) ([]*mat.Dense, error) {
 	if n <= 0 {
 		return nil, fmt.Errorf("loadDenseBlocks: n=%d must be positive", n)
@@ -527,7 +533,9 @@ func (ast *AssocTest) readGenoBlockLocal(b int) *mat.Dense {
 // per-party design X=[1|cov] and centered y₀ (empty on pid 0).
 func (ast *AssocTest) nullSetup() (null skatNull, nullRSS crypto.CipherVector, X *mat.Dense, y0 []float64) {
 	null = ast.computeBetaHatEnc()
+	tRSS := time.Now()
 	nullRSS = ast.computeNullRSSEnc(null)
+	log.LLvl1(fmt.Sprintf("[skat_fed]   null: RSS = y0ty0 - Xty·beta %v", time.Since(tRSS).Round(time.Millisecond)))
 	if ast.general.mpcObj[0].GetPid() > 0 {
 		center := 0.0
 		if ast.general.config.BinaryPheno {
@@ -832,9 +840,23 @@ func (ast *AssocTest) privateBlockStat(G *mat.Dense, null skatNull, X *mat.Dense
 // private party's private-variant genotypes for gene b (only read on privatePid, must be nil or
 // length GenoNumBlocks). Caller collectively decrypts the result.
 //
-// ponytail: privateOnly injected as dense per-gene matrices (real deployment would stream them);
-// fine until the private set outgrows memory. Genes absent from the public list (no block) are out
-// of scope — the public gene/block set is defined by the public-list party.
+// blockSecStats formats min/Q1/avg/Q3/max of per-block seconds (nearest-rank quantiles).
+func blockSecStats(secs []float64) string {
+	n := len(secs)
+	if n == 0 {
+		return "(none)"
+	}
+	sorted := append([]float64(nil), secs...)
+	sort.Float64s(sorted)
+	sum := 0.0
+	for _, v := range secs {
+		sum += v
+	}
+	q := func(p float64) float64 { return sorted[int(p*float64(n-1)+0.5)] }
+	return fmt.Sprintf("min %.1fs Q1 %.1fs avg %.1fs Q3 %.1fs max %.1fs",
+		sorted[0], q(0.25), sum/float64(n), q(0.75), sorted[n-1])
+}
+
 func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, privatePid int) crypto.CipherVector {
 	mpcObj := ast.general.mpcObj[0]
 	cps := ast.general.cps
@@ -850,6 +872,7 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	}
 	qBlockSS := mpc_core.InitRVec(rtype.Zero(), nB)
 	tBlocks := time.Now()
+	blockSecs := make([]float64, 0, nB)
 	for b := 0; b < nB; b++ {
 		tb := time.Now()
 		acc := mpc_core.InitRVec(rtype.Zero(), 1)
@@ -868,9 +891,10 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		acc.Add(ast.privateBlockStat(G, null, X, y0, privatePid))
 
 		qBlockSS[b] = acc[0]
-		log.LLvl1(fmt.Sprintf("[skat_fed] block %d/%d: %v", b+1, nB, time.Since(tb).Round(time.Millisecond)))
+		blockSecs = append(blockSecs, time.Since(tb).Seconds())
 	}
-	log.LLvl1(fmt.Sprintf("[skat_fed] all %d blocks: %v", nB, time.Since(tBlocks).Round(time.Millisecond)))
+	log.LLvl1(fmt.Sprintf("[skat_fed] %d blocks: %v total | per-block %s",
+		nB, time.Since(tBlocks).Round(time.Millisecond), blockSecStats(blockSecs)))
 
 	// Common 1/(2σ̂²) applied once (linear, distributes over A+B).
 	scaleSS, ok := ast.general.rareVariantScaleShares(nullRSS)
