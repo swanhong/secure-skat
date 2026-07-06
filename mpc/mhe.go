@@ -144,7 +144,11 @@ func (netObj ParallelNetworks) CollectiveInit(params *ckks.Parameters, prec uint
 	cps = crypto.NewCryptoParams(*params, skShard, skShard.CopyNew(), pk, rlk, prec, nprocs)
 
 	smallDim := 20
-	log.LLvl1("RotKeyGen: shifts <=", smallDim, "and powers of two up to", cps.GetSlots())
+	babyFlag := true
+	if strings.TrimSpace(os.Getenv("SFGWAS_ROTKEY_POW2ONLY")) != "" {
+		smallDim, babyFlag = 0, false
+	}
+	log.LLvl1("RotKeyGen: shifts <=", smallDim, "babyFlag", babyFlag, "powers of two up to", cps.GetSlots())
 	if strings.TrimSpace(os.Getenv("SFGWAS_SKIP_ROTKEYGEN")) != "" {
 		log.LLvl1("CollectiveInit: skipping rotation-key generation because SFGWAS_SKIP_ROTKEYGEN is set")
 		log.LLvl1("CollectiveInit finished")
@@ -156,7 +160,7 @@ func (netObj ParallelNetworks) CollectiveInit(params *ckks.Parameters, prec uint
 		for i := range netObj {
 			crsVec[i] = netObj[i].sharedCRS()
 		}
-		rotKs := netObj.CollectiveRotKeyGen(params, skShard, crsVec, crypto.GenerateRotKeys(cps.GetSlots(), smallDim, true))
+		rotKs := netObj.CollectiveRotKeyGen(params, skShard, crsVec, crypto.GenerateRotKeys(cps.GetSlots(), smallDim, babyFlag))
 		cps.SetEvaluators(*params, rlk, rotKs)
 	}
 
