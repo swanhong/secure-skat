@@ -256,13 +256,15 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 		y0ty0Enc = nil
 	}
 	xtxEnc = mpcObj.Network.CollectiveBootstrapMat(cps, xtxEnc, -1)
-	log.LLvl1(fmt.Sprintf("[skat_fed]   null: encrypt+AggregateCMat(XtX,Xty,y0ty0)+bootstrap %v", time.Since(tNull).Round(time.Millisecond)))
+	fedTimings.nullAgg = time.Since(tNull)
+	log.LLvl1(fmt.Sprintf("[skat_fed]   null: encrypt+AggregateCMat(XtX,Xty,y0ty0)+bootstrap %v", fedTimings.nullAgg.Round(time.Millisecond)))
 	tNull = time.Now()
 
 	// Invert XᵀX in SS (c rows × 1 ct, c data slots), then β̂ = (XᵀX)⁻¹·Xᵀy₀.
 	xtxSS := mpcObj.CMatToSS(cps, rtype, xtxEnc, -1, c, 1, c)
 	invSS, _ := mpcObj.MatrixInverseSymPos(xtxSS)
-	log.LLvl1(fmt.Sprintf("[skat_fed]   null: XtX->SS + MatrixInverseSymPos(EigenDecomp) %v", time.Since(tNull).Round(time.Millisecond)))
+	fedTimings.nullInv = time.Since(tNull)
+	log.LLvl1(fmt.Sprintf("[skat_fed]   null: XtX->SS + MatrixInverseSymPos(EigenDecomp) %v", fedTimings.nullInv.Round(time.Millisecond)))
 	tNull = time.Now()
 
 	var xtyCt *rlwe.Ciphertext
@@ -298,7 +300,8 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 		}
 	}
 
-	log.LLvl1(fmt.Sprintf("[skat_fed]   null: Xty->SS + beta=inv*Xty + betaRep %v", time.Since(tNull).Round(time.Millisecond)))
+	fedTimings.nullBeta = time.Since(tNull)
+	log.LLvl1(fmt.Sprintf("[skat_fed]   null: Xty->SS + beta=inv*Xty + betaRep %v", fedTimings.nullBeta.Round(time.Millisecond)))
 	return skatNull{betaHat: betaHat, betaRep: betaRep, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
 }
 
@@ -535,7 +538,8 @@ func (ast *AssocTest) nullSetup() (null skatNull, nullRSS crypto.CipherVector, X
 	null = ast.computeBetaHatEnc()
 	tRSS := time.Now()
 	nullRSS = ast.computeNullRSSEnc(null)
-	log.LLvl1(fmt.Sprintf("[skat_fed]   null: RSS = y0ty0 - Xty·beta %v", time.Since(tRSS).Round(time.Millisecond)))
+	fedTimings.nullRSS = time.Since(tRSS)
+	log.LLvl1(fmt.Sprintf("[skat_fed]   null: RSS = y0ty0 - Xty·beta %v", fedTimings.nullRSS.Round(time.Millisecond)))
 	if ast.general.mpcObj[0].GetPid() > 0 {
 		center := 0.0
 		if ast.general.config.BinaryPheno {
@@ -840,6 +844,13 @@ func (ast *AssocTest) privateBlockStat(G *mat.Dense, null skatNull, X *mat.Dense
 // private party's private-variant genotypes for gene b (only read on privatePid, must be nil or
 // length GenoNumBlocks). Caller collectively decrypts the result.
 //
+// fedTimings accumulates skat_fed phase durations for the end-of-run tree (runFederatedPrivate
+// prints it, combined with mpc.SetupTiming). One run per process; not concurrency-safe.
+var fedTimings struct {
+	nullAgg, nullInv, nullBeta, nullRSS, nullTotal, blocks, total time.Duration
+	blockSecs []float64
+}
+
 // blockSecStats formats min/Q1/avg/Q3/max of per-block seconds (nearest-rank quantiles).
 func blockSecStats(secs []float64) string {
 	n := len(secs)
@@ -864,7 +875,8 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 
 	tStart := time.Now()
 	null, nullRSS, X, y0 := ast.nullSetup()
-	log.LLvl1(fmt.Sprintf("[skat_fed] null model: %v", time.Since(tStart).Round(time.Millisecond)))
+	fedTimings.nullTotal = time.Since(tStart)
+	log.LLvl1(fmt.Sprintf("[skat_fed] null model: %v", fedTimings.nullTotal.Round(time.Millisecond)))
 
 	nB := ast.general.config.GenoNumBlocks
 	if mpcObj.GetPid() == privatePid && privateOnly != nil && len(privateOnly) != nB {
@@ -893,8 +905,10 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		qBlockSS[b] = acc[0]
 		blockSecs = append(blockSecs, time.Since(tb).Seconds())
 	}
+	fedTimings.blocks = time.Since(tBlocks)
+	fedTimings.blockSecs = blockSecs
 	log.LLvl1(fmt.Sprintf("[skat_fed] %d blocks: %v total | per-block %s",
-		nB, time.Since(tBlocks).Round(time.Millisecond), blockSecStats(blockSecs)))
+		nB, fedTimings.blocks.Round(time.Millisecond), blockSecStats(blockSecs)))
 
 	// Common 1/(2σ̂²) applied once (linear, distributes over A+B).
 	scaleSS, ok := ast.general.rareVariantScaleShares(nullRSS)
@@ -906,6 +920,7 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		scaleVec[b] = scaleSS[0].Copy()
 	}
 	qBlockSS = mpcObj.TruncVec(mpcObj.SSMultElemVec(qBlockSS, scaleVec), mpcObj.GetDataBits(), mpcObj.GetFracBits())
-	log.LLvl1(fmt.Sprintf("[skat_fed] total compute: %v", time.Since(tStart).Round(time.Millisecond)))
+	fedTimings.total = time.Since(tStart)
+	log.LLvl1(fmt.Sprintf("[skat_fed] total compute: %v", fedTimings.total.Round(time.Millisecond)))
 	return mpcObj.SSToCVec(cps, qBlockSS)
 }

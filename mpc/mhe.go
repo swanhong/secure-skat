@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"gonum.org/v1/gonum/mat"
 
@@ -122,6 +123,10 @@ func (netObj *Network) aggregateKeySwitchShare(prot multiparty.KeySwitchProtocol
 	return out
 }
 
+// SetupTiming records the collective crypto-setup phase durations (for the skat_fed timing tree).
+// Package-level: a run has one CollectiveInit; not concurrency-safe (benchmark instrumentation).
+var SetupTiming struct{ PubKey, RelinKey, RotKey time.Duration }
+
 func (netObj ParallelNetworks) CollectiveInit(params *ckks.Parameters, prec uint) (cps *crypto.CryptoParams) {
 	log.LLvl1("CollectiveInit started")
 
@@ -134,11 +139,15 @@ func (netObj ParallelNetworks) CollectiveInit(params *ckks.Parameters, prec uint
 
 	baseCRS := netObj[0].sharedCRS()
 
-	log.LLvl1("PubKeyGen")
+	t := time.Now()
 	pk := netObj[0].CollectivePubKeyGen(params, skShard, baseCRS)
+	SetupTiming.PubKey = time.Since(t)
+	log.LLvl1(fmt.Sprintf("PubKeyGen %v", SetupTiming.PubKey.Round(time.Millisecond)))
 
-	log.LLvl1("RelinKeyGen")
+	t = time.Now()
 	rlk := netObj[0].CollectiveRelinKeyGen(params, skShard, baseCRS)
+	SetupTiming.RelinKey = time.Since(t)
+	log.LLvl1(fmt.Sprintf("RelinKeyGen %v", SetupTiming.RelinKey.Round(time.Millisecond)))
 
 	nprocs := runtime.GOMAXPROCS(0)
 	cps = crypto.NewCryptoParams(*params, skShard, skShard.CopyNew(), pk, rlk, prec, nprocs)
@@ -155,6 +164,7 @@ func (netObj ParallelNetworks) CollectiveInit(params *ckks.Parameters, prec uint
 		return
 	}
 
+	t = time.Now()
 	if netObj[0].GetPid() > 0 {
 		crsVec := make([]sampling.PRNG, len(netObj))
 		for i := range netObj {
@@ -163,8 +173,9 @@ func (netObj ParallelNetworks) CollectiveInit(params *ckks.Parameters, prec uint
 		rotKs := netObj.CollectiveRotKeyGen(params, skShard, crsVec, crypto.GenerateRotKeys(cps.GetSlots(), smallDim, babyFlag))
 		cps.SetEvaluators(*params, rlk, rotKs)
 	}
-
-	log.LLvl1("CollectiveInit finished")
+	SetupTiming.RotKey = time.Since(t)
+	log.LLvl1(fmt.Sprintf("CollectiveInit finished (RotKeyGen %v) | setup total %v",
+		SetupTiming.RotKey.Round(time.Millisecond), (SetupTiming.PubKey + SetupTiming.RelinKey + SetupTiming.RotKey).Round(time.Millisecond)))
 	return
 }
 

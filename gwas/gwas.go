@@ -471,9 +471,40 @@ func (g *ProtocolInfo) runFederatedPrivate() []float64 {
 	}
 	tDec := time.Now()
 	out := crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, q, -1))[:g.config.GenoNumBlocks]
+	dec := time.Since(tDec)
 	log.LLvl1(fmt.Sprintf("[skat_fed] decrypt: %v | total run: %v",
-		time.Since(tDec).Round(time.Millisecond), time.Since(tRun).Round(time.Millisecond)))
+		dec.Round(time.Millisecond), time.Since(tRun).Round(time.Millisecond)))
+	logFedTimingTree(dec)
 	return out
+}
+
+// logFedTimingTree prints the step/substep timing tree at the end of a skat_fed run, combining the
+// crypto-setup phase (mpc.SetupTiming) with the compute phases captured in fedTimings.
+func logFedTimingTree(dec time.Duration) {
+	ms := func(d time.Duration) time.Duration { return d.Round(time.Millisecond) }
+	st := mpc.SetupTiming
+	setup := st.PubKey + st.RelinKey + st.RotKey
+	scale := fedTimings.total - fedTimings.nullTotal - fedTimings.blocks // Σw²s² scale + SSToCVec
+	grand := setup + fedTimings.total + dec
+	for _, ln := range []string{
+		"[skat_fed] timing tree:",
+		fmt.Sprintf("  ├─ crypto setup            %v", ms(setup)),
+		fmt.Sprintf("  │    ├─ PubKeyGen          %v", ms(st.PubKey)),
+		fmt.Sprintf("  │    ├─ RelinKeyGen        %v", ms(st.RelinKey)),
+		fmt.Sprintf("  │    └─ RotKeyGen          %v", ms(st.RotKey)),
+		fmt.Sprintf("  ├─ compute                 %v", ms(fedTimings.total)),
+		fmt.Sprintf("  │    ├─ null model         %v", ms(fedTimings.nullTotal)),
+		fmt.Sprintf("  │    │    ├─ aggregate      %v", ms(fedTimings.nullAgg)),
+		fmt.Sprintf("  │    │    ├─ inverse        %v", ms(fedTimings.nullInv)),
+		fmt.Sprintf("  │    │    ├─ beta           %v", ms(fedTimings.nullBeta)),
+		fmt.Sprintf("  │    │    └─ RSS            %v", ms(fedTimings.nullRSS)),
+		fmt.Sprintf("  │    ├─ blocks (%d)         %v  [per-block %s]", len(fedTimings.blockSecs), ms(fedTimings.blocks), blockSecStats(fedTimings.blockSecs)),
+		fmt.Sprintf("  │    └─ scale+pack         %v", ms(scale)),
+		fmt.Sprintf("  ├─ decrypt                 %v", ms(dec)),
+		fmt.Sprintf("  └─ TOTAL                   %v", ms(grand)),
+	} {
+		log.LLvl1(ln)
+	}
 }
 
 // SKATFederatedPrivate runs the federated-private per-gene SKAT, saving per-gene Q.
