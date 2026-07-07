@@ -193,7 +193,8 @@ func (ln localNull) matrices(c int) (xtx [][]float64, xty []float64, y0ty0 float
 // skatNull holds the secure null-model results from the c-dim aggregates.
 type skatNull struct {
 	betaHat  crypto.CipherVector // β̂ in slots 0..c-1
-	betaRep  crypto.CipherVector // betaRep[ℓ] = Enc(β̂_ℓ) in every slot (for the score)
+	betaRep  crypto.CipherVector // betaRep[ℓ] = Enc(β̂_ℓ) in every slot (PART B CKKS score)
+	betaSS   mpc_core.RVec       // β̂ in secret shares
 	xtyEnc   crypto.CipherVector // global Xᵀy₀ (kept for RSS)
 	y0ty0Enc crypto.CipherVector // global y₀ᵀy₀ (kept for RSS)
 	c        int
@@ -302,7 +303,7 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 
 	fedTimings.nullBeta = time.Since(tNull)
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: Xty->SS + beta=inv*Xty + betaRep %v", fedTimings.nullBeta.Round(time.Millisecond)))
-	return skatNull{betaHat: betaHat, betaRep: betaRep, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
+	return skatNull{betaHat: betaHat, betaRep: betaRep, betaSS: betaSS, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
 }
 
 // maskFirstSlots zeros slots >= c, keeping 0..c-1 — used before InnerSumAll so the
@@ -364,6 +365,40 @@ func (ast *AssocTest) partyScore(GtX *mat.Dense, Gty0 []float64, null skatNull) 
 		sEnc = crypto.CSub(cps, sEnc, term)
 	}
 	return sEnc
+}
+
+// scoreSS computes the global secure score s = Gᵀy₀ − (GᵀX)·β̂ in secret shares.
+func (ast *AssocTest) scoreSS(GtX *mat.Dense, Gty0 []float64, betaSS mpc_core.RVec, m int) mpc_core.RVec {
+	mpcObj := ast.general.mpcObj[0]
+	rtype := mpcObj.GetRType()
+	fracBits := mpcObj.GetFracBits()
+	c := len(betaSS)
+
+	gty0SS := mpc_core.InitRVec(rtype.Zero(), m)
+	gtxSS := mpc_core.InitRMat(rtype.Zero(), m, c)
+	if GtX != nil && len(Gty0) == m {
+		for j := 0; j < m; j++ {
+			gty0SS[j] = rtype.FromFloat64(Gty0[j], fracBits)
+			for k := 0; k < c; k++ {
+				gtxSS[j][k] = rtype.FromFloat64(GtX.At(j, k), fracBits)
+			}
+		}
+	}
+
+	betaCol := make(mpc_core.RMat, c)
+	for k := 0; k < c; k++ {
+		betaCol[k] = mpc_core.RVec{betaSS[k]}
+	}
+	gtxBeta := mpcObj.SSMultMat(gtxSS, betaCol) // (m×c)·(c×1) = global GᵀX·β̂ (frac 2×)
+	prod := make(mpc_core.RVec, m)
+	for j := 0; j < m; j++ {
+		prod[j] = gtxBeta[j][0]
+	}
+	prod = mpcObj.TruncVec(prod, mpcObj.GetDataBits(), fracBits)
+
+	s := gty0SS.Copy()
+	s.Sub(prod) // exact SS subtraction — cancellation is lossless here
+	return s
 }
 
 // signedWeight returns the minor-allele-oriented weight ŵ_j = t_j·w_j (t_j=−1 iff p̄_j>½),
@@ -559,24 +594,21 @@ func (ast *AssocTest) blockStat(b, nsnps int, null skatNull, X *mat.Dense, y0 []
 	cps := ast.general.cps
 	pid := mpcObj.GetPid()
 
-	var SBlock crypto.CipherMatrix
+	var GtX *mat.Dense
+	var Gty0 []float64
 	dosage := make([]float64, nsnps)
 	if pid > 0 {
 		lc := LocalContract(ast.readGenoBlockLocal(b), X, y0)
-		SBlock = crypto.CipherMatrix{ast.partyScore(lc.GtX, lc.Gty0, null)}
-		dosage = lc.DosageSum
+		GtX, Gty0, dosage = lc.GtX, lc.Gty0, lc.DosageSum
 	}
 
-	sAggr := mpcObj.Network.AggregateCMat(cps, SBlock)
-	if pid > 0 && len(sAggr) > 0 && len(sAggr[0]) > 0 &&
-		mpcObj.Network.CanCollectiveBootstrap(cps, sAggr[0][0].Level()) {
-		sAggr = mpcObj.Network.CollectiveBootstrapMat(cps, sAggr, -1)
-	}
+	// Score in secret shares: the Gᵀy₀ − GᵀX·β̂
+	sCVec := mpcObj.SSToCVec(cps, ast.scoreSS(GtX, Gty0, null.betaSS, nsnps))
 	weightEnc := mpcObj.SSToCVec(cps, ast.signedWeight(dosage, nsnps))
 
 	var qRaw, bLin crypto.CipherVector
-	if pid > 0 && len(sAggr) > 0 {
-		qRaw, bLin, _, _, _, _ = ast.ScoreCalculation(sAggr[0], weightEnc)
+	if pid > 0 && len(sCVec) > 0 {
+		qRaw, bLin, _, _, _, _ = ast.ScoreCalculation(sCVec, weightEnc)
 	}
 	return ast.scalarCiphertextToShares(qRaw), ast.scalarCiphertextToShares(bLin)
 }
@@ -847,9 +879,9 @@ func (ast *AssocTest) privateBlockStat(G *mat.Dense, null skatNull, X *mat.Dense
 // fedTimings accumulates skat_fed phase durations for the end-of-run tree (runFederatedPrivate
 // prints it, combined with mpc.SetupTiming). One run per process; not concurrency-safe.
 var fedTimings struct {
-	initTotal, loadPriv, assocInit                               time.Duration // pre-compute phases
+	initTotal, loadPriv, assocInit                                time.Duration // pre-compute phases
 	nullAgg, nullInv, nullBeta, nullRSS, nullTotal, blocks, total time.Duration
-	blockSecs []float64
+	blockSecs                                                     []float64
 }
 
 // blockSecStats formats min/Q1/avg/Q3/max of per-block seconds (nearest-rank quantiles).
