@@ -154,8 +154,7 @@ func (netObj ParallelNetworks) CollectiveInit(params *ckks.Parameters, prec uint
 
 	smallDim := 20
 	babyFlag := true
-	// config rotkey_pow2only (or the SFGWAS_ROTKEY_POW2ONLY env override) → power-of-two keys only.
-	if rotPow2Only || strings.TrimSpace(os.Getenv("SFGWAS_ROTKEY_POW2ONLY")) != "" {
+	if rotPow2Only { // config rotkey_pow2only → power-of-two rotation keys only (InnerSumAll)
 		smallDim, babyFlag = 0, false
 	}
 	log.LLvl1("RotKeyGen: shifts <=", smallDim, "babyFlag", babyFlag, "powers of two up to", cps.GetSlots())

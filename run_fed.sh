@@ -17,10 +17,10 @@ PREP=$REPO/scripts/preprocessing
 T_PREP=0 T_BUILD=0 T_SECURE=0 T_COMPARE=0
 
 echo "=== run knobs (env; blank = fed_prep default) ==="
-printf '  PLINK2=%s\n  FED_CHR=%s FED_NSUB=%s FED_NGENES=%s FED_NPCS=%s\n  FED_CKKS=%s FED_DATABITS=%s FED_FRACBITS=%s FED_PHENO_COL=%s\n  SKIP_PREP=%s SKIP_BUILD=%s SFGWAS_ROTKEY_POW2ONLY=%s\n' \
+printf '  PLINK2=%s\n  FED_CHR=%s FED_NSUB=%s FED_NGENES=%s FED_NPCS=%s\n  FED_CKKS=%s FED_DATABITS=%s FED_FRACBITS=%s FED_PHENO_COL=%s\n  SKIP_PREP=%s SKIP_BUILD=%s\n' \
   "${PLINK2:-plink2}" "${FED_CHR:-}" "${FED_NSUB:-}" "${FED_NGENES:-}" "${FED_NPCS:-}" \
   "${FED_CKKS:-}" "${FED_DATABITS:-}" "${FED_FRACBITS:-}" "${FED_PHENO_COL:-}" \
-  "${SKIP_PREP:-}" "${SKIP_BUILD:-}" "${SFGWAS_ROTKEY_POW2ONLY:-}"
+  "${SKIP_PREP:-}" "${SKIP_BUILD:-}"
 
 if [ -z "$SKIP_PREP" ]; then
   echo "=== [1/4] fed_prep (blocks + cov + pheno + config) ==="

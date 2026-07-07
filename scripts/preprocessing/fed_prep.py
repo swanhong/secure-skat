@@ -1,26 +1,21 @@
 #!/usr/bin/env python3
 """Federated-private SKAT data PREP: real AoU exome pgen -> per-gene int8 genotype blocks.
 
-Simulates the MVP+AoU two-cohort split from a single AoU pgen: split samples into
-cohort A (public-list owner) and B (private), split each gene's variants into shared/public_only/
-private. Writes the int8 blocks the Go `skat_fed` mode reads:
+Splits one AoU pgen into cohort A (public-list owner) + B (private), and each gene's variants into
+shared/public_only/private. Writes the int8 blocks the Go `skat_fed` mode reads:
 
-    A/geno.<g>.bin    cohort A, public-list variants            [PART A]
-    B/geno.<g>.bin    cohort B, public list ALIGNED (public_only cols = 0)   [PART A]
-    B/priv.<g>.bin    cohort B, private variants                [PART B]
-    {A,B}/cov.txt     real covariates: first 5 AoU ancestry PCs, in geno-row order
-    {A,B}/pheno.txt   real phenotype (LDL, inverse-normal), in geno-row order
-    manifest.json     per-gene m (public/private), gene list
+    A/geno.<g>.bin    cohort A, public-list variants                        [PART A]
+    B/geno.<g>.bin    cohort B, public list ALIGNED (public_only cols = 0)  [PART A]
+    B/priv.<g>.bin    cohort B, private variants                            [PART B]
+    {A,B}/cov.txt     covariates = first N_PCS AoU ancestry PCs, geno-row order
+    {A,B}/pheno.txt   phenotype (LDL), geno-row order
+    manifest.json     per-gene m (public/private)
 
-Block format = row-major n*m int8 (dosage 0/1/2, missing<0 -> Go reads 0); identical to
-scripts/plinkBedToBinary.py output and gwas.loadDenseBlocks. Block assembly/alignment + the
-plaintext federated==pooled check live in skat_plain_local.py.
-
-DATA ONLY: extracts/shapes genotypes + real PC covariates + real LDL phenotype. No SKAT
-computation. Samples = geno ∩ pheno(LDL non-missing) ∩ ancestry(PC); join key person_id==research_id.
-
-Key = chr:pos:ref:alt / GRCh38 / biallelic-only / PASS (see .local/warning.md). Secure SKAT is
-n-independent, so N_SUB subsamples samples to keep blocks small; m stays realistic.
+Block = row-major n*m int8 (dosage 0/1/2, missing<0 -> Go reads 0), same layout as
+plinkBedToBinary.py. Samples = geno ∩ pheno(LDL) ∩ ancestry(PC), join key person_id==research_id.
+Key = chr:pos:ref:alt / GRCh38 / biallelic / PASS (see .local/warning.md). Secure SKAT is
+n-independent, so N_SUB subsamples to keep blocks small while m stays realistic. Block
+assembly/alignment lives in skat_plain_local.py.
 
     python3 fed_prep.py    # real prep on the workbench (needs plink2 + AoU pgen)
 """
@@ -34,7 +29,7 @@ import numpy as np
 
 from skat_plain_local import build_party_blocks
 
-# ---- config (env-overridable; defaults = AoU Workbench Controlled-Tier layout, which AoU
+# ---- config (env-overridable; defaults = AoU Workbench Controlled-Tier layout) ----
 CHR = os.environ.get("FED_CHR", "chr22")
 _V9 = "~/workspace/vwb-aou-datasets-controlled-v9/v9/wgs/short_read/snpindel"
 PGEN = os.path.expanduser(os.environ.get("FED_PGEN", f"{_V9}/exome/pgen/exome.{CHR}"))
@@ -375,7 +370,7 @@ def merge_cohort_columns(Ag, Ak, Bg, Bk):
     keycol = {k: i for i, k in enumerate(keys)}
     A = np.zeros((Ag.shape[0], len(keys)), dtype=Ag.dtype)
     B = np.zeros((Bg.shape[0], len(keys)), dtype=Bg.dtype)
-    A[:, np.fromiter((keycol[k] for k in Ak), int, len(Ak))] = Ag 
+    A[:, np.fromiter((keycol[k] for k in Ak), int, len(Ak))] = Ag
     B[:, np.fromiter((keycol[k] for k in Bk), int, len(Bk))] = Bg
     return A, B, keycol
 
