@@ -17,6 +17,7 @@ import numpy as np
 from skat_plain_local import federated_Q_from_blocks, federated_Q_split_from_blocks
 
 OUT = os.path.expanduser(os.environ.get("FED_OUT", "~/fed_prep_out"))
+RIDGE_REL = 1e-6  # match secure computeBetaHatEnc Tikhonov ridge (gwas/skat.go ridgeRel)
 
 
 def load_blocks(sub, kind, n, ng):
@@ -43,7 +44,7 @@ XB, yB = load_xy("B", nB)
 t0 = time.perf_counter()
 Qplain = federated_Q_from_blocks(
     load_blocks("A", "geno", nA, ng), load_blocks("B", "geno", nB, ng),
-    load_blocks("B", "priv", nB, ng), XA, yA, XB, yB)
+    load_blocks("B", "priv", nB, ng), XA, yA, XB, yB, ridge_rel=RIDGE_REL)
 print(f"  plaintext federated_Q: {time.perf_counter() - t0:.2f}s")
 Qsec = np.atleast_1d(np.loadtxt(f"{OUT}/out/party2/skat_fed_out.txt"))
 
@@ -72,7 +73,7 @@ fA, fB = f"{OUT}/out/party2/skat_fed_A.txt", f"{OUT}/out/party2/skat_fed_B.txt"
 if os.path.exists(fA) and os.path.exists(fB):
     QAp, QBp = federated_Q_split_from_blocks(
         load_blocks("A", "geno", nA, ng), load_blocks("B", "geno", nB, ng),
-        load_blocks("B", "priv", nB, ng), XA, yA, XB, yB)
+        load_blocks("B", "priv", nB, ng), XA, yA, XB, yB, ridge_rel=RIDGE_REL)
     QAs = np.atleast_1d(np.loadtxt(fA))
     QBs = np.atleast_1d(np.loadtxt(fB))
     print(f"\n--- PART A vs PART B split (which half errs) ---")

@@ -58,17 +58,30 @@ def build_party_blocks(gene_keys, priv_keys, roles, A_geno, B_geno, keycol, with
     return A_blocks, B_aligned, B_priv, union_blocks
 
 
-def federated_Q_from_blocks(A_blocks, B_aligned, B_priv, XA, yA, XB, yB):
+def _fed_null(XA, yA, XB, yB, ridge_rel=0.0):
+    """Null model (β̂, σ², rA, rB, two_n) from the pooled normal equations. ridge_rel>0 mirrors the
+    secure Tikhonov ridge (skat.go computeBetaHatEnc): eps = ridge_rel·(hub-local covariate-diag
+    trace)/c added to the XᵀX diagonal, intercept excluded. hub = party 1 = cohort A. The secure
+    cancellation amplifies this tiny ridge, so the reference must apply it to match."""
+    nA, nB = len(yA), len(yB)
+    XtX = XA.T @ XA + XB.T @ XB
+    Xty = XA.T @ yA + XB.T @ yB
+    if ridge_rel:
+        c = XA.shape[1]
+        XtX_A = XA.T @ XA
+        eps = ridge_rel * sum(XtX_A[k, k] for k in range(1, c)) / c
+        for k in range(1, c):
+            XtX[k, k] += eps
+    beta = np.linalg.solve(XtX, Xty)
+    sigma2 = (yA @ yA + yB @ yB - Xty @ beta) / (nA + nB - XA.shape[1])
+    return beta, sigma2, yA - XA @ beta, yB - XB @ beta, 2.0 * (nA + nB)
+
+
+def federated_Q_from_blocks(A_blocks, B_aligned, B_priv, XA, yA, XB, yB, ridge_rel=0.0):
     """Per-gene Q from the block tensors, mirroring the secure path exactly.
     A_blocks[g]: nA x m_pub ; B_aligned[g]: nB x m_pub (public_only cols already 0) ;
     B_priv[g]: nB x m_privg . Returns list of per-gene Q."""
-    nA, nB = len(yA), len(yB)
-    two_n = 2.0 * (nA + nB)
-    XtX = XA.T @ XA + XB.T @ XB
-    Xty = XA.T @ yA + XB.T @ yB
-    beta = np.linalg.solve(XtX, Xty)
-    sigma2 = (yA @ yA + yB @ yB - Xty @ beta) / (nA + nB - XA.shape[1])
-    rA, rB = yA - XA @ beta, yB - XB @ beta
+    beta, sigma2, rA, rB, two_n = _fed_null(XA, yA, XB, yB, ridge_rel)
 
     Q = []
     for g in range(len(A_blocks)):
@@ -87,16 +100,10 @@ def federated_Q_from_blocks(A_blocks, B_aligned, B_priv, XA, yA, XB, yB):
     return Q
 
 
-def federated_Q_split_from_blocks(A_blocks, B_aligned, B_priv, XA, yA, XB, yB):
+def federated_Q_split_from_blocks(A_blocks, B_aligned, B_priv, XA, yA, XB, yB, ridge_rel=0.0):
     """Per-gene (Q_partA, Q_partB) — same math as federated_Q_from_blocks but split, for secure
     A-vs-B error localization. Q_partA = public list (A + B aligned); Q_partB = B private."""
-    nA, nB = len(yA), len(yB)
-    two_n = 2.0 * (nA + nB)
-    XtX = XA.T @ XA + XB.T @ XB
-    Xty = XA.T @ yA + XB.T @ yB
-    beta = np.linalg.solve(XtX, Xty)
-    sigma2 = (yA @ yA + yB @ yB - Xty @ beta) / (nA + nB - XA.shape[1])
-    rA, rB = yA - XA @ beta, yB - XB @ beta
+    beta, sigma2, rA, rB, two_n = _fed_null(XA, yA, XB, yB, ridge_rel)
     QA, QB = [], []
     for g in range(len(A_blocks)):
         qa = sum(_variant_q(A_blocks[g][:, k] @ rA + B_aligned[g][:, k] @ rB,
