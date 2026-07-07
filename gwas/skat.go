@@ -910,6 +910,7 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	null, nullRSS, X, y0 := ast.nullSetup()
 	fedTimings.nullTotal = time.Since(tStart)
 	log.LLvl1(fmt.Sprintf("[skat_fed] null model: %v", fedTimings.nullTotal.Round(time.Millisecond)))
+	fedBetaDec = mpcObj.RevealSymVec(null.betaSS).ToFloat(mpcObj.GetFracBits()) // diag: β̂ precision check
 
 	nB := ast.general.config.GenoNumBlocks
 	if mpcObj.GetPid() == privatePid && privateOnly != nil && len(privateOnly) != nB {
@@ -971,3 +972,7 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 // fedSplitA/B hold the per-gene PART A / PART B Q (scaled by 1/(2σ̂²)) for the diagnostic
 // A-vs-B localization; decrypted + saved by runFederatedPrivate. Not part of the protocol output.
 var fedSplitA, fedSplitB crypto.CipherVector
+
+// fedBetaDec: revealed null-model β̂ (diagnostic — compare to the plaintext solve to see whether
+// the secure null model, not the score, drives the residual Q error).
+var fedBetaDec []float64

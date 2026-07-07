@@ -14,7 +14,7 @@ import time
 
 import numpy as np
 
-from skat_plain_local import federated_Q_from_blocks, federated_Q_split_from_blocks
+from skat_plain_local import federated_Q_from_blocks, federated_Q_split_from_blocks, _fed_null
 
 OUT = os.path.expanduser(os.environ.get("FED_OUT", "~/fed_prep_out"))
 RIDGE_REL = 1e-6  # match secure computeBetaHatEnc Tikhonov ridge (gwas/skat.go ridgeRel)
@@ -83,3 +83,15 @@ if os.path.exists(fA) and os.path.exists(fB):
         brel = abs(QBs[b] - QBp[b]) / max(abs(QBp[b]), 1e-9)
         print(f"{b:>4} {QAs[b]:>13.1f} {QAp[b]:>13.1f} {arel:>9.2e} | "
               f"{QBs[b]:>12.1f} {QBp[b]:>12.1f} {brel:>9.2e}")
+
+# --- diagnostic: secure β̂ vs plaintext β̂ (is the null-model solve the error source?) ---
+fbeta = f"{OUT}/out/party2/skat_fed_beta.txt"
+if os.path.exists(fbeta):
+    bsec = np.atleast_1d(np.loadtxt(fbeta))
+    b_true = _fed_null(XA, yA, XB, yB, 0.0)[0]       # exact (no ridge) = SKAT truth
+    b_ridge = _fed_null(XA, yA, XB, yB, RIDGE_REL)[0]  # secure design (with ridge)
+    print(f"\n--- β̂ secure vs plaintext (β0 = intercept; its error × colsum(G)=O(n) amplifies) ---")
+    for k in range(len(bsec)):
+        rel = abs(bsec[k] - b_ridge[k]) / max(abs(b_ridge[k]), 1e-12)
+        print(f"  β{k}: secure={bsec[k]:+.8f}  plain_ridge={b_ridge[k]:+.8f}  plain_true={b_true[k]:+.8f}"
+              f"   |sec-ridge|/ridge={rel:.2e}")

@@ -536,6 +536,7 @@ func (g *ProtocolInfo) SKATFederatedPrivate() {
 		SaveFloatVectorToFile(g.OutPath("skat_fed_out.txt"), q)
 		SaveFloatVectorToFile(g.OutPath("skat_fed_A.txt"), fedSplitAdec) // diag: PART A only
 		SaveFloatVectorToFile(g.OutPath("skat_fed_B.txt"), fedSplitBdec) // diag: PART B only
+		SaveFloatVectorToFile(g.OutPath("skat_fed_beta.txt"), fedBetaDec) // diag: revealed β̂
 	}
 }
 
