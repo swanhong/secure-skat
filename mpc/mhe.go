@@ -127,7 +127,7 @@ func (netObj *Network) aggregateKeySwitchShare(prot multiparty.KeySwitchProtocol
 // Package-level: a run has one CollectiveInit; not concurrency-safe (benchmark instrumentation).
 var SetupTiming struct{ PubKey, RelinKey, RotKey time.Duration }
 
-func (netObj ParallelNetworks) CollectiveInit(params *ckks.Parameters, prec uint) (cps *crypto.CryptoParams) {
+func (netObj ParallelNetworks) CollectiveInit(params *ckks.Parameters, prec uint, rotPow2Only bool) (cps *crypto.CryptoParams) {
 	log.LLvl1("CollectiveInit started")
 
 	kgen := ckks.NewKeyGenerator(*params)
@@ -154,7 +154,8 @@ func (netObj ParallelNetworks) CollectiveInit(params *ckks.Parameters, prec uint
 
 	smallDim := 20
 	babyFlag := true
-	if strings.TrimSpace(os.Getenv("SFGWAS_ROTKEY_POW2ONLY")) != "" {
+	// config rotkey_pow2only (or the SFGWAS_ROTKEY_POW2ONLY env override) → power-of-two keys only.
+	if rotPow2Only || strings.TrimSpace(os.Getenv("SFGWAS_ROTKEY_POW2ONLY")) != "" {
 		smallDim, babyFlag = 0, false
 	}
 	log.LLvl1("RotKeyGen: shifts <=", smallDim, "babyFlag", babyFlag, "powers of two up to", cps.GetSlots())

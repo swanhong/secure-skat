@@ -16,6 +16,12 @@ CFG=$OUT/config
 PREP=$REPO/scripts/preprocessing
 T_PREP=0 T_BUILD=0 T_SECURE=0 T_COMPARE=0
 
+echo "=== run knobs (env; blank = fed_prep default) ==="
+printf '  PLINK2=%s\n  FED_CHR=%s FED_NSUB=%s FED_NGENES=%s FED_NPCS=%s\n  FED_CKKS=%s FED_DATABITS=%s FED_FRACBITS=%s FED_PHENO_COL=%s\n  SKIP_PREP=%s SKIP_BUILD=%s SFGWAS_ROTKEY_POW2ONLY=%s\n' \
+  "${PLINK2:-plink2}" "${FED_CHR:-}" "${FED_NSUB:-}" "${FED_NGENES:-}" "${FED_NPCS:-}" \
+  "${FED_CKKS:-}" "${FED_DATABITS:-}" "${FED_FRACBITS:-}" "${FED_PHENO_COL:-}" \
+  "${SKIP_PREP:-}" "${SKIP_BUILD:-}" "${SFGWAS_ROTKEY_POW2ONLY:-}"
+
 if [ -z "$SKIP_PREP" ]; then
   echo "=== [1/4] fed_prep (blocks + cov + pheno + config) ==="
   s=$SECONDS; python3 "$PREP/fed_prep.py"; T_PREP=$((SECONDS-s))
@@ -24,6 +30,11 @@ fi
 if [ -z "$SKIP_BUILD" ]; then
   echo "=== [2/4] build sfgwas ==="
   s=$SECONDS; ( cd "$REPO" && { go build -mod=vendor -o sfgwas || go build -mod=mod -o sfgwas; } ); T_BUILD=$((SECONDS-s))
+fi
+
+if [ -f "$CFG/configGlobal.toml" ]; then
+  echo "=== resolved params (n=num_inds, m=num_snps, c=num_covs; from $CFG) ==="
+  grep -E '^(num_inds|num_snps|num_covs|geno_num_blocks|ckks_params|mpc_data_bits|mpc_frac_bits|rotkey_pow2only|private_pid)\b' "$CFG/configGlobal.toml" | sed 's/^/  /'
 fi
 
 echo "=== [3/4] secure skat_fed (3 parties) ==="

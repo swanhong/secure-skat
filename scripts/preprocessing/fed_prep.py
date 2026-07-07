@@ -151,6 +151,7 @@ geno_file_format = "blocks"
 geno_num_blocks = {n_blocks}
 binary_pheno = false
 private_pid = 2
+rotkey_pow2only = true
 skip_qc = true
 skip_pca = true
 use_logistic = false

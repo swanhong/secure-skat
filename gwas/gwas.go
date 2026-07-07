@@ -92,6 +92,10 @@ type Config struct {
 	PrivatePid        int    `toml:"private_pid"`
 	PrivateOnlyPrefix string `toml:"private_only_prefix"`
 
+	// RotKeyPow2Only generates only power-of-two rotation keys (InnerSumAll), skipping the
+	// baby-step-giant-step/matmul keys — ~8× less rot-key RAM. Safe for skat_fed (no matmul/PCA).
+	RotKeyPow2Only bool `toml:"rotkey_pow2only"`
+
 	UsePrecomputedGenoCount bool   `toml:"use_precomputed_geno_count"`
 	GenoCountFile           string `toml:"geno_count_file"`
 	SampleKeepFile          string `toml:"sample_keep_file"`
@@ -217,7 +221,7 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 
 	var cps *crypto.CryptoParams
 	if !mpcOnly {
-		cps = networks.CollectiveInit(&params, prec)
+		cps = networks.CollectiveInit(&params, prec, config.RotKeyPow2Only)
 	}
 
 	var pheno, cov *mat.Dense
