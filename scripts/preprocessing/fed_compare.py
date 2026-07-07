@@ -14,7 +14,7 @@ import time
 
 import numpy as np
 
-from skat_plain_local import federated_Q_from_blocks
+from skat_plain_local import federated_Q_from_blocks, federated_Q_split_from_blocks
 
 OUT = os.path.expanduser(os.environ.get("FED_OUT", "~/fed_prep_out"))
 
@@ -66,3 +66,19 @@ r2 = 1 - float(np.sum((qs - qp) ** 2)) / ss_tot if ss_tot > 0 else float("nan")
 maxrel = max(abs(qs[b] - qp[b]) / max(abs(qp[b]), 1e-9) for b in range(ng))
 print(f"\nR^2 (secure vs plaintext) = {r2:.6f}   |   max rel = {maxrel:.2e}")
 print("MATCH (secure == plaintext)" if ok else "MISMATCH -- investigate")
+
+# --- diagnostic: PART A vs PART B error localization (needs skat_fed_A/B.txt) ---
+fA, fB = f"{OUT}/out/party2/skat_fed_A.txt", f"{OUT}/out/party2/skat_fed_B.txt"
+if os.path.exists(fA) and os.path.exists(fB):
+    QAp, QBp = federated_Q_split_from_blocks(
+        load_blocks("A", "geno", nA, ng), load_blocks("B", "geno", nB, ng),
+        load_blocks("B", "priv", nB, ng), XA, yA, XB, yB)
+    QAs = np.atleast_1d(np.loadtxt(fA))
+    QBs = np.atleast_1d(np.loadtxt(fB))
+    print(f"\n--- PART A vs PART B split (which half errs) ---")
+    print(f"{'gene':>4} {'A_sec':>13} {'A_plain':>13} {'A_rel':>9} | {'B_sec':>12} {'B_plain':>12} {'B_rel':>9}")
+    for b in range(ng):
+        arel = abs(QAs[b] - QAp[b]) / max(abs(QAp[b]), 1e-9)
+        brel = abs(QBs[b] - QBp[b]) / max(abs(QBp[b]), 1e-9)
+        print(f"{b:>4} {QAs[b]:>13.1f} {QAp[b]:>13.1f} {arel:>9.2e} | "
+              f"{QBs[b]:>12.1f} {QBp[b]:>12.1f} {brel:>9.2e}")

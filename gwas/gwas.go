@@ -481,13 +481,19 @@ func (g *ProtocolInfo) runFederatedPrivate() []float64 {
 		return nil
 	}
 	tDec := time.Now()
-	out := crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, q, -1))[:g.config.GenoNumBlocks]
+	nb := g.config.GenoNumBlocks
+	out := crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, q, -1))[:nb]
+	fedSplitAdec = crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, fedSplitA, -1))[:nb]
+	fedSplitBdec = crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, fedSplitB, -1))[:nb]
 	dec := time.Since(tDec)
 	log.LLvl1(fmt.Sprintf("[skat_fed] decrypt: %v | total run: %v",
 		dec.Round(time.Millisecond), time.Since(tRun).Round(time.Millisecond)))
 	logFedTimingTree(dec)
 	return out
 }
+
+// fedSplitAdec/Bdec: decrypted per-gene PART A / PART B Q (diagnostic A-vs-B localization).
+var fedSplitAdec, fedSplitBdec []float64
 
 // logFedTimingTree prints the step/substep timing tree at the end of a skat_fed run, combining the
 // crypto-setup phase (mpc.SetupTiming) with the compute phases captured in fedTimings.
@@ -528,6 +534,8 @@ func (g *ProtocolInfo) SKATFederatedPrivate() {
 	q := g.runFederatedPrivate()
 	if g.mpcObj[0].GetPid() > 0 {
 		SaveFloatVectorToFile(g.OutPath("skat_fed_out.txt"), q)
+		SaveFloatVectorToFile(g.OutPath("skat_fed_A.txt"), fedSplitAdec) // diag: PART A only
+		SaveFloatVectorToFile(g.OutPath("skat_fed_B.txt"), fedSplitBdec) // diag: PART B only
 	}
 }
 

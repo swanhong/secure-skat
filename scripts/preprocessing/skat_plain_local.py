@@ -87,6 +87,27 @@ def federated_Q_from_blocks(A_blocks, B_aligned, B_priv, XA, yA, XB, yB):
     return Q
 
 
+def federated_Q_split_from_blocks(A_blocks, B_aligned, B_priv, XA, yA, XB, yB):
+    """Per-gene (Q_partA, Q_partB) — same math as federated_Q_from_blocks but split, for secure
+    A-vs-B error localization. Q_partA = public list (A + B aligned); Q_partB = B private."""
+    nA, nB = len(yA), len(yB)
+    two_n = 2.0 * (nA + nB)
+    XtX = XA.T @ XA + XB.T @ XB
+    Xty = XA.T @ yA + XB.T @ yB
+    beta = np.linalg.solve(XtX, Xty)
+    sigma2 = (yA @ yA + yB @ yB - Xty @ beta) / (nA + nB - XA.shape[1])
+    rA, rB = yA - XA @ beta, yB - XB @ beta
+    QA, QB = [], []
+    for g in range(len(A_blocks)):
+        qa = sum(_variant_q(A_blocks[g][:, k] @ rA + B_aligned[g][:, k] @ rB,
+                            A_blocks[g][:, k].sum() + B_aligned[g][:, k].sum(), two_n, sigma2)
+                 for k in range(A_blocks[g].shape[1]))
+        qb = sum(_variant_q(B_priv[g][:, k] @ rB, B_priv[g][:, k].sum(), two_n, sigma2)
+                 for k in range(B_priv[g].shape[1]))
+        QA.append(float(qa)); QB.append(float(qb))
+    return QA, QB
+
+
 def pooled_Q(union_blocks, XA, yA, XB, yB):
     """Ground truth: per-gene SKAT on the pooled union genotype (0-filled for party-unique).
     union_blocks[g]: (nA+nB) x m_union , rows 0..nA-1 = A, nA.. = B."""

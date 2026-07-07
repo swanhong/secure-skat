@@ -916,6 +916,8 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		panic(fmt.Sprintf("ComputeSKATFederatedPrivate: privateOnly has %d blocks, want %d", len(privateOnly), nB))
 	}
 	qBlockSS := mpc_core.InitRVec(rtype.Zero(), nB)
+	qASS := mpc_core.InitRVec(rtype.Zero(), nB) // diag: PART A only
+	qBSS := mpc_core.InitRVec(rtype.Zero(), nB) // diag: PART B only
 	tBlocks := time.Now()
 	blockSecs := make([]float64, 0, nB)
 	for b := 0; b < nB; b++ {
@@ -926,6 +928,7 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		if nsnps := ast.skatBlockNumSnps(b); nsnps > 0 {
 			qA, _ := ast.blockStat(b, nsnps, null, X, y0)
 			acc.Add(qA)
+			qASS[b] = qA[0]
 		}
 
 		// PART B: private variants for this gene (uniform across all genes).
@@ -933,7 +936,9 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		if mpcObj.GetPid() == privatePid && b < len(privateOnly) {
 			G = privateOnly[b]
 		}
-		acc.Add(ast.privateBlockStat(G, null, X, y0, privatePid))
+		qB := ast.privateBlockStat(G, null, X, y0, privatePid)
+		acc.Add(qB)
+		qBSS[b] = qB[0]
 
 		qBlockSS[b] = acc[0]
 		blockSecs = append(blockSecs, time.Since(tb).Seconds())
@@ -952,8 +957,17 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	for b := 0; b < nB; b++ {
 		scaleVec[b] = scaleSS[0].Copy()
 	}
-	qBlockSS = mpcObj.TruncVec(mpcObj.SSMultElemVec(qBlockSS, scaleVec), mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	scale := func(v mpc_core.RVec) mpc_core.RVec {
+		return mpcObj.TruncVec(mpcObj.SSMultElemVec(v, scaleVec), mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	}
+	qBlockSS = scale(qBlockSS)
+	fedSplitA = mpcObj.SSToCVec(cps, scale(qASS)) // diag: per-gene PART A / PART B Q (scaled)
+	fedSplitB = mpcObj.SSToCVec(cps, scale(qBSS))
 	fedTimings.total = time.Since(tStart)
 	log.LLvl1(fmt.Sprintf("[skat_fed] total compute: %v", fedTimings.total.Round(time.Millisecond)))
 	return mpcObj.SSToCVec(cps, qBlockSS)
 }
+
+// fedSplitA/B hold the per-gene PART A / PART B Q (scaled by 1/(2σ̂²)) for the diagnostic
+// A-vs-B localization; decrypted + saved by runFederatedPrivate. Not part of the protocol output.
+var fedSplitA, fedSplitB crypto.CipherVector
