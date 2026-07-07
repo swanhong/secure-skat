@@ -71,7 +71,7 @@ def write_int8_block(path, mat):
 
 def write_blocks(gene_keys, priv_keys, roles, A_geno, B_geno, keycol, out_dir):
     A_blocks, B_aligned, B_priv, _ = build_party_blocks(
-        gene_keys, priv_keys, roles, A_geno, B_geno, keycol)
+        gene_keys, priv_keys, roles, A_geno, B_geno, keycol, with_union=False)  # union is fed_compare's job
     os.makedirs(f"{out_dir}/A", exist_ok=True)
     os.makedirs(f"{out_dir}/B", exist_ok=True)
     for g in range(len(gene_keys)):
@@ -375,10 +375,8 @@ def merge_cohort_columns(Ag, Ak, Bg, Bk):
     keycol = {k: i for i, k in enumerate(keys)}
     A = np.zeros((Ag.shape[0], len(keys)), dtype=Ag.dtype)
     B = np.zeros((Bg.shape[0], len(keys)), dtype=Bg.dtype)
-    for j, k in enumerate(Ak):
-        A[:, keycol[k]] = Ag[:, j]
-    for j, k in enumerate(Bk):
-        B[:, keycol[k]] = Bg[:, j]
+    A[:, np.fromiter((keycol[k] for k in Ak), int, len(Ak))] = Ag 
+    B[:, np.fromiter((keycol[k] for k in Bk), int, len(Bk))] = Bg
     return A, B, keycol
 
 

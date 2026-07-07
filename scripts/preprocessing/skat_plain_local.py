@@ -28,38 +28,33 @@ def _variant_q(score, count, two_n, sigma2):
     return w * w * score * score / (2 * sigma2)
 
 
-def build_party_blocks(gene_keys, priv_keys, roles, A_geno, B_geno, keycol):
-    """Assemble per-gene blocks from full cohort genotype matrices.
+def build_party_blocks(gene_keys, priv_keys, roles, A_geno, B_geno, keycol, with_union=True):
+    """Assemble per-gene blocks from full cohort genotype matrices (vectorized column gather).
       gene_keys[g]: ordered public-list keys (shared+public_only); priv_keys[g]: private keys (B only)
       roles: dict key -> 'shared'|'public_only'|'private'
       A_geno: nA x ?  ; B_geno: nB x ?  ; keycol[key] -> column index into A_geno/B_geno
-    Returns A_blocks, B_aligned, B_priv, union_blocks."""
+    Returns A_blocks, B_aligned, B_priv, union_blocks (union_blocks empty if with_union=False)."""
     nA, nB = A_geno.shape[0], B_geno.shape[0]
     A_blocks, B_aligned, B_priv, union_blocks = [], [], [], []
     for g in range(len(gene_keys)):
-        pub = gene_keys[g]
-        priv = priv_keys[g]
-        # PART A blocks, columns in public-list order
-        A_blk = np.zeros((nA, len(pub)), dtype=A_geno.dtype)
+        pub, priv = gene_keys[g], priv_keys[g]
+        pub_cols = np.fromiter((keycol[k] for k in pub), dtype=int, count=len(pub))
+        priv_cols = np.fromiter((keycol[k] for k in priv), dtype=int, count=len(priv))
+        shared = np.fromiter((roles[k] == "shared" for k in pub), dtype=bool, count=len(pub))
+
+        A_blk = A_geno[:, pub_cols].copy()                     # A has the whole public list
         B_alg = np.zeros((nB, len(pub)), dtype=A_geno.dtype)
-        for k, key in enumerate(pub):
-            A_blk[:, k] = A_geno[:, keycol[key]]               # A has the whole public list
-            if roles[key] == "shared":
-                B_alg[:, k] = B_geno[:, keycol[key]]           # shared -> B data; public_only -> stays 0
-        # PART B block (B private)
-        B_prv = np.zeros((nB, len(priv)), dtype=A_geno.dtype)
-        for k, key in enumerate(priv):
-            B_prv[:, k] = B_geno[:, keycol[key]]
-        # pooled union (shared both; public_only A only; private B only)
-        union = pub + priv
-        U = np.zeros((nA + nB, len(union)), dtype=A_geno.dtype)
-        for k, key in enumerate(union):
-            if roles[key] in ("shared", "public_only"):
-                U[:nA, k] = A_geno[:, keycol[key]]
-            if roles[key] in ("shared", "private"):
-                U[nA:, k] = B_geno[:, keycol[key]]
+        B_alg[:, shared] = B_geno[:, pub_cols[shared]]         # shared -> B data; public_only -> stays 0
+        B_prv = B_geno[:, priv_cols].copy()                    # B private variants
         A_blocks.append(A_blk); B_aligned.append(B_alg); B_priv.append(B_prv)
-        union_blocks.append(U)
+
+        if with_union:                                         # pooled ground truth (fed_prep skips this)
+            U = np.zeros((nA + nB, len(pub) + len(priv)), dtype=A_geno.dtype)
+            U[:nA, :len(pub)] = A_geno[:, pub_cols]            # A: all public-list cols (shared + public_only)
+            U[nA:, :len(pub)][:, shared] = B_geno[:, pub_cols[shared]]  # B: shared public-list cols
+            if len(priv):
+                U[nA:, len(pub):] = B_geno[:, priv_cols]       # B: private cols
+            union_blocks.append(U)
     return A_blocks, B_aligned, B_priv, union_blocks
 
 
