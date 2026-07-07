@@ -301,8 +301,15 @@ def run():
     write_pheno(Bfam, pheno, f"{OUT_DIR}/B/pheno.txt")
     print(f"  wrote cov ({N_PCS} PCs) + pheno (LDL) -> {OUT_DIR}/{{A,B}}/")
     tmr["write"] = time.perf_counter() - t
-    print("  [prep timing] " + " | ".join(f"{k} {v:.1f}s" for k, v in tmr.items())
-          + f" | total {sum(tmr.values()):.1f}s")
+    desc = {"keying": "plink2 set-var-ids + biallelic pvar",
+            "setup": "gene map + eligible ∩ + role split",
+            "extract_A": "plink2 extract cohort A -> int8",
+            "extract_B": "plink2 extract cohort B -> int8",
+            "write": "blocks + cov + pheno + config"}
+    print("[prep] timing tree (plaintext):")
+    for k in ["keying", "setup", "extract_A", "extract_B", "write"]:
+        print(f"  ├─ {k:<12} {tmr[k]:7.1f}s   ({desc[k]})")
+    print(f"  └─ {'TOTAL':<12} {sum(tmr.values()):7.1f}s")
 
 
 # ---- helpers ----

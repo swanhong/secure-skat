@@ -173,6 +173,8 @@ func (prot *ProtocolInfo) GetGenoBlocks() []*GenoFileStream {
 }
 
 func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *ProtocolInfo) {
+	tInit := time.Now()
+	defer func() { fedTimings.initTotal = time.Since(tInit) }() // network + keygen + geno/cov load
 	var params ckks.Parameters
 	if !mpcOnly {
 		var paramsLiteral ckks.ParametersLiteral
@@ -459,17 +461,22 @@ func (g *ProtocolInfo) runFederatedPrivate() []float64 {
 	var privateOnly []*mat.Dense
 	if pid == privatePid && g.config.PrivateOnlyPrefix != "" {
 		n, _ := g.pheno.Dims()
+		tl := time.Now()
 		blocks, err := loadDenseBlocks(g.config.PrivateOnlyPrefix, g.config.GenoNumBlocks, n)
 		if err != nil {
 			panic(err)
 		}
 		privateOnly = blocks
+		fedTimings.loadPriv = time.Since(tl)
 	} else if pid == privatePid {
 		log.LLvl1("[skat_fed] WARNING: private_pid set but private_only_prefix empty -> PART B (private variants) is EMPTY")
 	}
 
 	tRun := time.Now()
-	q := g.InitAssociationTests(nil).ComputeSKATFederatedPrivate(privateOnly, privatePid)
+	tA := time.Now()
+	assocTest := g.InitAssociationTests(nil)
+	fedTimings.assocInit = time.Since(tA)
+	q := assocTest.ComputeSKATFederatedPrivate(privateOnly, privatePid)
 	if pid == 0 {
 		return nil
 	}
@@ -488,14 +495,19 @@ func logFedTimingTree(dec time.Duration) {
 	ms := func(d time.Duration) time.Duration { return d.Round(time.Millisecond) }
 	st := mpc.SetupTiming
 	setup := st.PubKey + st.RelinKey + st.RotKey
+	netload := fedTimings.initTotal - setup                              // network handshake + geno-stream open + pheno/cov load
 	scale := fedTimings.total - fedTimings.nullTotal - fedTimings.blocks // Σw²s² scale + SSToCVec
-	grand := setup + fedTimings.total + dec
+	grand := fedTimings.initTotal + fedTimings.loadPriv + fedTimings.assocInit + fedTimings.total + dec
 	for _, ln := range []string{
 		"[skat_fed] timing tree:",
-		fmt.Sprintf("  ├─ crypto setup            %v", ms(setup)),
-		fmt.Sprintf("  │    ├─ PubKeyGen          %v", ms(st.PubKey)),
-		fmt.Sprintf("  │    ├─ RelinKeyGen        %v", ms(st.RelinKey)),
-		fmt.Sprintf("  │    └─ RotKeyGen          %v", ms(st.RotKey)),
+		fmt.Sprintf("  ├─ init                    %v", ms(fedTimings.initTotal)),
+		fmt.Sprintf("  │    ├─ crypto setup       %v", ms(setup)),
+		fmt.Sprintf("  │    │    ├─ PubKeyGen      %v", ms(st.PubKey)),
+		fmt.Sprintf("  │    │    ├─ RelinKeyGen    %v", ms(st.RelinKey)),
+		fmt.Sprintf("  │    │    └─ RotKeyGen      %v", ms(st.RotKey)),
+		fmt.Sprintf("  │    └─ network+geno/cov   %v", ms(netload)),
+		fmt.Sprintf("  ├─ load privateOnly        %v", ms(fedTimings.loadPriv)),
+		fmt.Sprintf("  ├─ assoc init              %v", ms(fedTimings.assocInit)),
 		fmt.Sprintf("  ├─ compute                 %v", ms(fedTimings.total)),
 		fmt.Sprintf("  │    ├─ null model         %v", ms(fedTimings.nullTotal)),
 		fmt.Sprintf("  │    │    ├─ aggregate      %v", ms(fedTimings.nullAgg)),

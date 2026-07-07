@@ -25,11 +25,13 @@ printf '  PLINK2=%s\n  FED_CHR=%s FED_NSUB=%s FED_NGENES=%s FED_NPCS=%s\n  FED_C
 if [ -z "$SKIP_PREP" ]; then
   echo "=== [1/4] fed_prep (blocks + cov + pheno + config) ==="
   s=$SECONDS; python3 "$PREP/fed_prep.py"; T_PREP=$((SECONDS-s))
+  echo "  [1/4] fed_prep done: ${T_PREP}s"
 fi
 
 if [ -z "$SKIP_BUILD" ]; then
   echo "=== [2/4] build sfgwas ==="
   s=$SECONDS; ( cd "$REPO" && { go build -mod=vendor -o sfgwas || go build -mod=mod -o sfgwas; } ); T_BUILD=$((SECONDS-s))
+  echo "  [2/4] build done: ${T_BUILD}s"
 fi
 
 if [ -f "$CFG/configGlobal.toml" ]; then
@@ -47,9 +49,11 @@ done
 PID=2 SFGWAS_MODE=skat_fed SFGWAS_CONFIG_PATH="$CFG" "$REPO/sfgwas" 2>&1 | tee "$OUT/party2.log"
 wait   # let party0/1 finish writing their logs
 T_SECURE=$((SECONDS-s))
+echo "  [3/4] secure done: ${T_SECURE}s"
 
 echo "=== [4/4] fed_compare (secure vs plaintext) ==="
 s=$SECONDS; python3 "$PREP/fed_compare.py"; T_COMPARE=$((SECONDS-s))
+echo "  [4/4] compare done: ${T_COMPARE}s"
 
 echo "=== TIMING (steps) ==="
 printf '  [1] prep    %5ds\n  [2] build   %5ds\n  [3] secure  %5ds\n  [4] compare %5ds\n  ---------------------\n  total     %7ds\n' \

@@ -847,6 +847,7 @@ func (ast *AssocTest) privateBlockStat(G *mat.Dense, null skatNull, X *mat.Dense
 // fedTimings accumulates skat_fed phase durations for the end-of-run tree (runFederatedPrivate
 // prints it, combined with mpc.SetupTiming). One run per process; not concurrency-safe.
 var fedTimings struct {
+	initTotal, loadPriv, assocInit                               time.Duration // pre-compute phases
 	nullAgg, nullInv, nullBeta, nullRSS, nullTotal, blocks, total time.Duration
 	blockSecs []float64
 }
