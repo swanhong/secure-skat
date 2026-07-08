@@ -481,8 +481,7 @@ func (g *ProtocolInfo) runFederatedPrivate() []float64 {
 		return nil
 	}
 	tDec := time.Now()
-	nb := g.config.GenoNumBlocks
-	out := crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, q, -1))[:nb]
+	out := crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, q, -1))[:g.config.GenoNumBlocks]
 	dec := time.Since(tDec)
 	log.LLvl1(fmt.Sprintf("[skat_fed] decrypt: %v | total run: %v",
 		dec.Round(time.Millisecond), time.Since(tRun).Round(time.Millisecond)))
