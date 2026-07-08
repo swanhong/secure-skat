@@ -95,3 +95,14 @@ if os.path.exists(fbeta):
         rel = abs(bsec[k] - b_ridge[k]) / max(abs(b_ridge[k]), 1e-12)
         print(f"  β{k}: secure={bsec[k]:+.8f}  plain_ridge={b_ridge[k]:+.8f}  plain_true={b_true[k]:+.8f}"
               f"   |sec-ridge|/ridge={rel:.2e}")
+
+    # Decisive test: plaintext Q built on the SECURE β̂ vs the secure Q. If they agree, the whole
+    # secure Q error is explained by the wrong β̂ (everything downstream is faithful).
+    Qsb = federated_Q_from_blocks(
+        load_blocks("A", "geno", nA, ng), load_blocks("B", "geno", nB, ng),
+        load_blocks("B", "priv", nB, ng), XA, yA, XB, yB, beta_override=bsec)
+    print(f"\n--- plaintext-Q(secure β̂) vs secure Q  (match ⇒ β̂ is the SOLE cause) ---")
+    print(f"{'gene':>4} {'Q_sec':>15} {'Q_plain(secβ̂)':>15} {'rel':>9}")
+    for b in range(ng):
+        rel = abs(Qsec[b] - Qsb[b]) / max(abs(Qsb[b]), 1e-9)
+        print(f"{b:>4} {Qsec[b]:>15.1f} {Qsb[b]:>15.1f} {rel:>9.2e}")

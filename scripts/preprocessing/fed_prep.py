@@ -102,10 +102,8 @@ def load_ancestry_pcs(path, n_pcs):
     return pcs
 
 
-def write_cov(fam_ids, pcs, out_path, mean, std):
-    M = np.asarray([pcs[sid] for sid in fam_ids])
-    # standardize cov
-    np.savetxt(out_path, (M - mean) / std, delimiter="\t")
+def write_cov(fam_ids, pcs, out_path):
+    np.savetxt(out_path, np.asarray([pcs[sid] for sid in fam_ids]), delimiter="\t")
 
 
 def write_config_helpers(gene_keys, chrom, out_dir):
@@ -291,11 +289,8 @@ def run():
     write_blocks(gene_keys, priv_keys, roles_all, A_geno, B_geno, keycol, OUT_DIR)
     num_snps = write_config_helpers(gene_keys, CHR, OUT_DIR)
     write_configs(OUT_DIR, num_snps, len(gene_keys), KEYS_PATH)
-    covAll = np.asarray([pcs[s] for s in Afam] + [pcs[s] for s in Bfam])  # global (A+B) PC mean/std
-    cmean, cstd = covAll.mean(0), covAll.std(0)
-    cstd[cstd == 0] = 1.0  # guard a constant PC column
-    write_cov(Afam, pcs, f"{OUT_DIR}/A/cov.txt", cmean, cstd)
-    write_cov(Bfam, pcs, f"{OUT_DIR}/B/cov.txt", cmean, cstd)
+    write_cov(Afam, pcs, f"{OUT_DIR}/A/cov.txt")
+    write_cov(Bfam, pcs, f"{OUT_DIR}/B/cov.txt")
     write_pheno(Afam, pheno, f"{OUT_DIR}/A/pheno.txt")
     write_pheno(Bfam, pheno, f"{OUT_DIR}/B/pheno.txt")
     print(f"  wrote cov ({N_PCS} PCs) + pheno (LDL) -> {OUT_DIR}/{{A,B}}/")

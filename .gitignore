@@ -19,3 +19,4 @@ skills-lock.json
 .agents/*
 test_data/*
 *.pyc
+out_*
