@@ -208,6 +208,55 @@ type skatNull struct {
 // to keep the inverse finite on a singular design; negligible on a well-conditioned one.
 const ridgeRel = 1e-6
 
+// solveSPD solves the small SPD system A·x = b (A = XᵀX, b = Xᵀy₀) in secret shares via Cholesky
+// (A = L·Lᵀ) + forward/back substitution.
+func (ast *AssocTest) solveSPD(A mpc_core.RMat, b mpc_core.RVec) mpc_core.RVec {
+	mpcObj := ast.general.mpcObj[0]
+	rtype := mpcObj.GetRType()
+	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
+	c := len(b)
+
+	mul := func(x, y mpc_core.RElem) mpc_core.RElem { // SS scalar product, back to fracBits
+		return mpcObj.TruncVec(mpcObj.SSMultElemVec(mpc_core.RVec{x}, mpc_core.RVec{y}), db, fb)[0]
+	}
+
+	L := mpc_core.InitRMat(rtype.Zero(), c, c) // lower-triangular Cholesky factor
+	dInv := make(mpc_core.RVec, c)             // dInv[j] = 1/L[j][j]
+	for j := 0; j < c; j++ {
+		d := A[j][j].Copy() // d = A[j][j] − Σ_{k<j} L[j][k]²
+		for k := 0; k < j; k++ {
+			d = d.Sub(mul(L[j][k], L[j][k]))
+		}
+		sq, sqInv := mpcObj.SqrtAndSqrtInverse(mpc_core.RVec{d}, false)
+		L[j][j], dInv[j] = sq[0], sqInv[0]
+		for i := j + 1; i < c; i++ { // L[i][j] = (A[i][j] − Σ_{k<j} L[i][k]L[j][k])/L[j][j]
+			v := A[i][j].Copy()
+			for k := 0; k < j; k++ {
+				v = v.Sub(mul(L[i][k], L[j][k]))
+			}
+			L[i][j] = mul(v, dInv[j])
+		}
+	}
+
+	z := make(mpc_core.RVec, c) // forward:  L·z = b
+	for i := 0; i < c; i++ {
+		v := b[i].Copy()
+		for k := 0; k < i; k++ {
+			v = v.Sub(mul(L[i][k], z[k]))
+		}
+		z[i] = mul(v, dInv[i])
+	}
+	x := make(mpc_core.RVec, c) // back:  Lᵀ·x = z
+	for i := c - 1; i >= 0; i-- {
+		v := z[i].Copy()
+		for k := i + 1; k < c; k++ {
+			v = v.Sub(mul(L[k][i], x[k]))
+		}
+		x[i] = mul(v, dInv[i])
+	}
+	return x
+}
+
 // computeBetaHatEnc computes β̂ = (XᵀX)⁻¹Xᵀy₀ as an encrypted c-vector from the cross-party
 // normal equations — only the c-dim aggregates cross the secure boundary, n never does.
 func (ast *AssocTest) computeBetaHatEnc() skatNull {
@@ -264,33 +313,20 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: encrypt+AggregateCMat(XtX,Xty,y0ty0)+bootstrap %v", fedTimings.nullAgg.Round(time.Millisecond)))
 	tNull = time.Now()
 
-	// Invert XᵀX in SS (c rows × 1 ct, c data slots), then β̂ = (XᵀX)⁻¹·Xᵀy₀.
+	// Solve (XᵀX)·β̂ = Xᵀy₀ for the small SPD system by Cholesky + forward/back substitution
 	xtxSS := mpcObj.CMatToSS(cps, rtype, xtxEnc, -1, c, 1, c)
-	invSS, _ := mpcObj.MatrixInverseSymPos(xtxSS)
-	fedTimings.nullInv = time.Since(tNull)
-	log.LLvl1(fmt.Sprintf("[skat_fed]   null: XtX->SS + MatrixInverseSymPos(EigenDecomp) %v", fedTimings.nullInv.Round(time.Millisecond)))
-	tNull = time.Now()
-
 	var xtyCt *rlwe.Ciphertext
 	if len(xtyEnc) > 0 {
 		xtyCt = xtyEnc[0]
 	}
 	xtySS := mpcObj.CiphertextToSS(cps, rtype, xtyCt, mpcObj.GetHubPid(), c)
-	xtyCol := make(mpc_core.RMat, c)
-	for i := 0; i < c; i++ {
-		xtyCol[i] = mpc_core.RVec{xtySS[i]}
-	}
-	betaMat := mpcObj.SSMultMat(invSS, xtyCol)
-	betaSS := make(mpc_core.RVec, c)
-	for i := 0; i < c; i++ {
-		betaSS[i] = betaMat[i][0]
-	}
-	betaSS = mpcObj.TruncVec(betaSS, mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	betaSS := ast.solveSPD(xtxSS, xtySS)
+	fedTimings.nullInv = time.Since(tNull)
+	log.LLvl1(fmt.Sprintf("[skat_fed]   null: XtX->SS + Cholesky solve %v", fedTimings.nullInv.Round(time.Millisecond)))
+	tNull = time.Now()
 
 	// residSum C = Σᵢrᵢ = Xᵀy₀[0] − (XᵀX)[0,:]·β̂ = Σy₀ − (colsums X)·β̂ (XᵀX row 0 = colsums of X,
-	// Xᵀy₀[0] = Σy₀). Centering the score by s_j − (colsum_j/N)·C = G̃ᵀr cancels the β̂₀-error ×
-	// colsum(G)=O(n) amplification (the null inverse's β̂ is imprecise; via GᵀX[:,0]=colsum(G) it
-	// otherwise dominates the score error). Exact when β̂ is exact (then C = Σr = 0).
+	// Xᵀy₀[0] = Σy₀).
 	sxb := mpcObj.TruncVec(mpcObj.SSMultElemVec(xtxSS[0], betaSS), mpcObj.GetDataBits(), mpcObj.GetFracBits())
 	residSum := xtySS[0].Copy()
 	for k := 0; k < c; k++ {
