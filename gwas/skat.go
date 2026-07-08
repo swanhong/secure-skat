@@ -194,8 +194,10 @@ func (ln localNull) matrices(c int) (xtx [][]float64, xty []float64, y0ty0 float
 type skatNull struct {
 	betaHat  crypto.CipherVector // β̂ in slots 0..c-1
 	betaRep  crypto.CipherVector // betaRep[ℓ] = Enc(β̂_ℓ) in every slot (PART B CKKS score)
-	betaSS   mpc_core.RVec       // β̂ in secret shares
-	xtyEnc   crypto.CipherVector // global Xᵀy₀ (kept for RSS)
+	betaSS      mpc_core.RVec       // β̂ in secret shares
+	residSum    mpc_core.RElem      // Σᵢrᵢ = Σy₀ − (colsums X)·β̂; centers the score (s_j − colsum_j/N·C)
+	residSumEnc crypto.CipherVector // C = Σr replicated in every slot (PART B CKKS score centering)
+	xtyEnc      crypto.CipherVector // global Xᵀy₀ (kept for RSS)
 	y0ty0Enc crypto.CipherVector // global y₀ᵀy₀ (kept for RSS)
 	c        int
 	center   float64 // public centering constant, reused by the score
@@ -284,6 +286,16 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 	}
 	betaSS = mpcObj.TruncVec(betaSS, mpcObj.GetDataBits(), mpcObj.GetFracBits())
 
+	// residSum C = Σᵢrᵢ = Xᵀy₀[0] − (XᵀX)[0,:]·β̂ = Σy₀ − (colsums X)·β̂ (XᵀX row 0 = colsums of X,
+	// Xᵀy₀[0] = Σy₀). Centering the score by s_j − (colsum_j/N)·C = G̃ᵀr cancels the β̂₀-error ×
+	// colsum(G)=O(n) amplification (the null inverse's β̂ is imprecise; via GᵀX[:,0]=colsum(G) it
+	// otherwise dominates the score error). Exact when β̂ is exact (then C = Σr = 0).
+	sxb := mpcObj.TruncVec(mpcObj.SSMultElemVec(xtxSS[0], betaSS), mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	residSum := xtySS[0].Copy()
+	for k := 0; k < c; k++ {
+		residSum = residSum.Sub(sxb[k])
+	}
+
 	betaHat := mpcObj.SSToCVec(cps, betaSS)
 
 	// betaRep[ℓ] = β̂_ℓ replicated in every slot (for the score's CPMult). pid-0 → nil.
@@ -301,9 +313,12 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 		}
 	}
 
+	// C replicated in every slot, so PART B (privateQRaw, local CKKS) can center too.
+	residSumEnc := mpcObj.SSToCVec(cps, mpc_core.InitRVec(residSum, slots))
+
 	fedTimings.nullBeta = time.Since(tNull)
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: Xty->SS + beta=inv*Xty + betaRep %v", fedTimings.nullBeta.Round(time.Millisecond)))
-	return skatNull{betaHat: betaHat, betaRep: betaRep, betaSS: betaSS, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
+	return skatNull{betaHat: betaHat, betaRep: betaRep, betaSS: betaSS, residSum: residSum, residSumEnc: residSumEnc, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
 }
 
 // maskFirstSlots zeros slots >= c, keeping 0..c-1 — used before InnerSumAll so the
@@ -399,6 +414,30 @@ func (ast *AssocTest) scoreSS(GtX *mat.Dense, Gty0 []float64, betaSS mpc_core.RV
 	s := gty0SS.Copy()
 	s.Sub(prod) // exact SS subtraction — cancellation is lossless here
 	return s
+}
+
+// centerScoreSS applies s_j ← s_j − (colsum_j/N)·C (C = null.residSum), i.e. centers each variant
+// by its column mean so the imprecise-β̂ error no longer amplifies through GᵀX[:,0]=colsum(G)=O(n).
+// dosage is this party's local column sums (additive share of the global colsum); pid 0 → zeros.
+func (ast *AssocTest) centerScoreSS(s mpc_core.RVec, dosage []float64, residSum mpc_core.RElem, m int) mpc_core.RVec {
+	mpcObj := ast.general.mpcObj[0]
+	rtype := mpcObj.GetRType()
+	fracBits := mpcObj.GetFracBits()
+
+	colsum := mpc_core.InitRVec(rtype.Zero(), m)
+	if mpcObj.GetPid() > 0 && len(dosage) == m {
+		for j := 0; j < m; j++ {
+			colsum[j] = rtype.FromFloat64(dosage[j], 0) // integer count; ×invN below → μ_j at fracBits
+		}
+	}
+	mu := colsum.Copy()
+	mu.MulScalar(rtype.FromFloat64(1.0/float64(ast.skatTotalNumInds()), fracBits)) // μ_j = colsum_j/N
+
+	corr := mpcObj.TruncVec(mpcObj.SSMultElemVec(mu, mpc_core.InitRVec(residSum, m)),
+		mpcObj.GetDataBits(), fracBits) // μ_j·C, broadcasting the shared C
+	out := s.Copy()
+	out.Sub(corr)
+	return out
 }
 
 // signedWeight returns the minor-allele-oriented weight ŵ_j = t_j·w_j (t_j=−1 iff p̄_j>½),
@@ -602,8 +641,11 @@ func (ast *AssocTest) blockStat(b, nsnps int, null skatNull, X *mat.Dense, y0 []
 		GtX, Gty0, dosage = lc.GtX, lc.Gty0, lc.DosageSum
 	}
 
-	// Score in secret shares: the Gᵀy₀ − GᵀX·β̂
-	sCVec := mpcObj.SSToCVec(cps, ast.scoreSS(GtX, Gty0, null.betaSS, nsnps))
+	// Score in secret shares (exact fixed-point cancellation), then centered by the column mean so
+	// the imprecise β̂ no longer amplifies through colsum(G)=O(n). All parties (incl. pid 0) take part.
+	sSS := ast.scoreSS(GtX, Gty0, null.betaSS, nsnps)
+	sSS = ast.centerScoreSS(sSS, dosage, null.residSum, nsnps)
+	sCVec := mpcObj.SSToCVec(cps, sSS)
 	weightEnc := mpcObj.SSToCVec(cps, ast.signedWeight(dosage, nsnps))
 
 	var qRaw, bLin crypto.CipherVector
@@ -847,6 +889,22 @@ func (ast *AssocTest) privateQRaw(G *mat.Dense, null skatNull, X *mat.Dense, y0 
 
 	lc := LocalContract(G, X, y0)
 	s := ast.partyScore(lc.GtX, lc.Gty0, null)
+
+	// Center the private score by the column mean (colsum over the pooled N): s_j −= (colsum_j/N)·C.
+	// The private variant is absent in the other cohort, so its global colsum = this party's colsum
+	// but the mean divides by the pooled N. Kills the same β̂₀-error × colsum amplification as PART A.
+	if len(null.residSumEnc) > 0 {
+		invN := 1.0 / float64(ast.skatTotalNumInds())
+		mu := make([]float64, m)
+		for j := 0; j < m; j++ {
+			mu[j] = lc.DosageSum[j] * invN
+		}
+		muPlain, _ := crypto.EncodeFloatVector(cps, mu)
+		corr := crypto.CPMult(cps, null.residSumEnc, muPlain)
+		s, corr = alignCipherVectorLevels(cps, s, corr)
+		s = crypto.CSub(cps, s, corr)
+	}
+
 	wEnc, _ := crypto.EncryptFloatVector(cps, skatBetaWeight(lc.DosageSum, ast.skatTotalNumInds()))
 
 	s, wEnc = alignCipherVectorLevels(cps, s, wEnc)
