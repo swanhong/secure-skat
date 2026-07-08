@@ -208,6 +208,12 @@ type skatNull struct {
 // to keep the inverse finite on a singular design; negligible on a well-conditioned one.
 const ridgeRel = 1e-6
 
+// enableCentering / enableRSSFix: with an accurate β̂ (Cholesky solve) these two refinements are
+// near-no-ops (centering C = Σr ≈ 0; the plain RSS identity is fine). Set false to A/B test whether
+// SS-score + Cholesky alone reach <1% (they were essential only while the EVD β̂ was imprecise).
+const enableCentering = true
+const enableRSSFix = true
+
 // solveSPD solves the small SPD system A·x = b (A = XᵀX, b = Xᵀy₀) in secret shares via Cholesky
 // (A = L·Lᵀ) + forward/back substitution.
 func (ast *AssocTest) solveSPD(A mpc_core.RMat, b mpc_core.RVec) mpc_core.RVec {
@@ -398,13 +404,28 @@ func (ast *AssocTest) maskFirstSlots(v crypto.CipherVector, c int) crypto.Cipher
 	return out
 }
 
-// computeNullRSSEnc wraps the residual-norm RSS (already formed in SS as null.rssSS) as a 1-element
-// CipherVector for rareVariantScaleShares. SSToCVec is collective, so all parties call it.
+// computeNullRSSEnc returns RSS as a 1-element CipherVector for rareVariantScaleShares. With
+// enableRSSFix it wraps the robust residual-norm RSS (null.rssSS); otherwise it uses the plain
+// orthogonality identity RSS = y₀ᵀy₀ − (Xᵀy₀)ᵀβ̂ (1st-order sensitive to the β̂ error).
 func (ast *AssocTest) computeNullRSSEnc(null skatNull) crypto.CipherVector {
-	if null.rssSS == nil {
+	if enableRSSFix {
+		if null.rssSS == nil {
+			return nil
+		}
+		return ast.general.mpcObj[0].SSToCVec(ast.general.cps, mpc_core.InitRVec(null.rssSS, 1))
+	}
+	cps := ast.general.cps
+	pid := ast.general.mpcObj[0].GetPid()
+	if pid == 0 || len(null.xtyEnc) == 0 || len(null.y0ty0Enc) == 0 ||
+		len(null.betaHat) == 0 || null.xtyEnc[0] == nil || null.y0ty0Enc[0] == nil {
 		return nil
 	}
-	return ast.general.mpcObj[0].SSToCVec(ast.general.cps, mpc_core.InitRVec(null.rssSS, 1))
+	xtyEnc, betaHat := alignCipherVectorLevels(cps, null.xtyEnc, null.betaHat)
+	prod := crypto.CMult(cps, xtyEnc, betaHat)
+	prod = ast.maskFirstSlots(prod, null.c)
+	dotCt := crypto.InnerSumAll(cps, prod)
+	y0ty0Enc, dotVec := alignCipherVectorLevels(cps, null.y0ty0Enc, crypto.CipherVector{dotCt})
+	return crypto.CSub(cps, y0ty0Enc, dotVec)
 }
 
 // --- low-rank key-free secure score + oriented weight ---
@@ -696,7 +717,9 @@ func (ast *AssocTest) blockStat(b, nsnps int, null skatNull, X *mat.Dense, y0 []
 	// Score in secret shares (exact fixed-point cancellation), then centered by the column mean so
 	// the imprecise β̂ no longer amplifies through colsum(G)=O(n). All parties (incl. pid 0) take part.
 	sSS := ast.scoreSS(GtX, Gty0, null.betaSS, nsnps)
-	sSS = ast.centerScoreSS(sSS, dosage, null.residSum, nsnps)
+	if enableCentering {
+		sSS = ast.centerScoreSS(sSS, dosage, null.residSum, nsnps)
+	}
 	sCVec := mpcObj.SSToCVec(cps, sSS)
 	weightEnc := mpcObj.SSToCVec(cps, ast.signedWeight(dosage, nsnps))
 
@@ -945,7 +968,7 @@ func (ast *AssocTest) privateQRaw(G *mat.Dense, null skatNull, X *mat.Dense, y0 
 	// Center the private score by the column mean (colsum over the pooled N): s_j −= (colsum_j/N)·C.
 	// The private variant is absent in the other cohort, so its global colsum = this party's colsum
 	// but the mean divides by the pooled N. Kills the same β̂₀-error × colsum amplification as PART A.
-	if len(null.residSumEnc) > 0 {
+	if enableCentering && len(null.residSumEnc) > 0 {
 		invN := 1.0 / float64(ast.skatTotalNumInds())
 		mu := make([]float64, m)
 		for j := 0; j < m; j++ {
