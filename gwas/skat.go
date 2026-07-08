@@ -194,12 +194,10 @@ func (ln localNull) matrices(c int) (xtx [][]float64, xty []float64, y0ty0 float
 type skatNull struct {
 	betaHat     crypto.CipherVector // β̂ in slots 0..c-1
 	betaRep     crypto.CipherVector // betaRep[ℓ] = Enc(β̂_ℓ) in every slot (PART B CKKS score)
-	betaSS      mpc_core.RVec       // β̂ in secret shares
-	residSum    mpc_core.RElem      // Σᵢrᵢ = Σy₀ − (colsums X)·β̂; centers the score (s_j − colsum_j/N·C)
-	rssSS       mpc_core.RElem      // residual-norm RSS = y₀ᵀy₀ − 2Xᵀy₀·β̂ + β̂ᵀXᵀXβ̂ (robust σ̂²)
-	residSumEnc crypto.CipherVector // C = Σr replicated in every slot (PART B CKKS score centering)
-	xtyEnc      crypto.CipherVector // global Xᵀy₀ (kept for RSS)
-	y0ty0Enc    crypto.CipherVector // global y₀ᵀy₀ (kept for RSS)
+	betaSS   mpc_core.RVec       // β̂ in secret shares (exact SS score)
+	rssSS    mpc_core.RElem      // residual-norm RSS = y₀ᵀy₀ − 2Xᵀy₀·β̂ + β̂ᵀXᵀXβ̂ (robust σ̂²)
+	xtyEnc   crypto.CipherVector // global Xᵀy₀ (aggregated; xtySS derives from it in the null)
+	y0ty0Enc crypto.CipherVector // global y₀ᵀy₀ (for RSS)
 	c           int
 	center      float64 // public centering constant, reused by the score
 }
@@ -207,12 +205,6 @@ type skatNull struct {
 // ridgeRel: tiny Tikhonov ridge on the XᵀX diagonal (hub, once, intercept excluded)
 // to keep the inverse finite on a singular design; negligible on a well-conditioned one.
 const ridgeRel = 1e-6
-
-// enableCentering / enableRSSFix: with an accurate β̂ (Cholesky solve) these two refinements are
-// near-no-ops (centering C = Σr ≈ 0; the plain RSS identity is fine). Set false to A/B test whether
-// SS-score + Cholesky alone reach <1% (they were essential only while the EVD β̂ was imprecise).
-const enableCentering = true
-const enableRSSFix = true
 
 // solveSPD solves the small SPD system A·x = b (A = XᵀX, b = Xᵀy₀) in secret shares via Cholesky
 // (A = L·Lᵀ) + forward/back substitution.
@@ -331,14 +323,8 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: XtX->SS + Cholesky solve %v", fedTimings.nullInv.Round(time.Millisecond)))
 	tNull = time.Now()
 
-	// residSum C = Σᵢrᵢ = Xᵀy₀[0] − (XᵀX)[0,:]·β̂ = Σy₀ − (colsums X)·β̂ (XᵀX row 0 = colsums of X,
-	// Xᵀy₀[0] = Σy₀).
-	sxb := mpcObj.TruncVec(mpcObj.SSMultElemVec(xtxSS[0], betaSS), mpcObj.GetDataBits(), mpcObj.GetFracBits())
-	residSum := xtySS[0].Copy()
-	for k := 0; k < c; k++ {
-		residSum = residSum.Sub(sxb[k])
-	}
-
+	// Residual-norm RSS (robust σ̂²): RSS = y₀ᵀy₀ − 2·(Xᵀy₀·β̂) + β̂ᵀ(XᵀX)β̂, 2nd-order in the β̂ error
+	// (the plain identity y₀ᵀy₀ − Xᵀy₀·β̂ is 1st-order). All from the c-dim SS aggregates.
 	sumRVec := func(v mpc_core.RVec) mpc_core.RElem {
 		acc := rtype.Zero()
 		for k := 0; k < len(v); k++ {
@@ -382,50 +368,18 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 		}
 	}
 
-	// C replicated in every slot, so PART B (privateQRaw, local CKKS) can center too.
-	residSumEnc := mpcObj.SSToCVec(cps, mpc_core.InitRVec(residSum, slots))
-
 	fedTimings.nullBeta = time.Since(tNull)
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: Xty->SS + beta=inv*Xty + betaRep %v", fedTimings.nullBeta.Round(time.Millisecond)))
-	return skatNull{betaHat: betaHat, betaRep: betaRep, betaSS: betaSS, residSum: residSum, rssSS: rssSS, residSumEnc: residSumEnc, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
+	return skatNull{betaHat: betaHat, betaRep: betaRep, betaSS: betaSS, rssSS: rssSS, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
 }
 
-// maskFirstSlots zeros slots >= c, keeping 0..c-1 — used before InnerSumAll so the
-// (Xᵀy₀)ᵀβ̂ inner product never sums CKKS garbage in the padding slots.
-func (ast *AssocTest) maskFirstSlots(v crypto.CipherVector, c int) crypto.CipherVector {
-	cps := ast.general.cps
-	out := make(crypto.CipherVector, len(v))
-	for i := range v {
-		if v[i] == nil {
-			continue
-		}
-		out[i] = crypto.MaskTrunc(cps, v[i], c)
-	}
-	return out
-}
-
-// computeNullRSSEnc returns RSS as a 1-element CipherVector for rareVariantScaleShares. With
-// enableRSSFix it wraps the robust residual-norm RSS (null.rssSS); otherwise it uses the plain
-// orthogonality identity RSS = y₀ᵀy₀ − (Xᵀy₀)ᵀβ̂ (1st-order sensitive to the β̂ error).
+// computeNullRSSEnc wraps the residual-norm RSS (formed in SS as null.rssSS) as a 1-element
+// CipherVector for rareVariantScaleShares. SSToCVec is collective, so all parties call it.
 func (ast *AssocTest) computeNullRSSEnc(null skatNull) crypto.CipherVector {
-	if enableRSSFix {
-		if null.rssSS == nil {
-			return nil
-		}
-		return ast.general.mpcObj[0].SSToCVec(ast.general.cps, mpc_core.InitRVec(null.rssSS, 1))
-	}
-	cps := ast.general.cps
-	pid := ast.general.mpcObj[0].GetPid()
-	if pid == 0 || len(null.xtyEnc) == 0 || len(null.y0ty0Enc) == 0 ||
-		len(null.betaHat) == 0 || null.xtyEnc[0] == nil || null.y0ty0Enc[0] == nil {
+	if null.rssSS == nil {
 		return nil
 	}
-	xtyEnc, betaHat := alignCipherVectorLevels(cps, null.xtyEnc, null.betaHat)
-	prod := crypto.CMult(cps, xtyEnc, betaHat)
-	prod = ast.maskFirstSlots(prod, null.c)
-	dotCt := crypto.InnerSumAll(cps, prod)
-	y0ty0Enc, dotVec := alignCipherVectorLevels(cps, null.y0ty0Enc, crypto.CipherVector{dotCt})
-	return crypto.CSub(cps, y0ty0Enc, dotVec)
+	return ast.general.mpcObj[0].SSToCVec(ast.general.cps, mpc_core.InitRVec(null.rssSS, 1))
 }
 
 // --- low-rank key-free secure score + oriented weight ---
@@ -487,30 +441,6 @@ func (ast *AssocTest) scoreSS(GtX *mat.Dense, Gty0 []float64, betaSS mpc_core.RV
 	s := gty0SS.Copy()
 	s.Sub(prod) // exact SS subtraction — cancellation is lossless here
 	return s
-}
-
-// centerScoreSS applies s_j ← s_j − (colsum_j/N)·C (C = null.residSum), i.e. centers each variant
-// by its column mean so the imprecise-β̂ error no longer amplifies through GᵀX[:,0]=colsum(G)=O(n).
-// dosage is this party's local column sums (additive share of the global colsum); pid 0 → zeros.
-func (ast *AssocTest) centerScoreSS(s mpc_core.RVec, dosage []float64, residSum mpc_core.RElem, m int) mpc_core.RVec {
-	mpcObj := ast.general.mpcObj[0]
-	rtype := mpcObj.GetRType()
-	fracBits := mpcObj.GetFracBits()
-
-	colsum := mpc_core.InitRVec(rtype.Zero(), m)
-	if mpcObj.GetPid() > 0 && len(dosage) == m {
-		for j := 0; j < m; j++ {
-			colsum[j] = rtype.FromFloat64(dosage[j], 0) // integer count; ×invN below → μ_j at fracBits
-		}
-	}
-	mu := colsum.Copy()
-	mu.MulScalar(rtype.FromFloat64(1.0/float64(ast.skatTotalNumInds()), fracBits)) // μ_j = colsum_j/N
-
-	corr := mpcObj.TruncVec(mpcObj.SSMultElemVec(mu, mpc_core.InitRVec(residSum, m)),
-		mpcObj.GetDataBits(), fracBits) // μ_j·C, broadcasting the shared C
-	out := s.Copy()
-	out.Sub(corr)
-	return out
 }
 
 // signedWeight returns the minor-allele-oriented weight ŵ_j = t_j·w_j (t_j=−1 iff p̄_j>½),
@@ -714,13 +644,9 @@ func (ast *AssocTest) blockStat(b, nsnps int, null skatNull, X *mat.Dense, y0 []
 		GtX, Gty0, dosage = lc.GtX, lc.Gty0, lc.DosageSum
 	}
 
-	// Score in secret shares (exact fixed-point cancellation), then centered by the column mean so
-	// the imprecise β̂ no longer amplifies through colsum(G)=O(n). All parties (incl. pid 0) take part.
-	sSS := ast.scoreSS(GtX, Gty0, null.betaSS, nsnps)
-	if enableCentering {
-		sSS = ast.centerScoreSS(sSS, dosage, null.residSum, nsnps)
-	}
-	sCVec := mpcObj.SSToCVec(cps, sSS)
+	// Score in secret shares — the Gᵀy₀ − GᵀX·β̂ cancellation is exact in fixed-point (β̂ from the
+	// Cholesky null solve is accurate). All parties (incl. pid 0, with zero shares) take part.
+	sCVec := mpcObj.SSToCVec(cps, ast.scoreSS(GtX, Gty0, null.betaSS, nsnps))
 	weightEnc := mpcObj.SSToCVec(cps, ast.signedWeight(dosage, nsnps))
 
 	var qRaw, bLin crypto.CipherVector
@@ -964,22 +890,6 @@ func (ast *AssocTest) privateQRaw(G *mat.Dense, null skatNull, X *mat.Dense, y0 
 
 	lc := LocalContract(G, X, y0)
 	s := ast.partyScore(lc.GtX, lc.Gty0, null)
-
-	// Center the private score by the column mean (colsum over the pooled N): s_j −= (colsum_j/N)·C.
-	// The private variant is absent in the other cohort, so its global colsum = this party's colsum
-	// but the mean divides by the pooled N. Kills the same β̂₀-error × colsum amplification as PART A.
-	if enableCentering && len(null.residSumEnc) > 0 {
-		invN := 1.0 / float64(ast.skatTotalNumInds())
-		mu := make([]float64, m)
-		for j := 0; j < m; j++ {
-			mu[j] = lc.DosageSum[j] * invN
-		}
-		muPlain, _ := crypto.EncodeFloatVector(cps, mu)
-		corr := crypto.CPMult(cps, null.residSumEnc, muPlain)
-		s, corr = alignCipherVectorLevels(cps, s, corr)
-		s = crypto.CSub(cps, s, corr)
-	}
-
 	wEnc, _ := crypto.EncryptFloatVector(cps, skatBetaWeight(lc.DosageSum, ast.skatTotalNumInds()))
 
 	s, wEnc = alignCipherVectorLevels(cps, s, wEnc)
