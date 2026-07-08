@@ -194,9 +194,10 @@ func (ln localNull) matrices(c int) (xtx [][]float64, xty []float64, y0ty0 float
 type skatNull struct {
 	betaHat  crypto.CipherVector // β̂ in slots 0..c-1
 	betaRep  crypto.CipherVector // betaRep[ℓ] = Enc(β̂_ℓ) in every slot (PART B CKKS score)
-	betaSS   mpc_core.RVec       // β̂ in secret shares
-	xtyEnc   crypto.CipherVector // global Xᵀy₀ (kept for RSS)
-	y0ty0Enc crypto.CipherVector // global y₀ᵀy₀ (kept for RSS)
+	betaSS   mpc_core.RVec       // β̂ in secret shares (exact SS score)
+	rssSS    mpc_core.RElem      // residual-norm RSS = y₀ᵀy₀ − 2Xᵀy₀·β̂ + β̂ᵀXᵀXβ̂ (robust σ̂²)
+	xtyEnc   crypto.CipherVector // global Xᵀy₀ (aggregated; xtySS derives from it in the null)
+	y0ty0Enc crypto.CipherVector // global y₀ᵀy₀ (for RSS)
 	c        int
 	center   float64 // public centering constant, reused by the score
 }
@@ -204,6 +205,55 @@ type skatNull struct {
 // ridgeRel: tiny Tikhonov ridge on the XᵀX diagonal (hub, once, intercept excluded)
 // to keep the inverse finite on a singular design; negligible on a well-conditioned one.
 const ridgeRel = 1e-6
+
+// solveSPD solves the small SPD system A·x = b (A = XᵀX, b = Xᵀy₀) in secret shares via Cholesky
+// (A = L·Lᵀ) + forward/back substitution.
+func (ast *AssocTest) solveSPD(A mpc_core.RMat, b mpc_core.RVec) mpc_core.RVec {
+	mpcObj := ast.general.mpcObj[0]
+	rtype := mpcObj.GetRType()
+	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
+	c := len(b)
+
+	mul := func(x, y mpc_core.RElem) mpc_core.RElem { // SS scalar product, back to fracBits
+		return mpcObj.TruncVec(mpcObj.SSMultElemVec(mpc_core.RVec{x}, mpc_core.RVec{y}), db, fb)[0]
+	}
+
+	L := mpc_core.InitRMat(rtype.Zero(), c, c) // lower-triangular Cholesky factor
+	dInv := make(mpc_core.RVec, c)             // dInv[j] = 1/L[j][j]
+	for j := 0; j < c; j++ {
+		d := A[j][j].Copy() // d = A[j][j] − Σ_{k<j} L[j][k]²
+		for k := 0; k < j; k++ {
+			d = d.Sub(mul(L[j][k], L[j][k]))
+		}
+		sq, sqInv := mpcObj.SqrtAndSqrtInverse(mpc_core.RVec{d}, false)
+		L[j][j], dInv[j] = sq[0], sqInv[0]
+		for i := j + 1; i < c; i++ { // L[i][j] = (A[i][j] − Σ_{k<j} L[i][k]L[j][k])/L[j][j]
+			v := A[i][j].Copy()
+			for k := 0; k < j; k++ {
+				v = v.Sub(mul(L[i][k], L[j][k]))
+			}
+			L[i][j] = mul(v, dInv[j])
+		}
+	}
+
+	z := make(mpc_core.RVec, c) // forward:  L·z = b
+	for i := 0; i < c; i++ {
+		v := b[i].Copy()
+		for k := 0; k < i; k++ {
+			v = v.Sub(mul(L[i][k], z[k]))
+		}
+		z[i] = mul(v, dInv[i])
+	}
+	x := make(mpc_core.RVec, c) // back:  Lᵀ·x = z
+	for i := c - 1; i >= 0; i-- {
+		v := z[i].Copy()
+		for k := i + 1; k < c; k++ {
+			v = v.Sub(mul(L[k][i], x[k]))
+		}
+		x[i] = mul(v, dInv[i])
+	}
+	return x
+}
 
 // computeBetaHatEnc computes β̂ = (XᵀX)⁻¹Xᵀy₀ as an encrypted c-vector from the cross-party
 // normal equations — only the c-dim aggregates cross the secure boundary, n never does.
@@ -261,28 +311,45 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: encrypt+AggregateCMat(XtX,Xty,y0ty0)+bootstrap %v", fedTimings.nullAgg.Round(time.Millisecond)))
 	tNull = time.Now()
 
-	// Invert XᵀX in SS (c rows × 1 ct, c data slots), then β̂ = (XᵀX)⁻¹·Xᵀy₀.
+	// Solve (XᵀX)·β̂ = Xᵀy₀ for the small SPD system by Cholesky + forward/back substitution
 	xtxSS := mpcObj.CMatToSS(cps, rtype, xtxEnc, -1, c, 1, c)
-	invSS, _ := mpcObj.MatrixInverseSymPos(xtxSS)
-	fedTimings.nullInv = time.Since(tNull)
-	log.LLvl1(fmt.Sprintf("[skat_fed]   null: XtX->SS + MatrixInverseSymPos(EigenDecomp) %v", fedTimings.nullInv.Round(time.Millisecond)))
-	tNull = time.Now()
-
 	var xtyCt *rlwe.Ciphertext
 	if len(xtyEnc) > 0 {
 		xtyCt = xtyEnc[0]
 	}
 	xtySS := mpcObj.CiphertextToSS(cps, rtype, xtyCt, mpcObj.GetHubPid(), c)
-	xtyCol := make(mpc_core.RMat, c)
-	for i := 0; i < c; i++ {
-		xtyCol[i] = mpc_core.RVec{xtySS[i]}
+	betaSS := ast.solveSPD(xtxSS, xtySS)
+	fedTimings.nullInv = time.Since(tNull)
+	log.LLvl1(fmt.Sprintf("[skat_fed]   null: XtX->SS + Cholesky solve %v", fedTimings.nullInv.Round(time.Millisecond)))
+	tNull = time.Now()
+
+	// Residual-norm RSS (robust σ̂²): RSS = y₀ᵀy₀ − 2·(Xᵀy₀·β̂) + β̂ᵀ(XᵀX)β̂, 2nd-order in the β̂ error
+	// (the plain identity y₀ᵀy₀ − Xᵀy₀·β̂ is 1st-order). All from the c-dim SS aggregates.
+	sumRVec := func(v mpc_core.RVec) mpc_core.RElem {
+		acc := rtype.Zero()
+		for k := 0; k < len(v); k++ {
+			acc = acc.Add(v[k])
+		}
+		return acc
 	}
-	betaMat := mpcObj.SSMultMat(invSS, xtyCol)
-	betaSS := make(mpc_core.RVec, c)
-	for i := 0; i < c; i++ {
-		betaSS[i] = betaMat[i][0]
+	betaCol2 := make(mpc_core.RMat, c)
+	for k := 0; k < c; k++ {
+		betaCol2[k] = mpc_core.RVec{betaSS[k]}
 	}
-	betaSS = mpcObj.TruncVec(betaSS, mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	xtxBetaMat := mpcObj.SSMultMat(xtxSS, betaCol2) // (XᵀX)·β̂
+	xtxBeta := make(mpc_core.RVec, c)
+	for k := 0; k < c; k++ {
+		xtxBeta[k] = xtxBetaMat[k][0]
+	}
+	xtxBeta = mpcObj.TruncVec(xtxBeta, mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	xtyBeta := sumRVec(mpcObj.TruncVec(mpcObj.SSMultElemVec(xtySS, betaSS), mpcObj.GetDataBits(), mpcObj.GetFracBits()))
+	betaXtxBeta := sumRVec(mpcObj.TruncVec(mpcObj.SSMultElemVec(betaSS, xtxBeta), mpcObj.GetDataBits(), mpcObj.GetFracBits()))
+	var y0Ct *rlwe.Ciphertext
+	if len(y0ty0Enc) > 0 {
+		y0Ct = y0ty0Enc[0]
+	}
+	y0ty0SS := mpcObj.CiphertextToSS(cps, rtype, y0Ct, mpcObj.GetHubPid(), 1)[0]
+	rssSS := y0ty0SS.Sub(xtyBeta).Sub(xtyBeta).Add(betaXtxBeta) // y₀ᵀy₀ − 2·Xᵀy₀·β̂ + β̂ᵀXᵀXβ̂
 
 	betaHat := mpcObj.SSToCVec(cps, betaSS)
 
@@ -303,41 +370,16 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 
 	fedTimings.nullBeta = time.Since(tNull)
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: Xty->SS + beta=inv*Xty + betaRep %v", fedTimings.nullBeta.Round(time.Millisecond)))
-	return skatNull{betaHat: betaHat, betaRep: betaRep, betaSS: betaSS, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
+	return skatNull{betaHat: betaHat, betaRep: betaRep, betaSS: betaSS, rssSS: rssSS, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
 }
 
-// maskFirstSlots zeros slots >= c, keeping 0..c-1 — used before InnerSumAll so the
-// (Xᵀy₀)ᵀβ̂ inner product never sums CKKS garbage in the padding slots.
-func (ast *AssocTest) maskFirstSlots(v crypto.CipherVector, c int) crypto.CipherVector {
-	cps := ast.general.cps
-	out := make(crypto.CipherVector, len(v))
-	for i := range v {
-		if v[i] == nil {
-			continue
-		}
-		out[i] = crypto.MaskTrunc(cps, v[i], c)
-	}
-	return out
-}
-
-// computeNullRSSEnc returns RSS = y₀ᵀy₀ − (Xᵀy₀)ᵀβ̂ as a 1-element CipherVector (the
-// orthogonality identity makes this exact without touching n). pid 0 returns nil.
+// computeNullRSSEnc wraps the residual-norm RSS (formed in SS as null.rssSS) as a 1-element
+// CipherVector for rareVariantScaleShares. SSToCVec is collective, so all parties call it.
 func (ast *AssocTest) computeNullRSSEnc(null skatNull) crypto.CipherVector {
-	cps := ast.general.cps
-	pid := ast.general.mpcObj[0].GetPid()
-
-	if pid == 0 || len(null.xtyEnc) == 0 || len(null.y0ty0Enc) == 0 ||
-		len(null.betaHat) == 0 || null.xtyEnc[0] == nil || null.y0ty0Enc[0] == nil {
+	if null.rssSS == nil {
 		return nil
 	}
-
-	xtyEnc, betaHat := alignCipherVectorLevels(cps, null.xtyEnc, null.betaHat)
-	prod := crypto.CMult(cps, xtyEnc, betaHat)
-	prod = ast.maskFirstSlots(prod, null.c)
-	dotCt := crypto.InnerSumAll(cps, prod)
-
-	y0ty0Enc, dotVec := alignCipherVectorLevels(cps, null.y0ty0Enc, crypto.CipherVector{dotCt})
-	return crypto.CSub(cps, y0ty0Enc, dotVec)
+	return ast.general.mpcObj[0].SSToCVec(ast.general.cps, mpc_core.InitRVec(null.rssSS, 1))
 }
 
 // --- low-rank key-free secure score + oriented weight ---
@@ -602,7 +644,8 @@ func (ast *AssocTest) blockStat(b, nsnps int, null skatNull, X *mat.Dense, y0 []
 		GtX, Gty0, dosage = lc.GtX, lc.Gty0, lc.DosageSum
 	}
 
-	// Score in secret shares: the Gᵀy₀ − GᵀX·β̂
+	// Score in secret shares — the Gᵀy₀ − GᵀX·β̂ cancellation is exact in fixed-point (β̂ from the
+	// Cholesky null solve is accurate). All parties (incl. pid 0, with zero shares) take part.
 	sCVec := mpcObj.SSToCVec(cps, ast.scoreSS(GtX, Gty0, null.betaSS, nsnps))
 	weightEnc := mpcObj.SSToCVec(cps, ast.signedWeight(dosage, nsnps))
 

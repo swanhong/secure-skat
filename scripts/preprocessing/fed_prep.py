@@ -103,7 +103,6 @@ def load_ancestry_pcs(path, n_pcs):
 
 
 def write_cov(fam_ids, pcs, out_path):
-    """n x n_pcs covariates (ancestry PCs) in geno (.fam) row order; TAB-separated (Go LoadMatrixFromFile)."""
     np.savetxt(out_path, np.asarray([pcs[sid] for sid in fam_ids]), delimiter="\t")
 
 
