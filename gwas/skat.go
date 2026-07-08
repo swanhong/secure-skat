@@ -192,15 +192,16 @@ func (ln localNull) matrices(c int) (xtx [][]float64, xty []float64, y0ty0 float
 
 // skatNull holds the secure null-model results from the c-dim aggregates.
 type skatNull struct {
-	betaHat  crypto.CipherVector // β̂ in slots 0..c-1
-	betaRep  crypto.CipherVector // betaRep[ℓ] = Enc(β̂_ℓ) in every slot (PART B CKKS score)
+	betaHat     crypto.CipherVector // β̂ in slots 0..c-1
+	betaRep     crypto.CipherVector // betaRep[ℓ] = Enc(β̂_ℓ) in every slot (PART B CKKS score)
 	betaSS      mpc_core.RVec       // β̂ in secret shares
 	residSum    mpc_core.RElem      // Σᵢrᵢ = Σy₀ − (colsums X)·β̂; centers the score (s_j − colsum_j/N·C)
+	rssSS       mpc_core.RElem      // residual-norm RSS = y₀ᵀy₀ − 2Xᵀy₀·β̂ + β̂ᵀXᵀXβ̂ (robust σ̂²)
 	residSumEnc crypto.CipherVector // C = Σr replicated in every slot (PART B CKKS score centering)
 	xtyEnc      crypto.CipherVector // global Xᵀy₀ (kept for RSS)
-	y0ty0Enc crypto.CipherVector // global y₀ᵀy₀ (kept for RSS)
-	c        int
-	center   float64 // public centering constant, reused by the score
+	y0ty0Enc    crypto.CipherVector // global y₀ᵀy₀ (kept for RSS)
+	c           int
+	center      float64 // public centering constant, reused by the score
 }
 
 // ridgeRel: tiny Tikhonov ridge on the XᵀX diagonal (hub, once, intercept excluded)
@@ -296,6 +297,32 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 		residSum = residSum.Sub(sxb[k])
 	}
 
+	sumRVec := func(v mpc_core.RVec) mpc_core.RElem {
+		acc := rtype.Zero()
+		for k := 0; k < len(v); k++ {
+			acc = acc.Add(v[k])
+		}
+		return acc
+	}
+	betaCol2 := make(mpc_core.RMat, c)
+	for k := 0; k < c; k++ {
+		betaCol2[k] = mpc_core.RVec{betaSS[k]}
+	}
+	xtxBetaMat := mpcObj.SSMultMat(xtxSS, betaCol2) // (XᵀX)·β̂
+	xtxBeta := make(mpc_core.RVec, c)
+	for k := 0; k < c; k++ {
+		xtxBeta[k] = xtxBetaMat[k][0]
+	}
+	xtxBeta = mpcObj.TruncVec(xtxBeta, mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	xtyBeta := sumRVec(mpcObj.TruncVec(mpcObj.SSMultElemVec(xtySS, betaSS), mpcObj.GetDataBits(), mpcObj.GetFracBits()))
+	betaXtxBeta := sumRVec(mpcObj.TruncVec(mpcObj.SSMultElemVec(betaSS, xtxBeta), mpcObj.GetDataBits(), mpcObj.GetFracBits()))
+	var y0Ct *rlwe.Ciphertext
+	if len(y0ty0Enc) > 0 {
+		y0Ct = y0ty0Enc[0]
+	}
+	y0ty0SS := mpcObj.CiphertextToSS(cps, rtype, y0Ct, mpcObj.GetHubPid(), 1)[0]
+	rssSS := y0ty0SS.Sub(xtyBeta).Sub(xtyBeta).Add(betaXtxBeta) // y₀ᵀy₀ − 2·Xᵀy₀·β̂ + β̂ᵀXᵀXβ̂
+
 	betaHat := mpcObj.SSToCVec(cps, betaSS)
 
 	// betaRep[ℓ] = β̂_ℓ replicated in every slot (for the score's CPMult). pid-0 → nil.
@@ -318,7 +345,7 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 
 	fedTimings.nullBeta = time.Since(tNull)
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: Xty->SS + beta=inv*Xty + betaRep %v", fedTimings.nullBeta.Round(time.Millisecond)))
-	return skatNull{betaHat: betaHat, betaRep: betaRep, betaSS: betaSS, residSum: residSum, residSumEnc: residSumEnc, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
+	return skatNull{betaHat: betaHat, betaRep: betaRep, betaSS: betaSS, residSum: residSum, rssSS: rssSS, residSumEnc: residSumEnc, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
 }
 
 // maskFirstSlots zeros slots >= c, keeping 0..c-1 — used before InnerSumAll so the
@@ -335,24 +362,13 @@ func (ast *AssocTest) maskFirstSlots(v crypto.CipherVector, c int) crypto.Cipher
 	return out
 }
 
-// computeNullRSSEnc returns RSS = y₀ᵀy₀ − (Xᵀy₀)ᵀβ̂ as a 1-element CipherVector (the
-// orthogonality identity makes this exact without touching n). pid 0 returns nil.
+// computeNullRSSEnc wraps the residual-norm RSS (already formed in SS as null.rssSS) as a 1-element
+// CipherVector for rareVariantScaleShares. SSToCVec is collective, so all parties call it.
 func (ast *AssocTest) computeNullRSSEnc(null skatNull) crypto.CipherVector {
-	cps := ast.general.cps
-	pid := ast.general.mpcObj[0].GetPid()
-
-	if pid == 0 || len(null.xtyEnc) == 0 || len(null.y0ty0Enc) == 0 ||
-		len(null.betaHat) == 0 || null.xtyEnc[0] == nil || null.y0ty0Enc[0] == nil {
+	if null.rssSS == nil {
 		return nil
 	}
-
-	xtyEnc, betaHat := alignCipherVectorLevels(cps, null.xtyEnc, null.betaHat)
-	prod := crypto.CMult(cps, xtyEnc, betaHat)
-	prod = ast.maskFirstSlots(prod, null.c)
-	dotCt := crypto.InnerSumAll(cps, prod)
-
-	y0ty0Enc, dotVec := alignCipherVectorLevels(cps, null.y0ty0Enc, crypto.CipherVector{dotCt})
-	return crypto.CSub(cps, y0ty0Enc, dotVec)
+	return ast.general.mpcObj[0].SSToCVec(ast.general.cps, mpc_core.InitRVec(null.rssSS, 1))
 }
 
 // --- low-rank key-free secure score + oriented weight ---
