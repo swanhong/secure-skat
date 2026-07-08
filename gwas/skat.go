@@ -873,10 +873,26 @@ func skatBetaWeight(dosageSum []float64, totalInds int) []float64 {
 	return w
 }
 
-// privateQRaw returns the private party's local raw Q = Σ w² s² (ciphertext, scalar in slot 0) for
-// one gene's private variants: key-free score (β̂ stays encrypted) × plaintext weight, no
-// AggregateCMat. Enc(0) for an empty gene. Called only on the private party.
-func (ast *AssocTest) privateQRaw(G *mat.Dense, null skatNull, X *mat.Dense, y0 []float64) crypto.CipherVector {
+// skatBetaWeightSigned folds the minor-allele orientation (ŵ_j = −w_j iff p̄_j>½) into the weight, so
+// ScoreCalculation yields both Q (sign²=1, same as unsigned) and the R::SKAT-oriented Burden linear
+// term Σŵ·s. The private party's dosage is local, so its sign is computed in plaintext.
+func skatBetaWeightSigned(dosageSum []float64, totalInds int) []float64 {
+	w := skatBetaWeight(dosageSum, totalInds)
+	twoN := float64(2 * totalInds)
+	for j, d := range dosageSum {
+		if d/twoN > 0.5 {
+			w[j] = -w[j]
+		}
+	}
+	return w
+}
+
+// privateRawStats returns the private party's local raw SKAT = Σ ŵ² s² and Burden linear term Σ ŵ·s
+// (two ciphertext scalars in slot 0) for one gene's private variants: key-free score (β̂ stays
+// encrypted) × plaintext signed weight, no AggregateCMat. The signed weight leaves SKAT unchanged
+// (sign²=1) and makes the linear term match R::SKAT's orientation. Enc(0) for an empty gene. Only on
+// the private party.
+func (ast *AssocTest) privateRawStats(G *mat.Dense, null skatNull, X *mat.Dense, y0 []float64) (skat, burdenLin crypto.CipherVector) {
 	cps := ast.general.cps
 
 	var m int
@@ -885,33 +901,40 @@ func (ast *AssocTest) privateQRaw(G *mat.Dense, null skatNull, X *mat.Dense, y0 
 	}
 	if m == 0 {
 		z, _ := crypto.EncryptFloatVector(cps, []float64{0})
-		return z
+		zb, _ := crypto.EncryptFloatVector(cps, []float64{0})
+		return z, zb
 	}
 
 	lc := LocalContract(G, X, y0)
 	s := ast.partyScore(lc.GtX, lc.Gty0, null)
-	wEnc, _ := crypto.EncryptFloatVector(cps, skatBetaWeight(lc.DosageSum, ast.skatTotalNumInds()))
+	wEnc, _ := crypto.EncryptFloatVector(cps, skatBetaWeightSigned(lc.DosageSum, ast.skatTotalNumInds()))
 
 	s, wEnc = alignCipherVectorLevels(cps, s, wEnc)
-	q, _, _, _, _, _ := ast.ScoreCalculation(s, wEnc)
-	return q
+	skat, burdenLin, _, _, _, _ = ast.ScoreCalculation(s, wEnc)
+	return skat, burdenLin
 }
 
-// privateBlockStat returns one gene's private-variant raw Q as a 1-elem SS RVec. The private party
-// computes it locally (privateQRaw); CiphertextToSS reshares from privatePid (the other party gets
-// only the ciphertext, pid 0 sits out). Must run for EVERY gene — the Enc(0) on empty genes keeps
-// which genes have private variants indistinguishable.
-func (ast *AssocTest) privateBlockStat(G *mat.Dense, null skatNull, X *mat.Dense, y0 []float64, privatePid int) mpc_core.RVec {
+// privateBlockStat returns one gene's private-variant raw SKAT and Burden linear term as 1-elem SS
+// RVecs. The private party computes them locally (privateRawStats); CiphertextToSS reshares each from
+// privatePid (the other party gets only the ciphertext, pid 0 sits out). Must run for EVERY gene —
+// the Enc(0) on empty genes keeps which genes have private variants indistinguishable.
+func (ast *AssocTest) privateBlockStat(G *mat.Dense, null skatNull, X *mat.Dense, y0 []float64, privatePid int) (skatSS, burdenSS mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
 
-	var ct *rlwe.Ciphertext
+	var skatCt, burdenCt *rlwe.Ciphertext
 	if mpcObj.GetPid() == privatePid {
-		if q := ast.privateQRaw(G, null, X, y0); len(q) > 0 {
-			ct = q[0]
+		skat, burdenLin := ast.privateRawStats(G, null, X, y0)
+		if len(skat) > 0 {
+			skatCt = skat[0]
+		}
+		if len(burdenLin) > 0 {
+			burdenCt = burdenLin[0]
 		}
 	}
-	return mpcObj.CiphertextToSS(ast.general.cps, rtype, ct, privatePid, 1)
+	skatSS = mpcObj.CiphertextToSS(ast.general.cps, rtype, skatCt, privatePid, 1)
+	burdenSS = mpcObj.CiphertextToSS(ast.general.cps, rtype, burdenCt, privatePid, 1)
+	return skatSS, burdenSS
 }
 
 // ComputeSKATFederatedPrivate returns per-gene Q (slot b = gene/block b). genoBlocks hold the
@@ -944,7 +967,7 @@ func blockSecStats(secs []float64) string {
 		sorted[0], q(0.25), sum/float64(n), q(0.75), sorted[n-1])
 }
 
-func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, privatePid int) crypto.CipherVector {
+func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, privatePid int) (skatStat, burdenStat crypto.CipherVector) {
 	mpcObj := ast.general.mpcObj[0]
 	cps := ast.general.cps
 	rtype := mpcObj.GetRType()
@@ -958,17 +981,20 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	if mpcObj.GetPid() == privatePid && privateOnly != nil && len(privateOnly) != nB {
 		panic(fmt.Sprintf("ComputeSKATFederatedPrivate: privateOnly has %d blocks, want %d", len(privateOnly), nB))
 	}
-	qBlockSS := mpc_core.InitRVec(rtype.Zero(), nB)
+	skatBlockSS := mpc_core.InitRVec(rtype.Zero(), nB)  // Σ ŵ²s²   (SKAT raw, per gene)
+	bLinBlockSS := mpc_core.InitRVec(rtype.Zero(), nB)  // Σ ŵ·s    (Burden linear term, per gene)
 	tBlocks := time.Now()
 	blockSecs := make([]float64, 0, nB)
 	for b := 0; b < nB; b++ {
 		tb := time.Now()
-		acc := mpc_core.InitRVec(rtype.Zero(), 1)
+		accSkat := mpc_core.InitRVec(rtype.Zero(), 1)
+		accBurden := mpc_core.InitRVec(rtype.Zero(), 1)
 
 		// PART A: secure SKAT over the public list (existing per-block path).
 		if nsnps := ast.skatBlockNumSnps(b); nsnps > 0 {
-			qA, _ := ast.blockStat(b, nsnps, null, X, y0)
-			acc.Add(qA)
+			skatA, burdenA := ast.blockStat(b, nsnps, null, X, y0)
+			accSkat.Add(skatA)
+			accBurden.Add(burdenA)
 		}
 
 		// PART B: private variants for this gene (uniform across all genes).
@@ -976,9 +1002,12 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		if mpcObj.GetPid() == privatePid && b < len(privateOnly) {
 			G = privateOnly[b]
 		}
-		acc.Add(ast.privateBlockStat(G, null, X, y0, privatePid))
+		skatB, burdenB := ast.privateBlockStat(G, null, X, y0, privatePid)
+		accSkat.Add(skatB)
+		accBurden.Add(burdenB)
 
-		qBlockSS[b] = acc[0]
+		skatBlockSS[b] = accSkat[0]
+		bLinBlockSS[b] = accBurden[0]
 		blockSecs = append(blockSecs, time.Since(tb).Seconds())
 	}
 	fedTimings.blocks = time.Since(tBlocks)
@@ -986,7 +1015,10 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	log.LLvl1(fmt.Sprintf("[skat_fed] %d blocks: %v total | per-block %s",
 		nB, fedTimings.blocks.Round(time.Millisecond), blockSecStats(blockSecs)))
 
-	// Common 1/(2σ̂²) applied once (linear, distributes over A+B).
+	// Burden = (Σ ŵ·s)² — square the accumulated linear term (A+B) per gene before scaling.
+	burdenBlockSS := mpcObj.TruncVec(mpcObj.SSSquareElemVec(bLinBlockSS), mpcObj.GetDataBits(), mpcObj.GetFracBits())
+
+	// Common 1/(2σ̂²) applied once to both stats (linear, distributes over A+B).
 	scaleSS, ok := ast.general.rareVariantScaleShares(nullRSS)
 	if !ok {
 		panic("ComputeSKATFederatedPrivate: div undefined (dof = n-c <= 0); need more samples than covariates")
@@ -995,8 +1027,10 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	for b := 0; b < nB; b++ {
 		scaleVec[b] = scaleSS[0].Copy()
 	}
-	qBlockSS = mpcObj.TruncVec(mpcObj.SSMultElemVec(qBlockSS, scaleVec), mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
+	skatBlockSS = mpcObj.TruncVec(mpcObj.SSMultElemVec(skatBlockSS, scaleVec), db, fb)
+	burdenBlockSS = mpcObj.TruncVec(mpcObj.SSMultElemVec(burdenBlockSS, scaleVec), db, fb)
 	fedTimings.total = time.Since(tStart)
 	log.LLvl1(fmt.Sprintf("[skat_fed] total compute: %v", fedTimings.total.Round(time.Millisecond)))
-	return mpcObj.SSToCVec(cps, qBlockSS)
+	return mpcObj.SSToCVec(cps, skatBlockSS), mpcObj.SSToCVec(cps, burdenBlockSS)
 }

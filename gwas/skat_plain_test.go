@@ -181,7 +181,7 @@ func fedFixture() (pub, priv FedParty) {
 
 // pooledPerGeneQ — the ground truth: build the union genotype (0-fill party-unique), run
 // pooled single-cohort SKAT per gene.
-func pooledPerGeneQ(pub, priv FedParty) map[string]float64 {
+func pooledPerGene(pub, priv FedParty) (skat, burden map[string]float64) {
 	np, c := pub.X.Dims()
 	nq, _ := priv.X.Dims()
 	N := np + nq
@@ -243,27 +243,39 @@ func pooledPerGeneQ(pub, priv FedParty) map[string]float64 {
 	}
 	res := fedResidual(X, y, &beta)
 	sigma2 := (fedDot(y, y) - mat.Dot(&xty, &beta)) / float64(N-c)
-	Q := map[string]float64{}
+	skat = map[string]float64{}
+	bLin := map[string]float64{}
 	for kk, id := range order {
 		score := fedColDot(G, kk, res)
 		count := fedColSum(G, kk)
 		p := count / (2 * float64(N))
 		w := 25 * math.Pow(1-math.Min(p, 1-p), 24)
-		Q[u[id].gene] += w * w * score * score / (2 * sigma2)
+		if p > 0.5 {
+			score = -score
+		}
+		skat[u[id].gene] += w * w * score * score / (2 * sigma2)
+		bLin[u[id].gene] += w * score
 	}
-	return Q
+	burden = map[string]float64{}
+	for g, l := range bLin {
+		burden[g] = l * l / (2 * sigma2)
+	}
+	return skat, burden
 }
 
 func TestSKATFederatedPrivateMatchesPooled(t *testing.T) {
 	pub, priv := fedFixture()
-	Qfed := SKATFederatedPrivate(pub, priv)
-	Qpool := pooledPerGeneQ(pub, priv)
-	if len(Qfed) != len(Qpool) {
-		t.Fatalf("gene count: fed %d pooled %d", len(Qfed), len(Qpool))
+	skatFed, burdenFed := SKATFederatedPrivate(pub, priv)
+	skatPool, burdenPool := pooledPerGene(pub, priv)
+	if len(skatFed) != len(skatPool) {
+		t.Fatalf("gene count: fed %d pooled %d", len(skatFed), len(skatPool))
 	}
-	for g, qp := range Qpool {
-		if !approxEqual(Qfed[g], qp, 1e-9) {
-			t.Errorf("gene %s: federated=%.12g pooled=%.12g", g, Qfed[g], qp)
+	for g, sp := range skatPool {
+		if !approxEqual(skatFed[g], sp, 1e-9) {
+			t.Errorf("gene %s SKAT: federated=%.12g pooled=%.12g", g, skatFed[g], sp)
+		}
+		if !approxEqual(burdenFed[g], burdenPool[g], 1e-9) {
+			t.Errorf("gene %s Burden: federated=%.12g pooled=%.12g", g, burdenFed[g], burdenPool[g])
 		}
 	}
 }

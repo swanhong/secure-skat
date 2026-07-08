@@ -1348,7 +1348,7 @@ func TestSKATFederatedPrivate(t *testing.T) {
 
 	prot.GetConfig().PrivatePid = privatePid
 	prot.GetConfig().PrivateOnlyPrefix = privPrefix // "" except on the private party
-	qDec := prot.runFederatedPrivate()
+	skatDec, burdenDec := prot.runFederatedPrivate()
 	if pid != 1 {
 		return
 	}
@@ -1376,7 +1376,7 @@ func TestSKATFederatedPrivate(t *testing.T) {
 			}
 			return varID(g, "prv", col-nShared), geneName(g), "private"
 		})
-	oracleQ := SKATFederatedPrivate(pub, priv)
+	oracleSkat, oracleBurden := SKATFederatedPrivate(pub, priv)
 
 	// --- oracle 2: pooled per-gene SKATPlain (independent code path) ---
 	Xpool := mat.NewDense(nPub+nPriv, c, nil)
@@ -1423,17 +1423,20 @@ func TestSKATFederatedPrivate(t *testing.T) {
 			}
 			col++
 		}
-		pooled := SKATPlain(Gp, Xpool, ypool).Q
+		plain := SKATPlain(Gp, Xpool, ypool)
 
-		secure := qDec[g]
-		oref := oracleQ[geneName(g)]
-		relOracle := math.Abs(secure-oref) / math.Max(math.Abs(oref), 1e-12)
-		relPool := math.Abs(secure-pooled) / math.Max(math.Abs(pooled), 1e-12)
-		t.Logf("%s: secure=%.6f oracle=%.6f pooled=%.6f relOracle=%.2e relPool=%.2e",
-			geneName(g), secure, oref, pooled, relOracle, relPool)
-		if relOracle > tol || relPool > tol {
-			t.Errorf("%s: secure Q rel oracle=%.3e pooled=%.3e (tol %.0e)", geneName(g), relOracle, relPool, tol)
+		// three-way check per statistic: secure == federated oracle == pooled single-cohort.
+		check := func(stat string, secure, oref, pooled float64) {
+			relOracle := math.Abs(secure-oref) / math.Max(math.Abs(oref), 1e-12)
+			relPool := math.Abs(secure-pooled) / math.Max(math.Abs(pooled), 1e-12)
+			t.Logf("%s %s: secure=%.6f oracle=%.6f pooled=%.6f relOracle=%.2e relPool=%.2e",
+				geneName(g), stat, secure, oref, pooled, relOracle, relPool)
+			if relOracle > tol || relPool > tol {
+				t.Errorf("%s %s: secure rel oracle=%.3e pooled=%.3e (tol %.0e)", geneName(g), stat, relOracle, relPool, tol)
+			}
 		}
+		check("SKAT", skatDec[g], oracleSkat[geneName(g)], plain.Q)
+		check("Burden", burdenDec[g], oracleBurden[geneName(g)], plain.Burden)
 	}
 }
 

@@ -124,9 +124,9 @@ type FedParty struct {
 	Role []string   // m role
 }
 
-// SKATFederatedPrivate returns per-gene Q. pub.ID is the public list (shared + public_only);
-// priv.ID is shared + private. Shared variants share the same ID across parties.
-func SKATFederatedPrivate(pub, priv FedParty) map[string]float64 {
+// SKATFederatedPrivate returns per-gene SKAT and Burden. pub.ID is the public list (shared +
+// public_only); priv.ID is shared + private. Shared variants share the same ID across parties.
+func SKATFederatedPrivate(pub, priv FedParty) (skat, burden map[string]float64) {
 	np, c := pub.X.Dims()
 	nq, _ := priv.X.Dims()
 	N := float64(np + nq)
@@ -157,11 +157,16 @@ func SKATFederatedPrivate(pub, priv FedParty) map[string]float64 {
 		qCol[id] = j
 	}
 
-	Q := make(map[string]float64)
+	skat = make(map[string]float64)
+	bLin := make(map[string]float64)
 	add := func(gene string, score, count float64) {
 		p := count / (2 * N)
 		w := 25 * math.Pow(1-math.Min(p, 1-p), 24)
-		Q[gene] += w * w * score * score / (2 * sigma2)
+		if p > 0.5 { // orient to minor allele: SKAT is invariant, Burden (Σw s)² is sign-sensitive
+			score = -score
+		}
+		skat[gene] += w * w * score * score / (2 * sigma2)
+		bLin[gene] += w * score
 	}
 
 	// ---- PART A: secure over the public list (the private party adds its shared cols) ----
@@ -181,7 +186,11 @@ func SKATFederatedPrivate(pub, priv FedParty) map[string]float64 {
 			add(priv.Gene[j], fedColDot(priv.G, j, rq), fedColSum(priv.G, j))
 		}
 	}
-	return Q
+	burden = make(map[string]float64, len(bLin))
+	for g, l := range bLin {
+		burden[g] = l * l / (2 * sigma2) // Burden = (Σ w s)² / (2σ̂²)
+	}
+	return skat, burden
 }
 
 func fedResidual(X *mat.Dense, y []float64, beta *mat.VecDense) []float64 {
