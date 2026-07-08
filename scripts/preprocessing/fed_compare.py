@@ -106,3 +106,16 @@ if os.path.exists(fbeta):
     for b in range(ng):
         rel = abs(Qsec[b] - Qsb[b]) / max(abs(Qsb[b]), 1e-9)
         print(f"{b:>4} {Qsec[b]:>15.1f} {Qsb[b]:>15.1f} {rel:>9.2e}")
+
+    # β0-only replay: secure β̂ with just the intercept swapped for the true intercept. If Q snaps
+    # back near truth, the whole error is the β0-error × colsum(G) amplification → genotype centering
+    # (which zeroes colsum(G̃)) is the fix.
+    b_b0fix = bsec.copy(); b_b0fix[0] = b_true[0]
+    Qb0 = federated_Q_from_blocks(
+        load_blocks("A", "geno", nA, ng), load_blocks("B", "geno", nB, ng),
+        load_blocks("B", "priv", nB, ng), XA, yA, XB, yB, beta_override=b_b0fix)
+    print(f"\n--- Q(secure β̂ but true β0) vs Q_plain (near 0 ⇒ β0 amplification is the whole error) ---")
+    print(f"{'gene':>4} {'Q(secβ̂,trueβ0)':>16} {'Q_plain':>15} {'rel':>9}")
+    for b in range(ng):
+        rel = abs(Qb0[b] - Qplain[b]) / max(abs(Qplain[b]), 1e-9)
+        print(f"{b:>4} {Qb0[b]:>16.1f} {Qplain[b]:>15.1f} {rel:>9.2e}")
