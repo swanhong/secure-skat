@@ -16,7 +16,7 @@ import time
 
 import numpy as np
 
-from skat_plain_local import federated_skat_burden_from_blocks
+from skat_plain_local import federated_skat_burden_from_blocks, federated_skat_p_from_blocks
 
 OUT = os.path.expanduser(os.environ.get("FED_OUT", "~/fed_prep_out"))
 RIDGE_REL = 1e-6  # match secure computeBetaHatEnc Tikhonov ridge (gwas/skat.go ridgeRel)
@@ -79,4 +79,17 @@ Psec = np.loadtxt(f"{OUT}/out/party2/skat_fed_burden_p_out.txt")
 print(f"  nA={nA} nB={nB} genes={ng}")
 skat_within = compare("SKAT", Ssec, Splain, ng)
 burdenp_within = compare("Burden p-value", Psec, Pplain, ng, atol=0.0)
-print(f"\nwithin threshold ({THRES}):  SKAT {skat_within}/{ng},  Burden p {burdenp_within}/{ng}")
+summary = f"\nwithin threshold ({THRES}):  SKAT {skat_within}/{ng},  Burden p {burdenp_within}/{ng}"
+
+# SKAT p-value (only if the secure run was configured with skat_pvalue_probes > 0)
+skat_p_file = f"{OUT}/out/party2/skat_fed_skat_p_out.txt"
+if os.path.exists(skat_p_file):
+    aB = load_blocks("A", "geno", nA, ng)
+    bB = load_blocks("B", "geno", nB, ng)
+    pB = load_blocks("B", "priv", nB, ng)
+    SkatPplain = federated_skat_p_from_blocks(aB, bB, pB, XA, yA, XB, yB, ridge_rel=RIDGE_REL)
+    SkatPsec = np.atleast_1d(np.loadtxt(skat_p_file))
+    # SKAT p is Hutchinson-estimated (screening) — looser threshold than the exact stats.
+    skatp_within = compare("SKAT p-value", SkatPsec, SkatPplain, ng, thres=0.05, atol=0.0)
+    summary += f",  SKAT p {skatp_within}/{ng}"
+print(summary)

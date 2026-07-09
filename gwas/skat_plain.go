@@ -35,6 +35,40 @@ type SKATPlainResult struct {
 	Burden    float64
 	BurdenVar float64 // zᵀPz = ŵᵀ(GᵀG − GᵀX(XtX)⁻¹XᵀG)ŵ, the Burden variance factor
 	BurdenP   float64 // Burden p-value = erfc(√(T/2)), T = B²/(σ̂²·zᵀPz) ~ χ²₁ (R::SKAT r.corr=1)
+	SkatZ     float64 // Wilson-Hilferty pivot z (SKAT p-value; screening); p = ½erfc(z/√2)
+	SkatP     float64 // SKAT p-value = ½erfc(z/√2), Q ~ Σλχ²₁ via WH moment match (S4 unneeded, δ=0)
+}
+
+// whCleanZ is the Wilson-Hilferty pivot for a PSD mixture Σλχ²₁ using only the first three power sums
+// (S4 drops out because δ=0 always for PSD kernels: S3²≤S2·S4 by Cauchy-Schwarz). z ↔ p is monotone;
+// p = ½erfc(z/√2). Returns +Inf (⇒ p=0) guard handled by the caller for degenerate S2,S3.
+func whCleanZ(Q, S1, S2, S3 float64) float64 {
+	u := (Q - S1) * S3 / (S2 * S2)
+	h := 2 * S3 * S3 / (9 * S2 * S2 * S2)
+	return (math.Cbrt(1+u) - 1 + h) / math.Sqrt(h)
+}
+
+// skatMoments returns tr(K), tr(K²), tr(K³) of the SKAT kernel K = ½ D(GᵀPG)D, D=diag(w). Exact
+// (plaintext oracle); the secure path estimates tr(K³) by Hutchinson.
+func skatMoments(GtPG *mat.Dense, w []float64) (S1, S2, S3 float64) {
+	m := len(w)
+	K := mat.NewDense(m, m, nil)
+	for i := 0; i < m; i++ {
+		for j := 0; j < m; j++ {
+			K.Set(i, j, 0.5*w[i]*w[j]*GtPG.At(i, j))
+		}
+	}
+	S1 = mat.Trace(K)
+	var K2 mat.Dense
+	K2.Mul(K, K)
+	for i := 0; i < m; i++ {
+		for j := 0; j < m; j++ {
+			kij := K.At(i, j)
+			S2 += kij * kij         // ‖K‖_F² = tr(K²)
+			S3 += K2.At(i, j) * kij // Σ(K²)_ij K_ji = tr(K³) (K symmetric)
+		}
+	}
+	return
 }
 
 func SKATPlain(G, X *mat.Dense, y []float64) SKATPlainResult {
@@ -119,6 +153,15 @@ func SKATPlain(G, X *mat.Dense, y []float64) SKATPlainResult {
 		burdenP = math.Erfc(math.Sqrt(T / 2))
 	}
 
+	// SKAT p-value (Wilson-Hilferty, screening): moments of K=½D(GᵀPG)D → z → p.
+	skatQ := sumW2S2 * scale
+	S1, S2, S3 := skatMoments(&GtPG, weight)
+	skatZ, skatP := 0.0, 1.0 // degenerate gene (S2 or S3 ≈ 0) → p=1
+	if S2 > 0 && S3 > 0 {
+		skatZ = whCleanZ(skatQ, S1, S2, S3)
+		skatP = 0.5 * math.Erfc(skatZ/math.Sqrt2)
+	}
+
 	betaOut := make([]float64, c)
 	for i := 0; i < c; i++ {
 		betaOut[i] = beta.AtVec(i)
@@ -131,10 +174,12 @@ func SKATPlain(G, X *mat.Dense, y []float64) SKATPlainResult {
 		Sigma2:    sigma2,
 		Score:     score,
 		Weight:    weight,
-		Q:         sumW2S2 * scale,
+		Q:         skatQ,
 		Burden:    burden,
 		BurdenVar: burdenVar,
 		BurdenP:   burdenP,
+		SkatZ:     skatZ,
+		SkatP:     skatP,
 	}
 }
 

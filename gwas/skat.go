@@ -3,6 +3,7 @@ package gwas
 import (
 	"fmt"
 	"math"
+	"math/rand"
 	"os"
 	"sort"
 	"time"
@@ -258,6 +259,63 @@ func (ast *AssocTest) solveSPD(A mpc_core.RMat, b mpc_core.RVec) mpc_core.RVec {
 		x[i] = mul(v, dInv[i])
 	}
 	return x
+}
+
+// secureClamp returns min(max(x, loPub), hiPub) for SECRET x via two secure compares + branch-free
+// selects (x ← cond ? bound : x). Keeps the cube-root arg in secureCbrt's window: out of it the
+// inverse-Newton ring-wraps to a wrong z (a spurious hit); clamped genes are extreme-tail (p≈1 or capped).
+func (ast *AssocTest) secureClamp(x mpc_core.RElem, loPub, hiPub float64) mpc_core.RElem {
+	mpcObj := ast.general.mpcObj[0]
+	rtype := mpcObj.GetRType()
+	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
+	hub := mpcObj.GetPid() == mpcObj.GetHubPid()
+	bv := mpcObj.GetBooleanShareFlag()
+	sel := func(cond mpc_core.RVec, boundPub float64, x mpc_core.RElem) mpc_core.RElem {
+		cond.MulScalar(rtype.FromFloat64(1.0, fb)) // lift 0/1 bit to fixed-point {0, 1.0}
+		diff := x.Neg()
+		if hub {
+			diff = diff.Add(rtype.FromFloat64(boundPub, fb)) // bound − x (public bound on hub only)
+		}
+		d := mpcObj.TruncVec(mpcObj.SSMultElemVec(cond, mpc_core.RVec{diff}), db, fb)[0]
+		return x.Add(d) // cond ? bound : x
+	}
+	x = sel(mpcObj.LessThanPublic(mpc_core.RVec{x}, rtype.FromFloat64(loPub, fb), bv), loPub, x)    // x<lo → lo
+	x = sel(mpcObj.NotLessThanPublic(mpc_core.RVec{x}, rtype.FromFloat64(hiPub, fb), bv), hiPub, x) // x≥hi → hi
+	return x
+}
+
+// secureCbrt returns x^(1/3) for a SECRET x. The fixed-seed inverse-Newton converges only on
+// ~[0.05, 10.1] (outside it diverges and RING-WRAPS to a finite wrong value — no NaN in the ring),
+// so the caller (skatZSS) MUST clamp the arg into that window first (secureClamp to [0.1, 9]).
+// Branch-free inverse-cube-root Newton — NO data-dependent range reduction (the bounded arg converges):
+// y → x^(-1/3) via y ← y(4 − x·y³)/3 from seed 0.7, then x^(1/3) = x·y². 8 iters (P0: rel err ~3e-9).
+func (ast *AssocTest) secureCbrt(x mpc_core.RElem) mpc_core.RElem {
+	mpcObj := ast.general.mpcObj[0]
+	rtype := mpcObj.GetRType()
+	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
+	hub := mpcObj.GetPid() == mpcObj.GetHubPid()
+
+	mul := func(a, b mpc_core.RElem) mpc_core.RElem { // secret × secret → truncate to fb
+		return mpcObj.TruncVec(mpcObj.SSMultElemVec(mpc_core.RVec{a}, mpc_core.RVec{b}), db, fb)[0]
+	}
+	pmul := func(a mpc_core.RElem, cf float64) mpc_core.RElem { // secret × public constant → fb
+		return mpcObj.TruncVec(mpc_core.RVec{a.Mul(rtype.FromFloat64(cf, fb))}, db, fb)[0]
+	}
+
+	y := rtype.Zero() // seed 0.7 as an additive share (hub holds it, others 0)
+	if hub {
+		y = rtype.FromFloat64(0.7, fb)
+	}
+	four := rtype.FromFloat64(4.0, fb)
+	for it := 0; it < 8; it++ {
+		y3 := mul(mul(y, y), y)
+		t := mul(x, y3).Neg() // −x·y³
+		if hub {
+			t = t.Add(four) // 4 − x·y³
+		}
+		y = pmul(mul(y, t), 1.0/3.0) // y·(4 − x·y³)/3
+	}
+	return mul(x, mul(y, y)) // x·y² = x^(1/3)
 }
 
 // computeBetaHatEnc computes β̂ = (XᵀX)⁻¹Xᵀy₀ as an encrypted c-vector from the cross-party
@@ -677,6 +735,11 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 	pid := mpcObj.GetPid()
 	c := null.c
 
+	// zᵀPz/N (else ŵᵀGᵀGŵ ~2^31 at AoU overflows the fixed-point wall): quadratic pieces /N, Xᵀz pieces
+	// /√N so the XtX correction also lands at /N (XtX raw). Caller normalizes Q_b by the same N → √(T/2) unchanged.
+	N := float64(ast.skatTotalNumInds())
+	sqrtN := math.Sqrt(N)
+
 	// vdot = Σ aᵢbᵢ in SS (one mult+truncate, then local ring sum).
 	vdot := func(a, bb mpc_core.RVec) mpc_core.RElem {
 		p := mpcObj.TruncVec(mpcObj.SSMultElemVec(a, bb), db, fb)
@@ -701,7 +764,7 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 		gg = &m
 		for j := 0; j < nsnps; j++ {
 			for l := 0; l < c; l++ {
-				gtxSS[j][l] = rtype.FromFloat64(lc.GtX.At(j, l), fb)
+				gtxSS[j][l] = rtype.FromFloat64(lc.GtX.At(j, l)/sqrtN, fb) // GᵀX/√N
 			}
 		}
 	}
@@ -728,7 +791,7 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 			if gg != nil {
 				for j := start; j < end; j++ {
 					for k := 0; k < nsnps; k++ {
-						gtgChunk[j-start][k] = rtype.FromFloat64(gg.At(j, k), fb)
+						gtgChunk[j-start][k] = rtype.FromFloat64(gg.At(j, k)/N, fb) // GᵀG/N
 					}
 				}
 			}
@@ -772,13 +835,13 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 			for i := 0; i < np; i++ {
 				zz += zpv[i] * zpv[i]
 			}
-			privZZ = rtype.FromFloat64(zz, fb)
+			privZZ = rtype.FromFloat64(zz/N, fb) // priv-priv quadratic /N
 			for l := 0; l < c; l++ {
 				s := 0.0
 				for i := 0; i < np; i++ {
 					s += X.At(i, l) * zpv[i]
 				}
-				privXtz[l] = rtype.FromFloat64(s, fb)
+				privXtz[l] = rtype.FromFloat64(s/sqrtN, fb) // Xᵀz_priv /√N
 			}
 			if nsnps > 0 { // cross term needs B's aligned public genotype (Gloc)
 				for j := 0; j < nsnps; j++ {
@@ -786,7 +849,7 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 					for i := 0; i < np; i++ {
 						s += Gloc.At(i, j) * zpv[i]
 					}
-					crossD[j] = rtype.FromFloat64(s, fb)
+					crossD[j] = rtype.FromFloat64(s/N, fb) // G_pubᵀz_priv /N (cross quadratic)
 				}
 			}
 		}
@@ -805,6 +868,231 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 	// zᵀPz = zz − (Xᵀz)ᵀ(XtX)⁻¹(Xᵀz), reusing the null Cholesky solve.
 	a := ast.solveSPD(null.xtxSS, xtz)
 	return zz.Sub(vdot(xtz, a))
+}
+
+// skatMomentsSS estimates the SKAT-kernel power sums S₁,S₂,S₃ = tr(Kᵏ) for a gene via Hutchinson
+// (K = ½ D(GᵀPG)D, D=diag(w), w = UNSIGNED SKAT weight). δ=0 for PSD K ⇒ S₄ unneeded. The gene's full
+// variant set is the public list (nsnps, both parties aligned) followed by the private variants (privG,
+// party B only) padded with zero columns to a PUBLIC mPrivMax — so every party works in the same
+// m = nsnps+mPrivMax space; the "local contraction = SS share → global sum" trick then assembles the
+// full-gene GᵀG (pub-pub additive + priv-priv/cross from B; A's zero-padded private contributes 0),
+// hiding the true private count (only mPrivMax  leaks). nProbes public Rademacher probes, 2 M·vector
+// products each: S₁=vᵀKv, S₂=‖Kv‖², S₃=(Kv)·(K²v). Kernel normalized by N (see below).
+func (ast *AssocTest) skatMomentsSS(b, nsnps, mPrivMax, nProbes int, null skatNull, X *mat.Dense, y0 []float64, privG *mat.Dense) (S1, S2, S3 mpc_core.RElem) {
+	mpcObj := ast.general.mpcObj[0]
+	rtype := mpcObj.GetRType()
+	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
+	pid := mpcObj.GetPid()
+	c := null.c
+	m := nsnps + mPrivMax // full-gene size (public list + padded private)
+
+	mul := func(a, b mpc_core.RElem) mpc_core.RElem {
+		return mpcObj.TruncVec(mpcObj.SSMultElemVec(mpc_core.RVec{a}, mpc_core.RVec{b}), db, fb)[0]
+	}
+	vdot := func(a, bb mpc_core.RVec) mpc_core.RElem {
+		p := mpcObj.TruncVec(mpcObj.SSMultElemVec(a, bb), db, fb)
+		acc := rtype.Zero()
+		for i := range p {
+			acc = acc.Add(p[i])
+		}
+		return acc
+	}
+	pmul := func(a mpc_core.RElem, cf float64) mpc_core.RElem { // secret × public constant → fb
+		return mpcObj.TruncVec(mpc_core.RVec{a.Mul(rtype.FromFloat64(cf, fb))}, db, fb)[0]
+	}
+
+	// Normalize the kernel by N (public): with G→G/√N, M = GᵀPG → M/N, so K → K/N and moments →
+	// S_k/N^k. This keeps every SS intermediate O(1) (M is O(n) otherwise → moments 2^65 overflow
+	// mpc_data_bits); the WH ratios are scale-invariant, so z is unchanged. gg scaled 1/N, GᵀX 1/√N.
+	N := float64(ast.skatTotalNumInds())
+	sqrtN := math.Sqrt(N)
+	var gg *mat.Dense
+	var dosage []float64
+	gtxSS := mpc_core.InitRMat(rtype.Zero(), m, c)
+	if pid > 0 && m > 0 {
+		nLoc, _ := X.Dims()
+		Gfull := mat.NewDense(nLoc, m, nil) // [ public list | private (B only) | zero pad ]
+		if nsnps > 0 {
+			Gpub := ast.readGenoBlockLocal(b)
+			for i := 0; i < nLoc; i++ {
+				for j := 0; j < nsnps; j++ {
+					Gfull.Set(i, j, Gpub.At(i, j))
+				}
+			}
+		}
+		if privG != nil {
+			pn, pm := privG.Dims()
+			if pm > mPrivMax {
+				// Q uses all pm private cols; truncating the moment kernel would pair a full Q with a truncated z.
+				panic(fmt.Sprintf("skatMomentsSS: gene %d has %d private variants > skat_priv_max=%d "+
+					"(would silently truncate moments while Q uses all cols); raise skat_priv_max", b, pm, mPrivMax))
+			}
+			if pn == nLoc {
+				for i := 0; i < nLoc; i++ {
+					for k := 0; k < pm; k++ {
+						Gfull.Set(i, nsnps+k, privG.At(i, k))
+					}
+				}
+			}
+		}
+		lc := LocalContract(Gfull, X, y0)
+		dosage = lc.DosageSum
+		var mm mat.Dense
+		mm.Mul(Gfull.T(), Gfull)
+		gg = &mm
+		for j := 0; j < m; j++ {
+			for l := 0; l < c; l++ {
+				gtxSS[j][l] = rtype.FromFloat64(lc.GtX.At(j, l)/sqrtN, fb)
+			}
+		}
+	}
+	_, _, w := ast.weightsCalculation(dosage, m) // unsigned weight w24 (SS), full gene
+
+	// M·a = (GᵀG)·a − (GᵀX)(XtX)⁻¹(XᵀG)·a for an SS m-vector a (chunked GᵀG, same memory bound as burdenVarSS).
+	mAction := func(a mpc_core.RVec) mpc_core.RVec {
+		aCol := make(mpc_core.RMat, m)
+		for j := 0; j < m; j++ {
+			aCol[j] = mpc_core.RVec{a[j]}
+		}
+		ga := make(mpc_core.RVec, m)
+		for start := 0; start < m; start += gtgChunkRows {
+			end := start + gtgChunkRows
+			if end > m {
+				end = m
+			}
+			gtgChunk := mpc_core.InitRMat(rtype.Zero(), end-start, m)
+			if gg != nil {
+				for j := start; j < end; j++ {
+					for k := 0; k < m; k++ {
+						gtgChunk[j-start][k] = rtype.FromFloat64(gg.At(j, k)/N, fb) // GᵀG/N
+					}
+				}
+			}
+			res := mpcObj.SSMultMat(gtgChunk, aCol)
+			for j := start; j < end; j++ {
+				ga[j] = res[j-start][0]
+			}
+		}
+		ga = mpcObj.TruncVec(ga, db, fb)
+		xtGa := make(mpc_core.RVec, c) // (XᵀG)·a
+		for l := 0; l < c; l++ {
+			col := make(mpc_core.RVec, m)
+			for j := 0; j < m; j++ {
+				col[j] = gtxSS[j][l]
+			}
+			xtGa[l] = vdot(a, col)
+		}
+		sol := ast.solveSPD(null.xtxSS, xtGa)
+		Mv := make(mpc_core.RVec, m)
+		for j := 0; j < m; j++ {
+			Mv[j] = ga[j].Sub(vdot(gtxSS[j], sol)) // (GᵀG)·a − (GᵀX)·sol
+		}
+		return Mv
+	}
+
+	S1, S2, S3 = rtype.Zero(), rtype.Zero(), rtype.Zero()
+	if m == 0 {
+		return
+	}
+	prng := rand.New(rand.NewSource(int64(b)*1000003 + 1)) // public seed → identical probes on all parties
+	for p := 0; p < nProbes; p++ {
+		Dv := make(mpc_core.RVec, m) // Dv = w⊙v, v public ±1 (local sign flip of the w share)
+		for j := 0; j < m; j++ {
+			if prng.Intn(2) == 0 {
+				Dv[j] = w[j].Copy()
+			} else {
+				Dv[j] = w[j].Copy().Neg()
+			}
+		}
+		Mv := mAction(Dv)
+		u1 := make(mpc_core.RVec, m) // K·v = ½ w⊙M(Dv)
+		for j := 0; j < m; j++ {
+			u1[j] = pmul(mul(w[j], Mv[j]), 0.5)
+		}
+		Du1 := make(mpc_core.RVec, m)
+		for j := 0; j < m; j++ {
+			Du1[j] = mul(w[j], u1[j])
+		}
+		Mu1 := mAction(Du1)
+		u2 := make(mpc_core.RVec, m) // K·u1
+		for j := 0; j < m; j++ {
+			u2[j] = pmul(mul(w[j], Mu1[j]), 0.5)
+		}
+		S1 = S1.Add(pmul(vdot(Dv, Mv), 0.5)) // vᵀKv = ½ Dv·Mv
+		S2 = S2.Add(vdot(u1, u1))            // vᵀK²v
+		S3 = S3.Add(vdot(u1, u2))            // vᵀK³v
+	}
+	inv := 1.0 / float64(nProbes)
+	return pmul(S1, inv), pmul(S2, inv), pmul(S3, inv)
+}
+
+// skatZSS assembles the Wilson-Hilferty pivot z from (Q, S1, S2, S3) in secret shares (δ=0, S4 unused).
+// Uses the ORIGINAL Liu form (s1=S3/S2^1.5, l=1/s1², t=(Q−S1)√(S2)⁻¹/s1+l, arg=t/l=1+u, h=2/(9l)):
+//
+//	z = (∛(arg) − 1 + h)/√h.
+//
+// 1/x via (1/√x)²; √S2,√h via SqrtAndSqrtInverse; ∛ via secureCbrt. Reveal z ⇒ p = ½erfc(z/√2).
+func (ast *AssocTest) skatZSS(Q, S1, S2, S3 mpc_core.RElem) mpc_core.RElem {
+	mpcObj := ast.general.mpcObj[0]
+	rtype := mpcObj.GetRType()
+	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
+	hub := mpcObj.GetPid() == mpcObj.GetHubPid()
+	mul := func(a, b mpc_core.RElem) mpc_core.RElem {
+		return mpcObj.TruncVec(mpcObj.SSMultElemVec(mpc_core.RVec{a}, mpc_core.RVec{b}), db, fb)[0]
+	}
+	pmul := func(a mpc_core.RElem, cf float64) mpc_core.RElem {
+		return mpcObj.TruncVec(mpc_core.RVec{a.Mul(rtype.FromFloat64(cf, fb))}, db, fb)[0]
+	}
+	inv := func(x mpc_core.RElem) mpc_core.RElem { // 1/x = (1/√x)²
+		_, si := mpcObj.SqrtAndSqrtInverse(mpc_core.RVec{x}, false)
+		return mul(si[0], si[0])
+	}
+
+	// Floor S2 off zero: an all-common window underflows S2/N² to 0 → SqrtAndSqrtInverse(0) garbage.
+	// Real rare genes sit far above 1e-8, so this only catches the degenerate/underflow case.
+	S2 = ast.secureClamp(S2, 1e-8, 1e12)
+
+	// Original Liu form (NOT the collapsed 1+u): avoids the huge S2², S2³ and their tiny inverses.
+	// Interleaving the huge S3 with 1/√S2 one factor at a time keeps every intermediate O(1) — no g³
+	// underflow, no S2³ overflow past mpc_data_bits. δ=0 ⇒ l=1/s1², k=l, arg = t/k = 1+u.
+	_, si := mpcObj.SqrtAndSqrtInverse(mpc_core.RVec{S2}, false) // 1/√S2
+	s1 := mul(mul(mul(S3, si[0]), si[0]), si[0])                 // S3/S2^1.5 (interleaved: huge→O(1))
+	invS1 := inv(s1)
+	l := mul(invS1, invS1)                        // 1/s1²
+	t := mul(mul(Q.Sub(S1), si[0]), invS1).Add(l) // (Q−S1)·(1/√S2)·(1/s1) + l
+	invL := inv(l)
+	arg := mul(t, invL)                  // t/k = t/l = 1+u
+	arg = ast.secureClamp(arg, 0.1, 9.0) // into secureCbrt's convergence window (no Newton divergence)
+	h := pmul(invL, 2.0/9.0)             // 2/(9l)
+	cr := ast.secureCbrt(arg)
+	_, invSqrtH := mpcObj.SqrtAndSqrtInverse(mpc_core.RVec{h}, false)
+	num := cr.Add(h) // ∛(t/k) − 1 + h
+	if hub {
+		num = num.Sub(rtype.FromFloat64(1.0, fb))
+	}
+	return mul(num, invSqrtH[0]) // (∛(t/k) − 1 + h)/√h
+}
+
+// skatPValueSS returns the SKAT WH pivot z (SS) for gene b's public list: Q (scaled SKAT statistic) +
+// Hutchinson moments + skatZSS. Caller reveals z, then p = ½erfc(z/√2). Public-list only (no private yet).
+func (ast *AssocTest) skatPValueSS(b, nsnps, mPrivMax, nProbes int, null skatNull, nullRSS crypto.CipherVector, X *mat.Dense, y0 []float64, privG *mat.Dense, privatePid int) mpc_core.RElem {
+	mpcObj := ast.general.mpcObj[0]
+	rtype := mpcObj.GetRType()
+	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
+	// full-gene SKAT statistic Q = Σŵ²s² over public list (PART A) + private variants (PART B)
+	qPub, _ := ast.blockStat(b, nsnps, null, X, y0)
+	qPriv, _ := ast.privateBlockStat(privG, null, X, y0, privatePid)
+	qRaw := mpc_core.RVec{qPub[0].Add(qPriv[0])}
+	scaleSS, ok := ast.general.rareVariantScaleShares(nullRSS)
+	if !ok {
+		panic("skatPValueSS: scale undefined (dof ≤ 0)")
+	}
+	Q := mpcObj.TruncVec(mpcObj.SSMultElemVec(qRaw, mpc_core.RVec{scaleSS[0]}), db, fb)[0] // Q/(2σ̂²)
+	// Normalize Q by N to match the N-normalized moments (kernel /N); WH ratios are scale-invariant.
+	invN := rtype.FromFloat64(1.0/float64(ast.skatTotalNumInds()), fb)
+	Q = mpcObj.TruncVec(mpc_core.RVec{Q.Mul(invN)}, db, fb)[0]
+	S1, S2, S3 := ast.skatMomentsSS(b, nsnps, mPrivMax, nProbes, null, X, y0, privG)
+	return ast.skatZSS(Q, S1, S2, S3)
 }
 
 // ComputeSKATStatistics returns the whole-genome secure SKAT (Q) and Burden as
@@ -1118,7 +1406,7 @@ func blockSecStats(secs []float64) string {
 		sorted[0], q(0.25), sum/float64(n), q(0.75), sorted[n-1])
 }
 
-func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, privatePid int) (skatStat, burdenSqrtT2Stat crypto.CipherVector) {
+func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, privatePid int) (skatStat, burdenSqrtT2Stat, skatZStat crypto.CipherVector) {
 	mpcObj := ast.general.mpcObj[0]
 	cps := ast.general.cps
 	rtype := mpcObj.GetRType()
@@ -1135,6 +1423,11 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	skatBlockSS := mpc_core.InitRVec(rtype.Zero(), nB) // Σ ŵ²s²   (SKAT raw, per gene)
 	bLinBlockSS := mpc_core.InitRVec(rtype.Zero(), nB) // Σ ŵ·s    (Burden linear term, per gene)
 	zpzBlockSS := mpc_core.InitRVec(rtype.Zero(), nB)  // zᵀPz     (Burden variance, per gene; unscaled)
+	nProbes := ast.general.config.SkatPValueProbes     // SKAT p-value (Hutchinson); 0 = disabled
+	skatPriv := ast.general.config.SkatPrivMax
+	s1B := mpc_core.InitRVec(rtype.Zero(), nB) // SKAT kernel moments per gene (N-normalized), if enabled
+	s2B := mpc_core.InitRVec(rtype.Zero(), nB)
+	s3B := mpc_core.InitRVec(rtype.Zero(), nB)
 	tBlocks := time.Now()
 	blockSecs := make([]float64, 0, nB)
 	for b := 0; b < nB; b++ {
@@ -1162,6 +1455,9 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		skatBlockSS[b] = accSkat[0]
 		bLinBlockSS[b] = accBurden[0]
 		zpzBlockSS[b] = ast.burdenVarSS(b, nsnps, null, X, y0, G, privatePid) // Burden variance zᵀPz
+		if nProbes > 0 {                                                      // SKAT p-value kernel moments (N-normalized)
+			s1B[b], s2B[b], s3B[b] = ast.skatMomentsSS(b, nsnps, skatPriv, nProbes, null, X, y0, G)
+		}
 		blockSecs = append(blockSecs, time.Since(tb).Seconds())
 	}
 	fedTimings.blocks = time.Since(tBlocks)
@@ -1170,7 +1466,15 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		nB, fedTimings.blocks.Round(time.Millisecond), blockSecStats(blockSecs)))
 
 	// Burden = (Σ ŵ·s)² — square the accumulated linear term (A+B) per gene before scaling.
-	burdenBlockSS := mpcObj.TruncVec(mpcObj.SSSquareElemVec(bLinBlockSS), mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	// Q_b/N to match zᵀPz/N: scale the score by 1/√N BEFORE squaring (b² hits the fixed-point wall at the square).
+	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
+	invSqrtN := rtype.FromFloat64(1.0/math.Sqrt(float64(ast.skatTotalNumInds())), fb)
+	bLinNorm := make(mpc_core.RVec, nB)
+	for b := 0; b < nB; b++ {
+		bLinNorm[b] = bLinBlockSS[b].Mul(invSqrtN)
+	}
+	bLinNorm = mpcObj.TruncVec(bLinNorm, db, fb)
+	burdenBlockSS := mpcObj.TruncVec(mpcObj.SSSquareElemVec(bLinNorm), db, fb)
 
 	// Common 1/(2σ̂²) applied once to both stats (linear, distributes over A+B).
 	scaleSS, ok := ast.general.rareVariantScaleShares(nullRSS)
@@ -1181,7 +1485,6 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	for b := 0; b < nB; b++ {
 		scaleVec[b] = scaleSS[0].Copy()
 	}
-	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
 	skatBlockSS = mpcObj.TruncVec(mpcObj.SSMultElemVec(skatBlockSS, scaleVec), db, fb)
 	burdenBlockSS = mpcObj.TruncVec(mpcObj.SSMultElemVec(burdenBlockSS, scaleVec), db, fb)
 
@@ -1195,7 +1498,25 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	_, invSqrtZpz := mpcObj.SqrtAndSqrtInverse(zpzBlockSS, false)
 	sqrtT2 := mpcObj.TruncVec(mpcObj.SSMultElemVec(sqrtBurden, invSqrtZpz), db, fb)
 
+	// SKAT p-value pivot z per gene: Q_norm = (scaled SKAT stat)/N, then WH z = skatZSS(Q,S1,S2,S3).
+	// Reveal only z (Q_skat, moments stay secret); driver applies p = ½erfc(z/√2).
+	if nProbes > 0 {
+		invN := rtype.FromFloat64(1.0/float64(ast.skatTotalNumInds()), fb)
+		zB := mpc_core.InitRVec(rtype.Zero(), nB)
+		for b := 0; b < nB; b++ {
+			qNorm := mpcObj.TruncVec(mpc_core.RVec{skatBlockSS[b].Mul(invN)}, db, fb)[0]
+			zB[b] = ast.skatZSS(qNorm, s1B[b], s2B[b], s3B[b])
+		}
+		skatZStat = mpcObj.SSToCVec(cps, zB)
+	}
+
 	fedTimings.total = time.Since(tStart)
 	log.LLvl1(fmt.Sprintf("[skat_fed] total compute: %v", fedTimings.total.Round(time.Millisecond)))
-	return mpcObj.SSToCVec(cps, skatBlockSS), mpcObj.SSToCVec(cps, sqrtT2)
+	// SKAT-p mode reveals ONLY z (the equivalent p) — the raw SKAT statistic Q_skat must not leave.
+	// Suppress it (nil ⇒ driver skips decrypt/save); the Burden path (nProbes==0) still returns Q_skat.
+	var skatStatOut crypto.CipherVector
+	if nProbes == 0 {
+		skatStatOut = mpcObj.SSToCVec(cps, skatBlockSS)
+	}
+	return skatStatOut, mpcObj.SSToCVec(cps, sqrtT2), skatZStat
 }

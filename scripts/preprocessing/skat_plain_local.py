@@ -166,6 +166,39 @@ def pooled_skat_burden(union_blocks, XA, yA, XB, yB):
     return skat, burden, burden_p
 
 
+def federated_skat_p_from_blocks(A_blocks, B_aligned, B_priv, XA, yA, XB, yB, ridge_rel=0.0):
+    """Per-gene SKAT p-value (Wilson-Hilferty, screening) from the block tensors, matching the secure
+    path's oracle (exact eigenvalue moments here; the secure path estimates tr(K³) by Hutchinson, so a
+    few-% gap is expected). Kernel K=½D(GᵀPG)D, D=diag(w); δ=0 for PSD K ⇒ p from (Q,S1,S2,S3)."""
+    beta, sigma2, rA, rB, two_n, XtX = _fed_null(XA, yA, XB, yB, ridge_rel)
+    nA, nB = len(yA), len(yB)
+    X = np.vstack([XA, XB])
+    r = np.concatenate([rA, rB])
+    skat_p = []
+    for g in range(len(A_blocks)):
+        mpub, mpriv = A_blocks[g].shape[1], B_priv[g].shape[1]
+        G = np.zeros((nA + nB, mpub + mpriv))          # union genotype: A private cols stay 0
+        G[:nA, :mpub] = A_blocks[g]
+        G[nA:, :mpub] = B_aligned[g]
+        if mpriv:
+            G[nA:, mpub:] = B_priv[g]
+        cnt = G.sum(0)
+        w = 25.0 * (1 - np.minimum(cnt / two_n, 1 - cnt / two_n)) ** 24
+        s = G.T @ r
+        Q = float(np.sum(w**2 * s**2) / (2 * sigma2))   # SKAT statistic
+        M = G.T @ G - (G.T @ X) @ np.linalg.solve(X.T @ X, (X.T @ G))
+        lam = np.linalg.eigvalsh(0.5 * (w[:, None] * M) * w[None, :])   # eig of K = ½ D M D
+        S1, S2, S3 = lam.sum(), float((lam**2).sum()), float((lam**3).sum())
+        if S2 > 0 and S3 > 0:
+            u = (Q - S1) * S3 / S2**2
+            h = 2 * S3**2 / (9 * S2**3)
+            z = (np.cbrt(1 + u) - 1 + h) / math.sqrt(h)
+            skat_p.append(0.5 * math.erfc(z / math.sqrt(2)))
+        else:
+            skat_p.append(1.0)
+    return skat_p
+
+
 def verify_blocks(gene_keys, priv_keys, roles, A_geno, B_geno, keycol, XA, yA, XB, yB):
     """federated(from blocks) == pooled per gene for SKAT and Burden; raises on mismatch.
     Returns (skat_fed, skat_pool)."""

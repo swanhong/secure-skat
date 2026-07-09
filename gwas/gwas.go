@@ -93,6 +93,11 @@ type Config struct {
 	PrivatePid        int    `toml:"private_pid"`
 	PrivateOnlyPrefix string `toml:"private_only_prefix"`
 
+	// skat_fed SKAT p-value (Wilson-Hilferty, screening): number of Hutchinson probes (0 = disabled),
+	// and the PUBLIC per-gene upper bound on private-variant count for the padded full-gene moments.
+	SkatPValueProbes int `toml:"skat_pvalue_probes"`
+	SkatPrivMax      int `toml:"skat_priv_max"`
+
 	// RotKeyPow2Only generates only power-of-two rotation keys (InnerSumAll), skipping the
 	// baby-step-giant-step/matmul keys — ~8× less rot-key RAM. Safe for skat_fed (no matmul/PCA).
 	RotKeyPow2Only bool `toml:"rotkey_pow2only"`
@@ -456,7 +461,7 @@ func (g *ProtocolInfo) runRareVariant() (skat, burden []float64) {
 // runFederatedPrivate runs skat_fed (private party loads its blocks); per-gene SKAT statistic and the
 // Burden p-value (p = erfc(√(T/2)) ~ χ²₁, R::SKAT r.corr=1). The Burden statistic and zᵀPz stay
 // secret-shared (only √(T/2) is revealed), so neither is disclosed. nil on pid 0.
-func (g *ProtocolInfo) runFederatedPrivate() (skatOut, burdenPOut []float64) {
+func (g *ProtocolInfo) runFederatedPrivate() (skatOut, burdenPOut, skatPOut []float64) {
 	mpcObj := g.mpcObj[0]
 	pid := mpcObj.GetPid()
 	privatePid := g.config.PrivatePid
@@ -479,13 +484,16 @@ func (g *ProtocolInfo) runFederatedPrivate() (skatOut, burdenPOut []float64) {
 	tA := time.Now()
 	assocTest := g.InitAssociationTests(nil)
 	fedTimings.assocInit = time.Since(tA)
-	skat, sqrtT2Enc := assocTest.ComputeSKATFederatedPrivate(privateOnly, privatePid)
+	skat, sqrtT2Enc, skatZEnc := assocTest.ComputeSKATFederatedPrivate(privateOnly, privatePid)
 	if pid == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	tDec := time.Now()
 	nB := g.config.GenoNumBlocks
-	skatOut = crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, skat, -1))[:nB]
+	// Q_skat is nil in SKAT-p mode (only the equivalent z is released) → skip its decrypt.
+	if len(skat) > 0 {
+		skatOut = crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, skat, -1))[:nB]
+	}
 	sqrtT2 := crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, sqrtT2Enc, -1))[:nB]
 	burdenPOut = make([]float64, nB)
 	for b := 0; b < nB; b++ {
@@ -494,11 +502,19 @@ func (g *ProtocolInfo) runFederatedPrivate() (skatOut, burdenPOut []float64) {
 			burdenPOut[b] = math.Erfc(sqrtT2[b]) // ∈(0,1)
 		}
 	}
+	// SKAT p-value (screening): only z is revealed; p = ½erfc(z/√2). nil if SKAT p disabled (no probes).
+	if len(skatZEnc) > 0 {
+		z := crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, skatZEnc, -1))[:nB]
+		skatPOut = make([]float64, nB)
+		for b := 0; b < nB; b++ {
+			skatPOut[b] = 0.5 * math.Erfc(z[b]/math.Sqrt2)
+		}
+	}
 	dec := time.Since(tDec)
 	log.LLvl1(fmt.Sprintf("[skat_fed] decrypt: %v | total run: %v",
 		dec.Round(time.Millisecond), time.Since(tRun).Round(time.Millisecond)))
 	logFedTimingTree(dec)
-	return skatOut, burdenPOut
+	return skatOut, burdenPOut, skatPOut
 }
 
 // logFedTimingTree prints the step/substep timing tree at the end of a skat_fed run, combining the
@@ -538,10 +554,15 @@ func logFedTimingTree(dec time.Duration) {
 // SKATFederatedPrivate saves the per-gene SKAT statistic and Burden p-value (runFederatedPrivate
 // details the reveal set; Burden statistic and zᵀPz are never released).
 func (g *ProtocolInfo) SKATFederatedPrivate() {
-	skat, burdenP := g.runFederatedPrivate()
+	skat, burdenP, skatP := g.runFederatedPrivate()
 	if g.mpcObj[0].GetPid() > 0 {
-		SaveFloatVectorToFile(g.OutPath("skat_fed_out.txt"), skat)
+		if len(skat) > 0 { // nil/empty in SKAT-p mode (Q_skat withheld; only the z-derived p is released)
+			SaveFloatVectorToFile(g.OutPath("skat_fed_out.txt"), skat)
+		}
 		SaveFloatVectorToFile(g.OutPath("skat_fed_burden_p_out.txt"), burdenP)
+		if len(skatP) > 0 {
+			SaveFloatVectorToFile(g.OutPath("skat_fed_skat_p_out.txt"), skatP)
+		}
 	}
 }
 
