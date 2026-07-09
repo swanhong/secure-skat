@@ -80,3 +80,28 @@ print(f"  nA={nA} nB={nB} genes={ng}")
 skat_within = compare("SKAT", Ssec, Splain, ng)
 burdenp_within = compare("Burden p-value", Psec, Pplain, ng, atol=0.0)
 print(f"\nwithin threshold ({THRES}):  SKAT {skat_within}/{ng},  Burden p {burdenp_within}/{ng}")
+
+
+def gene_positions(ng):
+    """Per-gene (chrom, median pos) from block_sizes.txt (m per gene) + pos.txt (chrom<TAB>pos per
+    public-list variant, gene-block order). Public genomic position only — no sample-level data."""
+    sizes = [int(x) for x in open(f"{OUT}/block_sizes.txt")]
+    rows = [ln.split() for ln in open(f"{OUT}/pos.txt")]
+    chrom, pos, i = [], [], 0
+    for g in range(ng):
+        chunk = rows[i:i + sizes[g]]
+        i += sizes[g]
+        chrom.append(int(chunk[0][0]))
+        pos.append(int(np.median([int(r[1]) for r in chunk])))
+    return chrom, pos
+
+
+# FED_CSV=1: dump per-gene aggregate results (positions + p-values only) for fed_plot.py.
+if os.environ.get("FED_CSV"):
+    chrom, pos = gene_positions(ng)
+    csv_path = f"{OUT}/fed_results.csv"
+    with open(csv_path, "w") as f:
+        f.write("gene,chrom,pos,burden_p_secure,burden_p_plain\n")
+        for b in range(ng):
+            f.write(f"{b},{chrom[b]},{pos[b]},{Psec[b]:.6e},{Pplain[b]:.6e}\n")
+    print(f"  FED_CSV: wrote {csv_path}")

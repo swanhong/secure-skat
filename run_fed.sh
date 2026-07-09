@@ -7,7 +7,8 @@
 #
 # FED_* / PLINK2 env vars are BAKED into ~/fed_prep_out/config by fed_prep (data_bits, ports, ckks,
 # dims), so FED_DATABITS etc. only take effect when fed_prep runs; with SKIP_PREP=1 the existing
-# config is reused as-is. SKIP_BUILD=1 skips go build.
+# config is reused as-is. SKIP_BUILD=1 skips go build. FED_CSV=1 makes step [4/4] also dump
+# fed_results.csv (per-gene positions + secure/plain p-values) for scripts/analysis/fed_plot.py.
 set -eo pipefail
 
 REPO=$(cd "$(dirname "$0")" && pwd)
@@ -17,10 +18,10 @@ PREP=$REPO/scripts/preprocessing
 T_PREP=0 T_BUILD=0 T_SECURE=0 T_COMPARE=0
 
 echo "=== run knobs (env; blank = fed_prep default) ==="
-printf '  PLINK2=%s\n  FED_CHR=%s FED_NSUB=%s FED_NGENES=%s FED_NPCS=%s\n  FED_CKKS=%s FED_DATABITS=%s FED_FRACBITS=%s FED_PHENO_COL=%s\n  SKIP_PREP=%s SKIP_BUILD=%s\n' \
+printf '  PLINK2=%s\n  FED_CHR=%s FED_NSUB=%s FED_NGENES=%s FED_NPCS=%s\n  FED_CKKS=%s FED_DATABITS=%s FED_FRACBITS=%s FED_PHENO_COL=%s\n  SKIP_PREP=%s SKIP_BUILD=%s FED_CSV=%s\n' \
   "${PLINK2:-plink2}" "${FED_CHR:-}" "${FED_NSUB:-}" "${FED_NGENES:-}" "${FED_NPCS:-}" \
   "${FED_CKKS:-}" "${FED_DATABITS:-}" "${FED_FRACBITS:-}" "${FED_PHENO_COL:-}" \
-  "${SKIP_PREP:-}" "${SKIP_BUILD:-}"
+  "${SKIP_PREP:-}" "${SKIP_BUILD:-}" "${FED_CSV:-}"
 
 if [ -z "$SKIP_PREP" ]; then
   echo "=== [1/4] fed_prep (blocks + cov + pheno + config) ==="
