@@ -207,6 +207,10 @@ type skatNull struct {
 // to keep the inverse finite on a singular design; negligible on a well-conditioned one.
 const ridgeRel = 1e-6
 
+// gtgChunkRows bounds how many GᵀG rows enter one secret SSMultMat in the Burden-variance path, so
+// a large-m gene's m×m gram is revealed in O(gtgChunkRows·m) pieces instead of one O(m²) blob (OOM).
+const gtgChunkRows = 256
+
 // solveSPD solves the small SPD system A·x = b (A = XᵀX, b = Xᵀy₀) in secret shares via Cholesky
 // (A = L·Lᵀ) + forward/back substitution.
 func (ast *AssocTest) solveSPD(A mpc_core.RMat, b mpc_core.RVec) mpc_core.RVec {
@@ -683,21 +687,19 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 		return acc
 	}
 
-	// --- public list: local GᵀG (m×m) and GᵀX (m×c) as SS shares (secret = global additive sum) ---
+	// --- public list: GᵀX (m×c, small) as SS shares; the m×m GᵀG is kept as a local plaintext gram
+	// (gg) and streamed in row-chunks below, so a full m×m *secret* matrix never materializes. ---
 	var dosage []float64
-	var Gloc *mat.Dense
-	gtgSS := mpc_core.InitRMat(rtype.Zero(), nsnps, nsnps)
+	var Gloc, gg *mat.Dense // Gloc = local aligned public genotype (reused by the cross term); gg = local GᵀG
 	gtxSS := mpc_core.InitRMat(rtype.Zero(), nsnps, c)
 	if pid > 0 && nsnps > 0 {
 		Gloc = ast.readGenoBlockLocal(b)
 		lc := LocalContract(Gloc, X, y0)
 		dosage = lc.DosageSum
-		var gg mat.Dense
-		gg.Mul(Gloc.T(), Gloc)
+		var m mat.Dense
+		m.Mul(Gloc.T(), Gloc)
+		gg = &m
 		for j := 0; j < nsnps; j++ {
-			for k := 0; k < nsnps; k++ {
-				gtgSS[j][k] = rtype.FromFloat64(gg.At(j, k), fb)
-			}
 			for l := 0; l < c; l++ {
 				gtxSS[j][l] = rtype.FromFloat64(lc.GtX.At(j, l), fb)
 			}
@@ -713,10 +715,27 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 		for j := 0; j < nsnps; j++ {
 			wCol[j] = mpc_core.RVec{wPub[j]}
 		}
-		gtgw := mpcObj.SSMultMat(gtgSS, wCol)
+		// (GᵀG)·ŵ in row-chunks: forming the whole m×m secret gram (and its single Beaver reveal)
+		// costs O(m²) memory and OOMs for m~thousands; chunking caps peak memory at O(gtgChunkRows·m)
+		// while the Beaver comm total stays the same.
 		gw := make(mpc_core.RVec, nsnps)
-		for j := 0; j < nsnps; j++ {
-			gw[j] = gtgw[j][0]
+		for start := 0; start < nsnps; start += gtgChunkRows {
+			end := start + gtgChunkRows
+			if end > nsnps {
+				end = nsnps
+			}
+			gtgChunk := mpc_core.InitRMat(rtype.Zero(), end-start, nsnps)
+			if gg != nil {
+				for j := start; j < end; j++ {
+					for k := 0; k < nsnps; k++ {
+						gtgChunk[j-start][k] = rtype.FromFloat64(gg.At(j, k), fb)
+					}
+				}
+			}
+			res := mpcObj.SSMultMat(gtgChunk, wCol)
+			for j := start; j < end; j++ {
+				gw[j] = res[j-start][0]
+			}
 		}
 		gw = mpcObj.TruncVec(gw, db, fb)
 		pubZZ = vdot(wPub, gw)
