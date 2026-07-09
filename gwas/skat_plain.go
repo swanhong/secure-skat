@@ -25,14 +25,16 @@ import (
 // contain the intercept column.
 
 type SKATPlainResult struct {
-	Beta   []float64 // c, null-model coefficients
-	RSS    float64
-	Dof    int
-	Sigma2 float64
-	Score  []float64 // m, per-variant score s
-	Weight []float64 // m, per-variant weight w
-	Q      float64
-	Burden float64
+	Beta      []float64 // c, null-model coefficients
+	RSS       float64
+	Dof       int
+	Sigma2    float64
+	Score     []float64 // m, per-variant score s
+	Weight    []float64 // m, per-variant weight w
+	Q         float64
+	Burden    float64
+	BurdenVar float64 // zᵀPz = ŵᵀ(GᵀG − GᵀX(XtX)⁻¹XᵀG)ŵ, the Burden variance factor
+	BurdenP   float64 // Burden p-value = erfc(√(T/2)), T = B²/(σ̂²·zᵀPz) ~ χ²₁ (R::SKAT r.corr=1)
 }
 
 func SKATPlain(G, X *mat.Dense, y []float64) SKATPlainResult {
@@ -67,6 +69,7 @@ func SKATPlain(G, X *mat.Dense, y []float64) SKATPlainResult {
 
 	// weights from genotype column sums
 	weight := make([]float64, m)
+	signedW := make([]float64, m) // ŵ = minor-allele-oriented weight, for z = Gŵ (Burden variance)
 	var sumWS, sumW2S2 float64
 	for j := 0; j < m; j++ {
 		score[j] = Gty.AtVec(j) - GtXbeta.AtVec(j)
@@ -78,12 +81,14 @@ func SKATPlain(G, X *mat.Dense, y []float64) SKATPlainResult {
 		pbar := colSum / (2 * float64(n))
 		maf := math.Min(pbar, 1-pbar)
 		weight[j] = 25 * math.Pow(1-maf, 24)
+		signedW[j] = weight[j]
 
 		// Orient the score to the minor allele (R::SKAT convention): flipping a
 		// variant sends G_ij→2−G_ij, hence s_j→−s_j (Σ residuals = 0). Q (Σw²s²)
 		// is unaffected; Burden (Σw s)² is sign-sensitive, so this matters there.
 		if pbar > 0.5 {
 			score[j] = -score[j]
+			signedW[j] = -weight[j]
 		}
 
 		sumWS += weight[j] * score[j]
@@ -91,20 +96,45 @@ func SKATPlain(G, X *mat.Dense, y []float64) SKATPlainResult {
 	}
 
 	scale := 1.0 / (2 * sigma2)
+	burden := sumWS * sumWS * scale
+
+	// Burden p-value: zᵀPz = ŵᵀ(GᵀG − GᵀX(XtX)⁻¹XᵀG)ŵ; T = B²/(σ̂²·zᵀPz) = 2·Burden/zᵀPz ~ χ²₁.
+	var GtG mat.Dense
+	GtG.Mul(G.T(), G) // m×m
+	var solved mat.Dense
+	if err := solved.Solve(&XtX, GtX.T()); err != nil { // (XtX)⁻¹ XᵀG : c×m
+		panic(err)
+	}
+	var corr mat.Dense
+	corr.Mul(&GtX, &solved) // GᵀX(XtX)⁻¹XᵀG : m×m
+	var GtPG mat.Dense
+	GtPG.Sub(&GtG, &corr)
+	sw := mat.NewVecDense(m, signedW)
+	var Pz mat.VecDense
+	Pz.MulVec(&GtPG, sw)
+	burdenVar := mat.Dot(sw, &Pz)
+	burdenP := 1.0
+	if burdenVar > 0 {
+		T := 2 * burden / burdenVar
+		burdenP = math.Erfc(math.Sqrt(T / 2))
+	}
+
 	betaOut := make([]float64, c)
 	for i := 0; i < c; i++ {
 		betaOut[i] = beta.AtVec(i)
 	}
 
 	return SKATPlainResult{
-		Beta:   betaOut,
-		RSS:    rss,
-		Dof:    dof,
-		Sigma2: sigma2,
-		Score:  score,
-		Weight: weight,
-		Q:      sumW2S2 * scale,
-		Burden: sumWS * sumWS * scale,
+		Beta:      betaOut,
+		RSS:       rss,
+		Dof:       dof,
+		Sigma2:    sigma2,
+		Score:     score,
+		Weight:    weight,
+		Q:         sumW2S2 * scale,
+		Burden:    burden,
+		BurdenVar: burdenVar,
+		BurdenP:   burdenP,
 	}
 }
 
@@ -124,9 +154,9 @@ type FedParty struct {
 	Role []string   // m role
 }
 
-// SKATFederatedPrivate returns per-gene SKAT and Burden. pub.ID is the public list (shared +
-// public_only); priv.ID is shared + private. Shared variants share the same ID across parties.
-func SKATFederatedPrivate(pub, priv FedParty) (skat, burden map[string]float64) {
+// SKATFederatedPrivate returns per-gene SKAT, Burden, and the Burden p-value. pub.ID is the public
+// list (shared + public_only); priv.ID is shared + private. Shared variants share the same ID.
+func SKATFederatedPrivate(pub, priv FedParty) (skat, burden, burdenP map[string]float64) {
 	np, c := pub.X.Dims()
 	nq, _ := priv.X.Dims()
 	N := float64(np + nq)
@@ -159,38 +189,86 @@ func SKATFederatedPrivate(pub, priv FedParty) (skat, burden map[string]float64) 
 
 	skat = make(map[string]float64)
 	bLin := make(map[string]float64)
-	add := func(gene string, score, count float64) {
+	// z = Σⱼ ŵⱼ Gⱼ, the weighted burden collapse, kept per gene per cohort (each cohort accumulates
+	// its own rows; zᵀPz is then additive across cohorts). Needed only for the Burden p-value.
+	zA := map[string]*mat.VecDense{}
+	zB := map[string]*mat.VecDense{}
+	getZ := func(mp map[string]*mat.VecDense, gene string, n int) *mat.VecDense {
+		v, ok := mp[gene]
+		if !ok {
+			v = mat.NewVecDense(n, nil)
+			mp[gene] = v
+		}
+		return v
+	}
+	// add folds one variant into SKAT/Burden and returns its minor-allele-oriented weight ŵ (for z).
+	add := func(gene string, score, count float64) float64 {
 		p := count / (2 * N)
 		w := 25 * math.Pow(1-math.Min(p, 1-p), 24)
-		if p > 0.5 { // orient to minor allele: SKAT is invariant, Burden (Σw s)² is sign-sensitive
+		sw := w
+		if p > 0.5 { // orient to minor allele: SKAT invariant, Burden (Σw s)² sign-sensitive
 			score = -score
+			sw = -w
 		}
 		skat[gene] += w * w * score * score / (2 * sigma2)
 		bLin[gene] += w * score
+		return sw
 	}
 
 	// ---- PART A: secure over the public list (the private party adds its shared cols) ----
 	for k := range pub.ID {
 		score := fedColDot(pub.G, k, rp)
 		count := fedColSum(pub.G, k)
+		jShared := -1
 		if pub.Role[k] == "shared" {
-			j := qCol[pub.ID[k]]
-			score += fedColDot(priv.G, j, rq) // private party's local contribution (federated sum)
-			count += fedColSum(priv.G, j)
+			jShared = qCol[pub.ID[k]]
+			score += fedColDot(priv.G, jShared, rq) // private party's local contribution (federated sum)
+			count += fedColSum(priv.G, jShared)
 		}
-		add(pub.Gene[k], score, count)
+		sw := add(pub.Gene[k], score, count)
+		getZ(zA, pub.Gene[k], np).AddScaledVec(getZ(zA, pub.Gene[k], np), sw, pub.G.ColView(k))
+		if jShared >= 0 {
+			getZ(zB, pub.Gene[k], nq).AddScaledVec(getZ(zB, pub.Gene[k], nq), sw, priv.G.ColView(jShared))
+		}
 	}
 	// ---- PART B: private variants, local to the private party ----
 	for j := range priv.ID {
 		if priv.Role[j] == "private" {
-			add(priv.Gene[j], fedColDot(priv.G, j, rq), fedColSum(priv.G, j))
+			sw := add(priv.Gene[j], fedColDot(priv.G, j, rq), fedColSum(priv.G, j))
+			getZ(zB, priv.Gene[j], nq).AddScaledVec(getZ(zB, priv.Gene[j], nq), sw, priv.G.ColView(j))
 		}
 	}
+
 	burden = make(map[string]float64, len(bLin))
+	burdenP = make(map[string]float64, len(bLin))
 	for g, l := range bLin {
 		burden[g] = l * l / (2 * sigma2) // Burden = (Σ w s)² / (2σ̂²)
+		// zᵀPz = zᵀz − (Xᵀz)ᵀ(XtX)⁻¹(Xᵀz); zᵀz and Xᵀz are additive across cohorts.
+		zz := 0.0
+		xtz := mat.NewVecDense(c, nil)
+		if za := zA[g]; za != nil {
+			zz += mat.Dot(za, za)
+			var t mat.VecDense
+			t.MulVec(pub.X.T(), za)
+			xtz.AddVec(xtz, &t)
+		}
+		if zb := zB[g]; zb != nil {
+			zz += mat.Dot(zb, zb)
+			var t mat.VecDense
+			t.MulVec(priv.X.T(), zb)
+			xtz.AddVec(xtz, &t)
+		}
+		var sol mat.VecDense
+		if err := sol.SolveVec(&XtX, xtz); err != nil {
+			panic(err)
+		}
+		zPz := zz - mat.Dot(xtz, &sol)
+		burdenP[g] = 1.0
+		if zPz > 0 {
+			burdenP[g] = math.Erfc(math.Sqrt(burden[g] / zPz)) // T=2·Burden/zᵀPz, p=erfc(√(T/2))
+		}
 	}
-	return skat, burden
+	return skat, burden, burdenP
 }
 
 func fedResidual(X *mat.Dense, y []float64, beta *mat.VecDense) []float64 {

@@ -195,6 +195,7 @@ type skatNull struct {
 	betaHat  crypto.CipherVector // β̂ in slots 0..c-1
 	betaRep  crypto.CipherVector // betaRep[ℓ] = Enc(β̂_ℓ) in every slot (PART B CKKS score)
 	betaSS   mpc_core.RVec       // β̂ in secret shares (exact SS score)
+	xtxSS    mpc_core.RMat       // XᵀX in secret shares (reused by the Burden-variance solve)
 	rssSS    mpc_core.RElem      // residual-norm RSS = y₀ᵀy₀ − 2Xᵀy₀·β̂ + β̂ᵀXᵀXβ̂ (robust σ̂²)
 	xtyEnc   crypto.CipherVector // global Xᵀy₀ (aggregated; xtySS derives from it in the null)
 	y0ty0Enc crypto.CipherVector // global y₀ᵀy₀ (for RSS)
@@ -370,7 +371,7 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 
 	fedTimings.nullBeta = time.Since(tNull)
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: Xty->SS + beta=inv*Xty + betaRep %v", fedTimings.nullBeta.Round(time.Millisecond)))
-	return skatNull{betaHat: betaHat, betaRep: betaRep, betaSS: betaSS, rssSS: rssSS, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
+	return skatNull{betaHat: betaHat, betaRep: betaRep, betaSS: betaSS, xtxSS: xtxSS, rssSS: rssSS, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
 }
 
 // computeNullRSSEnc wraps the residual-norm RSS (formed in SS as null.rssSS) as a 1-element
@@ -654,6 +655,137 @@ func (ast *AssocTest) blockStat(b, nsnps int, null skatNull, X *mat.Dense, y0 []
 		qRaw, bLin, _, _, _, _ = ast.ScoreCalculation(sCVec, weightEnc)
 	}
 	return ast.scalarCiphertextToShares(qRaw), ast.scalarCiphertextToShares(bLin)
+}
+
+// burdenVarSS returns one gene's Burden-variance factor zᵀPz = z_fullᵀP z_full (P = I − X(XᵀX)⁻¹Xᵀ,
+// z_full = Σⱼ ŵⱼ Gⱼ over the public list ∪ private variants) as an SS scalar. It never forms z (which
+// is n-dim); instead it works in the small m/c space:
+//
+//	zᵀPz = ŵ_pubᵀ(GᵀG)_pub ŵ_pub  +  2·ŵ_pubᵀ d  +  z_privᵀz_priv  −  (Xᵀz)ᵀ(XtX)⁻¹(Xᵀz)
+//
+// where the public GᵀG/GᵀX are federated by the "local contraction = SS share → global sum" trick
+// (same as scoreSS), and the private party contributes d = G_pubᵀz_priv (m_pub), z_privᵀz_priv, and
+// Xᵀz_priv (all n-contracted locally, so the private variant count m_priv stays hidden).
+func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 []float64, privG *mat.Dense, privatePid int) mpc_core.RElem {
+	mpcObj := ast.general.mpcObj[0]
+	rtype := mpcObj.GetRType()
+	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
+	pid := mpcObj.GetPid()
+	c := null.c
+
+	// vdot = Σ aᵢbᵢ in SS (one mult+truncate, then local ring sum).
+	vdot := func(a, bb mpc_core.RVec) mpc_core.RElem {
+		p := mpcObj.TruncVec(mpcObj.SSMultElemVec(a, bb), db, fb)
+		acc := rtype.Zero()
+		for i := range p {
+			acc = acc.Add(p[i])
+		}
+		return acc
+	}
+
+	// --- public list: local GᵀG (m×m) and GᵀX (m×c) as SS shares (secret = global additive sum) ---
+	var dosage []float64
+	var Gloc *mat.Dense
+	gtgSS := mpc_core.InitRMat(rtype.Zero(), nsnps, nsnps)
+	gtxSS := mpc_core.InitRMat(rtype.Zero(), nsnps, c)
+	if pid > 0 && nsnps > 0 {
+		Gloc = ast.readGenoBlockLocal(b)
+		lc := LocalContract(Gloc, X, y0)
+		dosage = lc.DosageSum
+		var gg mat.Dense
+		gg.Mul(Gloc.T(), Gloc)
+		for j := 0; j < nsnps; j++ {
+			for k := 0; k < nsnps; k++ {
+				gtgSS[j][k] = rtype.FromFloat64(gg.At(j, k), fb)
+			}
+			for l := 0; l < c; l++ {
+				gtxSS[j][l] = rtype.FromFloat64(lc.GtX.At(j, l), fb)
+			}
+		}
+	}
+	wPub := ast.signedWeight(dosage, nsnps) // SS m-vector (collective; pooled orientation)
+
+	// pubZZ = ŵ_pubᵀ(GᵀG)ŵ_pub ; pubXtz = (XᵀG_pub)ŵ_pub (c-vector)
+	pubZZ := rtype.Zero()
+	pubXtz := mpc_core.InitRVec(rtype.Zero(), c)
+	if nsnps > 0 {
+		wCol := make(mpc_core.RMat, nsnps)
+		for j := 0; j < nsnps; j++ {
+			wCol[j] = mpc_core.RVec{wPub[j]}
+		}
+		gtgw := mpcObj.SSMultMat(gtgSS, wCol)
+		gw := make(mpc_core.RVec, nsnps)
+		for j := 0; j < nsnps; j++ {
+			gw[j] = gtgw[j][0]
+		}
+		gw = mpcObj.TruncVec(gw, db, fb)
+		pubZZ = vdot(wPub, gw)
+		for l := 0; l < c; l++ {
+			col := make(mpc_core.RVec, nsnps)
+			for j := 0; j < nsnps; j++ {
+				col[j] = gtxSS[j][l]
+			}
+			pubXtz[l] = vdot(wPub, col)
+		}
+	}
+
+	// --- private (privatePid only): z_priv = G_priv·ŵ_priv, contracted locally (count hidden) ---
+	privZZ := rtype.Zero()
+	crossD := mpc_core.InitRVec(rtype.Zero(), nsnps) // d = G_pubᵀ z_priv (m_pub)
+	privXtz := mpc_core.InitRVec(rtype.Zero(), c)    // Xᵀ z_priv (c)
+	if pid == privatePid && privG != nil {
+		np, mp := privG.Dims()
+		if mp > 0 {
+			dpriv := make([]float64, mp)
+			for k := 0; k < mp; k++ {
+				for i := 0; i < np; i++ {
+					dpriv[k] += privG.At(i, k)
+				}
+			}
+			wpv := skatBetaWeightSigned(dpriv, ast.skatTotalNumInds())
+			zpv := make([]float64, np)
+			for i := 0; i < np; i++ {
+				for k := 0; k < mp; k++ {
+					zpv[i] += privG.At(i, k) * wpv[k]
+				}
+			}
+			zz := 0.0
+			for i := 0; i < np; i++ {
+				zz += zpv[i] * zpv[i]
+			}
+			privZZ = rtype.FromFloat64(zz, fb)
+			for l := 0; l < c; l++ {
+				s := 0.0
+				for i := 0; i < np; i++ {
+					s += X.At(i, l) * zpv[i]
+				}
+				privXtz[l] = rtype.FromFloat64(s, fb)
+			}
+			if nsnps > 0 { // cross term needs B's aligned public genotype (Gloc)
+				for j := 0; j < nsnps; j++ {
+					s := 0.0
+					for i := 0; i < np; i++ {
+						s += Gloc.At(i, j) * zpv[i]
+					}
+					crossD[j] = rtype.FromFloat64(s, fb)
+				}
+			}
+		}
+	}
+
+	crossZZ := rtype.Zero()
+	if nsnps > 0 {
+		crossZZ = vdot(wPub, crossD)
+	}
+	zz := pubZZ.Add(crossZZ).Add(crossZZ).Add(privZZ) // crossZZ added twice = the 2· term
+	xtz := make(mpc_core.RVec, c)
+	for l := 0; l < c; l++ {
+		xtz[l] = pubXtz[l].Add(privXtz[l])
+	}
+
+	// zᵀPz = zz − (Xᵀz)ᵀ(XtX)⁻¹(Xᵀz), reusing the null Cholesky solve.
+	a := ast.solveSPD(null.xtxSS, xtz)
+	return zz.Sub(vdot(xtz, a))
 }
 
 // ComputeSKATStatistics returns the whole-genome secure SKAT (Q) and Burden as
@@ -967,7 +1099,7 @@ func blockSecStats(secs []float64) string {
 		sorted[0], q(0.25), sum/float64(n), q(0.75), sorted[n-1])
 }
 
-func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, privatePid int) (skatStat, burdenStat crypto.CipherVector) {
+func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, privatePid int) (skatStat, burdenSqrtT2Stat crypto.CipherVector) {
 	mpcObj := ast.general.mpcObj[0]
 	cps := ast.general.cps
 	rtype := mpcObj.GetRType()
@@ -981,17 +1113,19 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	if mpcObj.GetPid() == privatePid && privateOnly != nil && len(privateOnly) != nB {
 		panic(fmt.Sprintf("ComputeSKATFederatedPrivate: privateOnly has %d blocks, want %d", len(privateOnly), nB))
 	}
-	skatBlockSS := mpc_core.InitRVec(rtype.Zero(), nB)  // Σ ŵ²s²   (SKAT raw, per gene)
-	bLinBlockSS := mpc_core.InitRVec(rtype.Zero(), nB)  // Σ ŵ·s    (Burden linear term, per gene)
+	skatBlockSS := mpc_core.InitRVec(rtype.Zero(), nB) // Σ ŵ²s²   (SKAT raw, per gene)
+	bLinBlockSS := mpc_core.InitRVec(rtype.Zero(), nB) // Σ ŵ·s    (Burden linear term, per gene)
+	zpzBlockSS := mpc_core.InitRVec(rtype.Zero(), nB)  // zᵀPz     (Burden variance, per gene; unscaled)
 	tBlocks := time.Now()
 	blockSecs := make([]float64, 0, nB)
 	for b := 0; b < nB; b++ {
 		tb := time.Now()
 		accSkat := mpc_core.InitRVec(rtype.Zero(), 1)
 		accBurden := mpc_core.InitRVec(rtype.Zero(), 1)
+		nsnps := ast.skatBlockNumSnps(b) // collective; public-list size for gene b
 
 		// PART A: secure SKAT over the public list (existing per-block path).
-		if nsnps := ast.skatBlockNumSnps(b); nsnps > 0 {
+		if nsnps > 0 {
 			skatA, burdenA := ast.blockStat(b, nsnps, null, X, y0)
 			accSkat.Add(skatA)
 			accBurden.Add(burdenA)
@@ -1008,6 +1142,7 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 
 		skatBlockSS[b] = accSkat[0]
 		bLinBlockSS[b] = accBurden[0]
+		zpzBlockSS[b] = ast.burdenVarSS(b, nsnps, null, X, y0, G, privatePid) // Burden variance zᵀPz
 		blockSecs = append(blockSecs, time.Since(tb).Seconds())
 	}
 	fedTimings.blocks = time.Since(tBlocks)
@@ -1030,7 +1165,18 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
 	skatBlockSS = mpcObj.TruncVec(mpcObj.SSMultElemVec(skatBlockSS, scaleVec), db, fb)
 	burdenBlockSS = mpcObj.TruncVec(mpcObj.SSMultElemVec(burdenBlockSS, scaleVec), db, fb)
+
+	// Burden p-value: reveal ONLY √(T/2) = √(Burden/zᵀPz) = √Burden·(1/√zᵀPz). Both the Burden
+	// statistic and zᵀPz stay secret-shared (never decrypted), so neither leaves and zᵀPz=2·Burden/T
+	// is not derivable. √Burden and 1/√zᵀPz come from one SqrtAndSqrtInverse each; driver applies erfc.
+	// SqrtAndSqrtInverse assumes strictly-positive inputs; Burden=B²/(2σ̂²)≥0 and zᵀPz≥0 hold with a
+	// wide margin for any polymorphic gene (MAF-filtered upstream). A degenerate (monomorphic) gene
+	// would give an unreliable — but bounded, non-crashing — p; the driver's √(T/2)>0 guard bounds output.
+	sqrtBurden, _ := mpcObj.SqrtAndSqrtInverse(burdenBlockSS, false)
+	_, invSqrtZpz := mpcObj.SqrtAndSqrtInverse(zpzBlockSS, false)
+	sqrtT2 := mpcObj.TruncVec(mpcObj.SSMultElemVec(sqrtBurden, invSqrtZpz), db, fb)
+
 	fedTimings.total = time.Since(tStart)
 	log.LLvl1(fmt.Sprintf("[skat_fed] total compute: %v", fedTimings.total.Round(time.Millisecond)))
-	return mpcObj.SSToCVec(cps, skatBlockSS), mpcObj.SSToCVec(cps, burdenBlockSS)
+	return mpcObj.SSToCVec(cps, skatBlockSS), mpcObj.SSToCVec(cps, sqrtT2)
 }

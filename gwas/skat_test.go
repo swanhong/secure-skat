@@ -1348,7 +1348,7 @@ func TestSKATFederatedPrivate(t *testing.T) {
 
 	prot.GetConfig().PrivatePid = privatePid
 	prot.GetConfig().PrivateOnlyPrefix = privPrefix // "" except on the private party
-	skatDec, burdenDec := prot.runFederatedPrivate()
+	skatDec, burdenPDec := prot.runFederatedPrivate()
 	if pid != 1 {
 		return
 	}
@@ -1376,7 +1376,7 @@ func TestSKATFederatedPrivate(t *testing.T) {
 			}
 			return varID(g, "prv", col-nShared), geneName(g), "private"
 		})
-	oracleSkat, oracleBurden := SKATFederatedPrivate(pub, priv)
+	oracleSkat, _, oracleBurdenP := SKATFederatedPrivate(pub, priv)
 
 	// --- oracle 2: pooled per-gene SKATPlain (independent code path) ---
 	Xpool := mat.NewDense(nPub+nPriv, c, nil)
@@ -1435,8 +1435,9 @@ func TestSKATFederatedPrivate(t *testing.T) {
 				t.Errorf("%s %s: secure rel oracle=%.3e pooled=%.3e (tol %.0e)", geneName(g), stat, relOracle, relPool, tol)
 			}
 		}
+		// Burden statistic and zᵀPz are never revealed; secure exposes only SKAT and the Burden p-value.
 		check("SKAT", skatDec[g], oracleSkat[geneName(g)], plain.Q)
-		check("Burden", burdenDec[g], oracleBurden[geneName(g)], plain.Burden)
+		check("BurdenP", burdenPDec[g], oracleBurdenP[geneName(g)], plain.BurdenP)
 	}
 }
 
@@ -1449,7 +1450,7 @@ func varID(g int, role string, k int) string {
 func TestLoadDenseBlocks(t *testing.T) {
 	dir := t.TempDir()
 	const n = 4
-	g0 := [][]float64{{0, 1}, {2, 0}, {1, 1}, {0, 2}}          // 4×2
+	g0 := [][]float64{{0, 1}, {2, 0}, {1, 1}, {0, 2}}             // 4×2
 	g1 := [][]float64{{1, 0, 2}, {0, 1, 0}, {2, 2, 1}, {1, 0, 0}} // 4×3
 	writeBlock := func(b int, rows [][]float64) {
 		m := len(rows[0])

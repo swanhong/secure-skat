@@ -2,6 +2,7 @@ package gwas
 
 import (
 	"bufio"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -452,8 +453,10 @@ func (g *ProtocolInfo) runRareVariant() (skat, burden []float64) {
 	return
 }
 
-// runFederatedPrivate runs skat_fed (private party loads its blocks); per-gene SKAT and Burden, nil on pid 0.
-func (g *ProtocolInfo) runFederatedPrivate() (skatOut, burdenOut []float64) {
+// runFederatedPrivate runs skat_fed (private party loads its blocks); per-gene SKAT statistic and the
+// Burden p-value (p = erfc(√(T/2)) ~ χ²₁, R::SKAT r.corr=1). The Burden statistic and zᵀPz stay
+// secret-shared (only √(T/2) is revealed), so neither is disclosed. nil on pid 0.
+func (g *ProtocolInfo) runFederatedPrivate() (skatOut, burdenPOut []float64) {
 	mpcObj := g.mpcObj[0]
 	pid := mpcObj.GetPid()
 	privatePid := g.config.PrivatePid
@@ -476,19 +479,26 @@ func (g *ProtocolInfo) runFederatedPrivate() (skatOut, burdenOut []float64) {
 	tA := time.Now()
 	assocTest := g.InitAssociationTests(nil)
 	fedTimings.assocInit = time.Since(tA)
-	skat, burden := assocTest.ComputeSKATFederatedPrivate(privateOnly, privatePid)
+	skat, sqrtT2Enc := assocTest.ComputeSKATFederatedPrivate(privateOnly, privatePid)
 	if pid == 0 {
 		return nil, nil
 	}
 	tDec := time.Now()
 	nB := g.config.GenoNumBlocks
 	skatOut = crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, skat, -1))[:nB]
-	burdenOut = crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, burden, -1))[:nB]
+	sqrtT2 := crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, sqrtT2Enc, -1))[:nB]
+	burdenPOut = make([]float64, nB)
+	for b := 0; b < nB; b++ {
+		burdenPOut[b] = 1.0 // p=1 at √(T/2)≤0 (CKKS noise on a ~0 statistic); erfc(0)=1
+		if sqrtT2[b] > 0 {
+			burdenPOut[b] = math.Erfc(sqrtT2[b]) // ∈(0,1)
+		}
+	}
 	dec := time.Since(tDec)
 	log.LLvl1(fmt.Sprintf("[skat_fed] decrypt: %v | total run: %v",
 		dec.Round(time.Millisecond), time.Since(tRun).Round(time.Millisecond)))
 	logFedTimingTree(dec)
-	return skatOut, burdenOut
+	return skatOut, burdenPOut
 }
 
 // logFedTimingTree prints the step/substep timing tree at the end of a skat_fed run, combining the
@@ -525,12 +535,13 @@ func logFedTimingTree(dec time.Duration) {
 	}
 }
 
-// SKATFederatedPrivate runs the federated-private per-gene SKAT, saving per-gene Q and Burden.
+// SKATFederatedPrivate saves the per-gene SKAT statistic and Burden p-value (runFederatedPrivate
+// details the reveal set; Burden statistic and zᵀPz are never released).
 func (g *ProtocolInfo) SKATFederatedPrivate() {
-	skat, burden := g.runFederatedPrivate()
+	skat, burdenP := g.runFederatedPrivate()
 	if g.mpcObj[0].GetPid() > 0 {
 		SaveFloatVectorToFile(g.OutPath("skat_fed_out.txt"), skat)
-		SaveFloatVectorToFile(g.OutPath("skat_fed_burden_out.txt"), burden)
+		SaveFloatVectorToFile(g.OutPath("skat_fed_burden_p_out.txt"), burdenP)
 	}
 }
 

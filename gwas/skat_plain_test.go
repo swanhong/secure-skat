@@ -181,7 +181,7 @@ func fedFixture() (pub, priv FedParty) {
 
 // pooledPerGeneQ — the ground truth: build the union genotype (0-fill party-unique), run
 // pooled single-cohort SKAT per gene.
-func pooledPerGene(pub, priv FedParty) (skat, burden map[string]float64) {
+func pooledPerGene(pub, priv FedParty) (skat, burden, burdenP map[string]float64) {
 	np, c := pub.X.Dims()
 	nq, _ := priv.X.Dims()
 	N := np + nq
@@ -245,28 +245,50 @@ func pooledPerGene(pub, priv FedParty) (skat, burden map[string]float64) {
 	sigma2 := (fedDot(y, y) - mat.Dot(&xty, &beta)) / float64(N-c)
 	skat = map[string]float64{}
 	bLin := map[string]float64{}
+	zGene := map[string]*mat.VecDense{} // gene -> z = Σ ŵ G_col (N-dim), for the Burden variance
 	for kk, id := range order {
 		score := fedColDot(G, kk, res)
 		count := fedColSum(G, kk)
 		p := count / (2 * float64(N))
 		w := 25 * math.Pow(1-math.Min(p, 1-p), 24)
+		sw := w
 		if p > 0.5 {
 			score = -score
+			sw = -w
 		}
-		skat[u[id].gene] += w * w * score * score / (2 * sigma2)
-		bLin[u[id].gene] += w * score
+		gene := u[id].gene
+		skat[gene] += w * w * score * score / (2 * sigma2)
+		bLin[gene] += w * score
+		z, ok := zGene[gene]
+		if !ok {
+			z = mat.NewVecDense(N, nil)
+			zGene[gene] = z
+		}
+		z.AddScaledVec(z, sw, G.ColView(kk))
 	}
 	burden = map[string]float64{}
+	burdenP = map[string]float64{}
 	for g, l := range bLin {
 		burden[g] = l * l / (2 * sigma2)
+		z := zGene[g]
+		var xtz, sol mat.VecDense
+		xtz.MulVec(X.T(), z)
+		if err := sol.SolveVec(&XtX, &xtz); err != nil {
+			panic(err)
+		}
+		zPz := mat.Dot(z, z) - mat.Dot(&xtz, &sol)
+		burdenP[g] = 1.0
+		if zPz > 0 {
+			burdenP[g] = math.Erfc(math.Sqrt(burden[g] / zPz))
+		}
 	}
-	return skat, burden
+	return skat, burden, burdenP
 }
 
 func TestSKATFederatedPrivateMatchesPooled(t *testing.T) {
 	pub, priv := fedFixture()
-	skatFed, burdenFed := SKATFederatedPrivate(pub, priv)
-	skatPool, burdenPool := pooledPerGene(pub, priv)
+	skatFed, burdenFed, burdenPFed := SKATFederatedPrivate(pub, priv)
+	skatPool, burdenPool, burdenPPool := pooledPerGene(pub, priv)
 	if len(skatFed) != len(skatPool) {
 		t.Fatalf("gene count: fed %d pooled %d", len(skatFed), len(skatPool))
 	}
@@ -276,6 +298,9 @@ func TestSKATFederatedPrivateMatchesPooled(t *testing.T) {
 		}
 		if !approxEqual(burdenFed[g], burdenPool[g], 1e-9) {
 			t.Errorf("gene %s Burden: federated=%.12g pooled=%.12g", g, burdenFed[g], burdenPool[g])
+		}
+		if !approxEqual(burdenPFed[g], burdenPPool[g], 1e-9) {
+			t.Errorf("gene %s BurdenP: federated=%.12g pooled=%.12g", g, burdenPFed[g], burdenPPool[g])
 		}
 	}
 }
