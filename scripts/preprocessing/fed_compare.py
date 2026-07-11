@@ -82,6 +82,7 @@ burdenp_within = compare("Burden p-value", Psec, Pplain, ng, atol=0.0)
 summary = f"\nwithin threshold ({THRES}):  SKAT {skat_within}/{ng},  Burden p {burdenp_within}/{ng}"
 
 # SKAT p-value (only if the secure run was configured with skat_pvalue_probes > 0)
+SkatPsec = SkatPplain = None
 skat_p_file = f"{OUT}/out/party2/skat_fed_skat_p_out.txt"
 if os.path.exists(skat_p_file):
     aB = load_blocks("A", "geno", nA, ng)
@@ -93,3 +94,36 @@ if os.path.exists(skat_p_file):
     skatp_within = compare("SKAT p-value", SkatPsec, SkatPplain, ng, thres=0.05, atol=0.0)
     summary += f",  SKAT p {skatp_within}/{ng}"
 print(summary)
+
+
+def gene_positions(ng):
+    """Per-gene (chrom, median pos) from block_sizes.txt (m per gene) + pos.txt (chrom<TAB>pos per
+    public-list variant, gene-block order). Public genomic position only — no sample-level data."""
+    sizes = [int(x) for x in open(f"{OUT}/block_sizes.txt")]
+    rows = [ln.split() for ln in open(f"{OUT}/pos.txt")]
+    chrom, pos, i = [], [], 0
+    for g in range(ng):
+        chunk = rows[i:i + sizes[g]]
+        i += sizes[g]
+        chrom.append(int(chunk[0][0]))
+        pos.append(int(np.median([int(r[1]) for r in chunk])))
+    return chrom, pos
+
+
+# FED_CSV=1: dump per-gene aggregate results (positions + p-values only) for fed_plot.py. The SKAT
+# p-value columns appear only when the secure run computed it (skat_pvalue_probes > 0).
+if os.environ.get("FED_CSV"):
+    chrom, pos = gene_positions(ng)
+    has_skatp = SkatPsec is not None
+    csv_path = f"{OUT}/fed_results.csv"
+    with open(csv_path, "w") as f:
+        header = "gene,chrom,pos,burden_p_secure,burden_p_plain"
+        if has_skatp:
+            header += ",skat_p_secure,skat_p_plain"
+        f.write(header + "\n")
+        for b in range(ng):
+            row = f"{b},{chrom[b]},{pos[b]},{Psec[b]:.6e},{Pplain[b]:.6e}"
+            if has_skatp:
+                row += f",{SkatPsec[b]:.6e},{SkatPplain[b]:.6e}"
+            f.write(row + "\n")
+    print(f"  FED_CSV: wrote {csv_path}  ({'burden+skat p' if has_skatp else 'burden p'})")
