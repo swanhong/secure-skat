@@ -214,9 +214,9 @@ const ridgeRel = 1e-6
 // a large-m gene's m×m gram is revealed in O(gtgChunkRows·m) pieces instead of one O(m²) blob (OOM).
 const gtgChunkRows = 256
 
-// choleskyFactor computes the Cholesky factor L and dInv=1/diag(L) of an SPD matrix A (A=L·Lᵀ) in
-// secret shares. The factor is RHS-independent, so for a reused A (e.g. XᵀX) factor ONCE and call
-// choleskySolve per RHS — this is where the per-probe/per-gene SqrtAndSqrtInverse cost is saved.
+// choleskyFactor returns the Cholesky factor L and dInv=1/diag(L) of an SPD matrix A (A=L·Lᵀ) in
+// secret shares. The factor is RHS-independent: a reused A (e.g. XᵀX) is factored once and every
+// solve against it goes through choleskySolve / choleskySolveMat with the stored (L, dInv).
 func (ast *AssocTest) choleskyFactor(A mpc_core.RMat) (mpc_core.RMat, mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
@@ -271,6 +271,51 @@ func (ast *AssocTest) choleskySolve(L mpc_core.RMat, dInv mpc_core.RVec, b mpc_c
 		x[i] = mul(v, dInv[i])
 	}
 	return x
+}
+
+// choleskySolveMat solves A·X=B for a c×R RHS matrix B given the factor (L,dInv), with the
+// forward/back substitution running over all R columns together (one length-R round per (i,k) step).
+func (ast *AssocTest) choleskySolveMat(L mpc_core.RMat, dInv mpc_core.RVec, B mpc_core.RMat) mpc_core.RMat {
+	mpcObj := ast.general.mpcObj[0]
+	rtype := mpcObj.GetRType()
+	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
+	c := len(dInv)
+	R := 0
+	if len(B) > 0 {
+		R = len(B[0])
+	}
+	smul := func(s mpc_core.RElem, row mpc_core.RVec) mpc_core.RVec { // secret scalar × length-R row
+		return mpcObj.TruncVec(mpcObj.SSMultElemVec(mpc_core.InitRVec(s, R), row), db, fb)
+	}
+	Z := mpc_core.InitRMat(rtype.Zero(), c, R) // forward:  L·Z = B
+	for i := 0; i < c; i++ {
+		v := make(mpc_core.RVec, R)
+		for p := 0; p < R; p++ {
+			v[p] = B[i][p].Copy()
+		}
+		for k := 0; k < i; k++ {
+			t := smul(L[i][k], Z[k])
+			for p := 0; p < R; p++ {
+				v[p] = v[p].Sub(t[p])
+			}
+		}
+		Z[i] = smul(dInv[i], v)
+	}
+	X := mpc_core.InitRMat(rtype.Zero(), c, R) // back:  Lᵀ·X = Z
+	for i := c - 1; i >= 0; i-- {
+		v := make(mpc_core.RVec, R)
+		for p := 0; p < R; p++ {
+			v[p] = Z[i][p].Copy()
+		}
+		for k := i + 1; k < c; k++ {
+			t := smul(L[k][i], X[k])
+			for p := 0; p < R; p++ {
+				v[p] = v[p].Sub(t[p])
+			}
+		}
+		X[i] = smul(dInv[i], v)
+	}
+	return X
 }
 
 // secureClamp returns min(max(x, loPub), hiPub) for SECRET x via two secure compares + branch-free
@@ -899,29 +944,32 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, mPrivMax, nProbes int, null skatNu
 	c := null.c
 	m := nsnps + mPrivMax // full-gene size (public list + padded private)
 
-	vdot := func(a, bb mpc_core.RVec) mpc_core.RElem {
-		p := mpcObj.TruncVec(mpcObj.SSMultElemVec(a, bb), db, fb)
-		acc := rtype.Zero()
-		for i := range p {
-			acc = acc.Add(p[i])
-		}
-		return acc
-	}
 	pmul := func(a mpc_core.RElem, cf float64) mpc_core.RElem { // secret × public constant → fb
 		return mpcObj.TruncVec(mpc_core.RVec{a.Mul(rtype.FromFloat64(cf, fb))}, db, fb)[0]
 	}
-	// Vectorized elementwise product / public-scale (one network round for the whole length-m vector
-	// instead of m length-1 rounds); identical products + truncations to per-element mul/pmul.
-	vmul := func(a, bb mpc_core.RVec) mpc_core.RVec {
-		return mpcObj.TruncVec(mpcObj.SSMultElemVec(a, bb), db, fb)
+	// Matrix (m×R) elementwise product / public-scale / sum-all over all R probe columns at once
+	// (one network round each; the length-R columns share the message).
+	vmulMat := func(a, bb mpc_core.RMat) mpc_core.RMat {
+		return mpcObj.TruncMat(mpcObj.SSMultElemMat(a, bb), db, fb)
 	}
-	vpmul := func(a mpc_core.RVec, cf float64) mpc_core.RVec {
+	vpmulMat := func(a mpc_core.RMat, cf float64) mpc_core.RMat {
 		cfE := rtype.FromFloat64(cf, fb)
-		out := make(mpc_core.RVec, len(a))
-		for i := range a {
-			out[i] = a[i].Mul(cfE)
+		out := mpc_core.InitRMat(rtype.Zero(), len(a), len(a[0]))
+		for j := range a {
+			for p := range a[j] {
+				out[j][p] = a[j][p].Mul(cfE)
+			}
 		}
-		return mpcObj.TruncVec(out, db, fb)
+		return mpcObj.TruncMat(out, db, fb)
+	}
+	sumAllMat := func(a mpc_core.RMat) mpc_core.RElem {
+		acc := rtype.Zero()
+		for j := range a {
+			for p := range a[j] {
+				acc = acc.Add(a[j][p])
+			}
+		}
+		return acc
 	}
 
 	// Normalize the kernel by N (public): with G→G/√N, M = GᵀPG → M/N, so K → K/N and moments →
@@ -971,13 +1019,18 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, mPrivMax, nProbes int, null skatNu
 	}
 	_, _, w := ast.weightsCalculation(dosage, m) // unsigned weight w24 (SS), full gene
 
-	// M·a = (GᵀG)·a − (GᵀX)(XtX)⁻¹(XᵀG)·a for an SS m-vector a (chunked GᵀG, same memory bound as burdenVarSS).
-	mAction := func(a mpc_core.RVec) mpc_core.RVec {
-		aCol := make(mpc_core.RMat, m)
+	// M·A = (GᵀG/N)·A − (GᵀX/√N)(XtX)⁻¹(XᵀG/√N)·A for an m×R matrix A holding all R probes as columns:
+	// the chunked GᵀG matvec, the two GᵀX reductions, and the c×R covariate solve each cover all R
+	// probes in one pass. gtxT is the transpose of gtxSS.
+	gtxT := mpc_core.InitRMat(rtype.Zero(), c, m)
+	for l := 0; l < c; l++ {
 		for j := 0; j < m; j++ {
-			aCol[j] = mpc_core.RVec{a[j]}
+			gtxT[l][j] = gtxSS[j][l]
 		}
-		ga := make(mpc_core.RVec, m)
+	}
+	mActionMat := func(A mpc_core.RMat) mpc_core.RMat {
+		R := len(A[0])
+		ga := mpc_core.InitRMat(rtype.Zero(), m, R)
 		for start := 0; start < m; start += gtgChunkRows {
 			end := start + gtgChunkRows
 			if end > m {
@@ -991,40 +1044,22 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, mPrivMax, nProbes int, null skatNu
 					}
 				}
 			}
-			res := mpcObj.SSMultMat(gtgChunk, aCol)
+			res := mpcObj.SSMultMat(gtgChunk, A) // (chunk×m)·(m×R) → chunk×R
 			for j := start; j < end; j++ {
-				ga[j] = res[j-start][0]
+				for p := 0; p < R; p++ {
+					ga[j][p] = res[j-start][p]
+				}
 			}
 		}
-		ga = mpcObj.TruncVec(ga, db, fb)
-		// xtGa = (GᵀX)ᵀ·a  (c×m · m×1) via ONE SSMultMat instead of c vdots.
-		gtxT := mpc_core.InitRMat(rtype.Zero(), c, m)
-		for l := 0; l < c; l++ {
-			for j := 0; j < m; j++ {
-				gtxT[l][j] = gtxSS[j][l]
+		ga = mpcObj.TruncMat(ga, db, fb)
+		xtGA := mpcObj.TruncMat(mpcObj.SSMultMat(gtxT, A), db, fb)        // (c×m)·(m×R) → c×R
+		solMat := ast.choleskySolveMat(null.xtxL, null.xtxDinv, xtGA)     // c×R (cached factor)
+		gxsol := mpcObj.TruncMat(mpcObj.SSMultMat(gtxSS, solMat), db, fb) // (m×c)·(c×R) → m×R
+		Mv := mpc_core.InitRMat(rtype.Zero(), m, R)
+		for j := 0; j < m; j++ {
+			for p := 0; p < R; p++ {
+				Mv[j][p] = ga[j][p].Sub(gxsol[j][p]) // (GᵀG)·A − (GᵀX)·sol
 			}
-		}
-		xtGaM := mpcObj.SSMultMat(gtxT, aCol) // c×1 (untruncated 2·fb)
-		xtGa := make(mpc_core.RVec, c)
-		for l := 0; l < c; l++ {
-			xtGa[l] = xtGaM[l][0]
-		}
-		xtGa = mpcObj.TruncVec(xtGa, db, fb)
-		sol := ast.choleskySolve(null.xtxL, null.xtxDinv, xtGa) // reuse the cached xtxSS factor
-		// (GᵀX)·sol  (m×c · c×1) via ONE SSMultMat instead of m vdots.
-		solCol := make(mpc_core.RMat, c)
-		for l := 0; l < c; l++ {
-			solCol[l] = mpc_core.RVec{sol[l]}
-		}
-		gxsolM := mpcObj.SSMultMat(gtxSS, solCol) // m×1 (untruncated 2·fb)
-		gxsol := make(mpc_core.RVec, m)
-		for j := 0; j < m; j++ {
-			gxsol[j] = gxsolM[j][0]
-		}
-		gxsol = mpcObj.TruncVec(gxsol, db, fb)
-		Mv := make(mpc_core.RVec, m)
-		for j := 0; j < m; j++ {
-			Mv[j] = ga[j].Sub(gxsol[j]) // (GᵀG)·a − (GᵀX)·sol
 		}
 		return Mv
 	}
@@ -1033,27 +1068,36 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, mPrivMax, nProbes int, null skatNu
 	if m == 0 {
 		return
 	}
-	prng := rand.New(rand.NewSource(int64(b)*1000003 + 1)) // public seed → identical probes on all parties
+	// All nProbes public Rademacher probes as columns of DvMat (m×R). Keep the p-outer/j-inner PRNG
+	// draw order so the public probes are byte-identical across parties. wMat broadcasts w (local
+	// share replication across columns) for the ½ w⊙· steps.
+	DvMat := mpc_core.InitRMat(rtype.Zero(), m, nProbes)
+	prng := rand.New(rand.NewSource(int64(b)*1000003 + 1))
 	for p := 0; p < nProbes; p++ {
-		Dv := make(mpc_core.RVec, m) // Dv = w⊙v, v public ±1 (local sign flip of the w share)
 		for j := 0; j < m; j++ {
 			if prng.Intn(2) == 0 {
-				Dv[j] = w[j].Copy()
+				DvMat[j][p] = w[j].Copy()
 			} else {
-				Dv[j] = w[j].Copy().Neg()
+				DvMat[j][p] = w[j].Copy().Neg()
 			}
 		}
-		Mv := mAction(Dv)
-		u1 := vpmul(vmul(w, Mv), 0.5) // K·v = ½ w⊙M(Dv)  (was m length-1 rounds → 2)
-		Du1 := vmul(w, u1)
-		Mu1 := mAction(Du1)
-		u2 := vpmul(vmul(w, Mu1), 0.5)       // K·u1
-		S1 = S1.Add(pmul(vdot(Dv, Mv), 0.5)) // vᵀKv = ½ Dv·Mv
-		S2 = S2.Add(vdot(u1, u1))            // vᵀK²v
-		S3 = S3.Add(vdot(u1, u2))            // vᵀK³v
 	}
+	wMat := mpc_core.InitRMat(rtype.Zero(), m, nProbes)
+	for j := 0; j < m; j++ {
+		for p := 0; p < nProbes; p++ {
+			wMat[j][p] = w[j].Copy()
+		}
+	}
+	MvMat := mActionMat(DvMat)                 // K·v batch (matvec 1)
+	u1 := vpmulMat(vmulMat(wMat, MvMat), 0.5)  // ½ w⊙M(Dv) = Kv
+	Du1 := vmulMat(wMat, u1)                   // D·u1
+	Mu1Mat := mActionMat(Du1)                  // matvec 2
+	u2 := vpmulMat(vmulMat(wMat, Mu1Mat), 0.5) // K²v
 	inv := 1.0 / float64(nProbes)
-	return pmul(S1, inv), pmul(S2, inv), pmul(S3, inv)
+	S1 = pmul(sumAllMat(vmulMat(DvMat, MvMat)), 0.5*inv) // (1/R)·Σ ½ Dv·Mv = tr(K)/...
+	S2 = pmul(sumAllMat(vmulMat(u1, u1)), inv)           // (1/R)·Σ ‖Kv‖²
+	S3 = pmul(sumAllMat(vmulMat(u1, u2)), inv)           // (1/R)·Σ (Kv)·(K²v)
+	return
 }
 
 // skatZSS assembles the Wilson-Hilferty pivot z from (Q, S1, S2, S3) in secret shares (δ=0, S4 unused).
