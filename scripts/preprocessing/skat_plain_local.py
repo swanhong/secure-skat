@@ -166,15 +166,138 @@ def pooled_skat_burden(union_blocks, XA, yA, XB, yB):
     return skat, burden, burden_p
 
 
+# --- SKAT p-value methods for Q ~ Σλχ²₁ from the kernel eigenvalues λ (pure numpy; Davies uses scipy
+# when available). WH is the secure path's approximation; Liu and Davies are the R::SKAT references. ---
+_LANCZOS = [676.5203681218851, -1259.1392167224028, 771.32342877765313, -176.61502916214059,
+            12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7]
+
+
+def _gammln(x):
+    x -= 1.0
+    a, t = 0.99999999999980993, x + 7.5
+    for i, gi in enumerate(_LANCZOS):
+        a += gi / (x + i + 1)
+    return 0.5 * math.log(2 * math.pi) + (x + 0.5) * math.log(t) - t + math.log(a)
+
+
+def _gammq(a, x):  # regularized upper incomplete gamma Q(a,x) (Numerical Recipes)
+    if x <= 0:
+        return 1.0
+    if x < a + 1.0:
+        ap, s, d = a, 1.0 / a, 1.0 / a
+        for _ in range(2000):
+            ap += 1.0
+            d *= x / ap
+            s += d
+            if abs(d) < abs(s) * 1e-15:
+                break
+        return 1.0 - s * math.exp(-x + a * math.log(x) - _gammln(a))
+    b, c, d = x + 1.0 - a, 1e300, 0.0
+    d, h = 1.0 / b, 1.0 / b
+    for i in range(1, 2000):
+        an = -i * (i - a)
+        b += 2.0
+        d = an * d + b
+        d = 1e-300 if abs(d) < 1e-300 else d
+        c = b + an / c
+        c = 1e-300 if abs(c) < 1e-300 else c
+        d = 1.0 / d
+        delt = d * c
+        h *= delt
+        if abs(delt - 1.0) < 1e-15:
+            break
+    return math.exp(-x + a * math.log(x) - _gammln(a)) * h
+
+
+def _chi2_sf(x, df):
+    return _gammq(df / 2.0, x / 2.0)
+
+
+def _ncx2_sf(x, df, nc):  # non-central chi² survival = Poisson-weighted central survivals
+    if nc <= 0:
+        return _chi2_sf(x, df)
+    lam, total, logw = nc / 2.0, 0.0, -nc / 2.0
+    for j in range(2000):
+        total += math.exp(logw) * _chi2_sf(x, df + 2 * j)
+        if j > lam and math.exp(logw) < 1e-17 * (total + 1e-300):
+            break
+        logw += math.log(lam) - math.log(j + 1)
+    return min(max(total, 0.0), 1.0)
+
+
+def skat_wh_p(lam, Q):
+    """Wilson-Hilferty screening p — same formula as the secure path (from S1,S2,S3=tr(Kᵏ))."""
+    lam = np.asarray(lam, float)
+    S1, S2, S3 = lam.sum(), float((lam**2).sum()), float((lam**3).sum())
+    if S2 <= 0 or S3 <= 0:
+        return 1.0
+    u = (Q - S1) * S3 / S2**2
+    h = 2 * S3**2 / (9 * S2**3)
+    z = (np.cbrt(1 + u) - 1 + h) / math.sqrt(h)
+    return 0.5 * math.erfc(z / math.sqrt(2))
+
+
+def skat_liu_p(lam, Q):
+    """Liu et al. (2009) moment-matching to a (non-central) chi-square (R::SKAT method='liu')."""
+    lam = np.asarray(lam, float)
+    c1, c2, c3, c4 = (float((lam**k).sum()) for k in (1, 2, 3, 4))
+    if c2 <= 0:
+        return 1.0
+    s1, s2 = c3 / c2**1.5, c4 / c2**2
+    if s1**2 > s2:
+        a = 1.0 / (s1 - math.sqrt(s1**2 - s2))
+        delta = s1 * a**3 - a**2
+        l = a**2 - 2 * delta
+    else:
+        a, delta = (1.0 / s1 if s1 > 0 else 0.0), 0.0
+        l = 1.0 / s2 if s2 > 0 else 0.0
+    if l <= 0:
+        return 1.0
+    q_norm = (Q - c1) / math.sqrt(2 * c2) * (math.sqrt(2.0) * a) + (l + delta)
+    return _ncx2_sf(q_norm, l, delta)
+
+
+def skat_davies_p(lam, Q, tol=1e-10):
+    """Davies/Imhof exact tail P(Q>q) via numerical inversion (Imhof 1961; R::SKAT method='davies').
+    scipy's adaptive quadrature when available (accurate into the deep tail), else a fixed-grid
+    trapezoid (good at moderate p, less so for p≲1e-3 on tiny genes)."""
+    lam = np.asarray(lam, float)
+    amax = np.abs(lam).max()
+    if amax == 0:
+        return 1.0
+    lam = lam[np.abs(lam) > 1e-10 * amax]
+    amax = np.abs(lam).max()
+    upper = 20.0 / amax
+    while upper < 1e7 and 1.0 / (upper * np.prod((1 + (lam * upper) ** 2) ** 0.25)) > tol:
+        upper *= 1.5
+
+    def integrand(u):
+        theta = 0.5 * np.arctan(lam * u).sum() - 0.5 * Q * u
+        rho = np.prod((1 + (lam * u) ** 2) ** 0.25)
+        return math.sin(theta) / (u * rho)
+
+    try:
+        from scipy.integrate import quad
+        val, _ = quad(integrand, 0, upper, limit=2000)
+    except Exception:
+        n = int(min(max(upper * 0.5 * (abs(Q) + np.abs(lam).sum()) * 20, 20000), 6_000_000))
+        u = np.linspace(upper / n, upper, n)
+        lu = lam[None, :] * u[:, None]
+        theta = 0.5 * np.arctan(lu).sum(1) - 0.5 * Q * u
+        rho = np.prod((1 + lu**2) ** 0.25, axis=1)
+        val = np.trapezoid(np.sin(theta) / (u * rho), u)
+    return min(max(0.5 + val / math.pi, 0.0), 1.0)
+
+
 def federated_skat_p_from_blocks(A_blocks, B_aligned, B_priv, XA, yA, XB, yB, ridge_rel=0.0):
-    """Per-gene SKAT p-value (Wilson-Hilferty, screening) from the block tensors, matching the secure
-    path's oracle (exact eigenvalue moments here; the secure path estimates tr(K³) by Hutchinson, so a
-    few-% gap is expected). Kernel K=½D(GᵀPG)D, D=diag(w); δ=0 for PSD K ⇒ p from (Q,S1,S2,S3)."""
+    """Per-gene SKAT p-value from the block tensors, three ways: Wilson-Hilferty (the secure path's
+    approximation), Liu moment-matching, and Davies/Imhof exact — the last two are the R::SKAT
+    references for the WH approximation. Kernel K=½D(GᵀPG)D, D=diag(w). Returns (wh, liu, davies)."""
     beta, sigma2, rA, rB, two_n, XtX = _fed_null(XA, yA, XB, yB, ridge_rel)
     nA, nB = len(yA), len(yB)
     X = np.vstack([XA, XB])
     r = np.concatenate([rA, rB])
-    skat_p = []
+    wh, liu, davies = [], [], []
     for g in range(len(A_blocks)):
         mpub, mpriv = A_blocks[g].shape[1], B_priv[g].shape[1]
         G = np.zeros((nA + nB, mpub + mpriv))          # union genotype: A private cols stay 0
@@ -188,15 +311,10 @@ def federated_skat_p_from_blocks(A_blocks, B_aligned, B_priv, XA, yA, XB, yB, ri
         Q = float(np.sum(w**2 * s**2) / (2 * sigma2))   # SKAT statistic
         M = G.T @ G - (G.T @ X) @ np.linalg.solve(X.T @ X, (X.T @ G))
         lam = np.linalg.eigvalsh(0.5 * (w[:, None] * M) * w[None, :])   # eig of K = ½ D M D
-        S1, S2, S3 = lam.sum(), float((lam**2).sum()), float((lam**3).sum())
-        if S2 > 0 and S3 > 0:
-            u = (Q - S1) * S3 / S2**2
-            h = 2 * S3**2 / (9 * S2**3)
-            z = (np.cbrt(1 + u) - 1 + h) / math.sqrt(h)
-            skat_p.append(0.5 * math.erfc(z / math.sqrt(2)))
-        else:
-            skat_p.append(1.0)
-    return skat_p
+        wh.append(skat_wh_p(lam, Q))
+        liu.append(skat_liu_p(lam, Q))
+        davies.append(skat_davies_p(lam, Q))
+    return wh, liu, davies
 
 
 def verify_blocks(gene_keys, priv_keys, roles, A_geno, B_geno, keycol, XA, yA, XB, yB):

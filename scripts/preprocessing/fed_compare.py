@@ -11,6 +11,7 @@ never releases the Burden statistic or zᵀPz, so there is nothing to diff for t
 ~1e-3; the per-gene 'within' column shows O/X against THRES (default 0.01).
 """
 import json
+import math
 import os
 import time
 
@@ -71,28 +72,77 @@ Splain, _, Pplain = federated_skat_burden_from_blocks(
     load_blocks("A", "geno", nA, ng), load_blocks("B", "geno", nB, ng),
     load_blocks("B", "priv", nB, ng), XA, yA, XB, yB, ridge_rel=RIDGE_REL)
 print(f"  plaintext federated SKAT+Burden-p: {time.perf_counter() - t0:.2f}s")
-# The secure run reveals only the SKAT statistic and the Burden p-value; the Burden statistic and
-# zᵀPz stay secret-shared, so there is no skat_fed_burden_out.txt to compare.
-Ssec = np.loadtxt(f"{OUT}/out/party2/skat_fed_out.txt")
+# Reveal set depends on the mode: with skat_pvalue_probes=0 the run reveals the SKAT statistic Q
+# (skat_fed_out.txt) + Burden p; with skat_pvalue_probes>0 Q is withheld (only the WH pivot z leaves,
+# so skat_fed_out.txt is absent) and the SKAT p-value section below runs instead. Burden always
+# reveals only √(T/2) (→ p); the Burden statistic and zᵀPz stay secret-shared.
+skat_q_file = f"{OUT}/out/party2/skat_fed_out.txt"
+Ssec = np.loadtxt(skat_q_file) if os.path.exists(skat_q_file) else None
 Psec = np.loadtxt(f"{OUT}/out/party2/skat_fed_burden_p_out.txt")
 
-print(f"  nA={nA} nB={nB} genes={ng}")
-skat_within = compare("SKAT", Ssec, Splain, ng)
-burdenp_within = compare("Burden p-value", Psec, Pplain, ng, atol=0.0)
-summary = f"\nwithin threshold ({THRES}):  SKAT {skat_within}/{ng},  Burden p {burdenp_within}/{ng}"
+def _erfcinv(y):
+    """Inverse complementary error function via bisection (erfc is monotone-decreasing on [0,40],
+    covering p down to ~1e-300). Pure numpy; recovers √(T/2) from the revealed Burden p."""
+    y = float(min(max(y, 1e-300), 1.0))
+    lo, hi = 0.0, 40.0
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        if math.erfc(mid) > y:  # erfc(mid) too large ⇒ mid too small
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
 
-# SKAT p-value (only if the secure run was configured with skat_pvalue_probes > 0)
+
+print(f"  nA={nA} nB={nB} genes={ng}")
+if Ssec is not None:  # SKAT statistic Q — only revealed when skat_pvalue_probes=0 (else Q is hidden)
+    skat_within = compare("SKAT (Q)", Ssec, Splain, ng)
+else:
+    skat_within = None
+    print("\n  SKAT statistic Q not released (skat_pvalue_probes>0 → only the WH pivot z leaves)")
+burdenp_within = compare("Burden p-value", Psec, Pplain, ng, atol=0.0)
+# Burden T = 2·(√(T/2))² = 2·erfcinv(p)²: the χ²₁ statistic behind the Burden p. Derived from the
+# revealed p (T ↔ p bijective), so no new information leaves; shown for interpretability.
+Tsec = np.array([2 * _erfcinv(p) ** 2 for p in np.atleast_1d(Psec)])
+Tplain = np.array([2 * _erfcinv(p) ** 2 for p in np.atleast_1d(Pplain)])
+burdenT_within = compare("Burden T (=2·erfcinv(p)²)", Tsec, Tplain, ng, atol=1e-6)
+summary = f"\nwithin threshold ({THRES}):  "
+summary += f"SKAT Q {skat_within}/{ng},  " if skat_within is not None else ""
+summary += f"Burden p {burdenp_within}/{ng},  Burden T {burdenT_within}/{ng}"
+
+# SKAT p-value (only if the secure run was configured with skat_pvalue_probes > 0). The secure output
+# is the Wilson-Hilferty screening p; the plaintext oracle also computes the Liu and Davies references
+# so the WH approximation can be judged against them (WH vs Liu, WH vs Davies).
 SkatPsec = SkatPplain = None
 skat_p_file = f"{OUT}/out/party2/skat_fed_skat_p_out.txt"
 if os.path.exists(skat_p_file):
     aB = load_blocks("A", "geno", nA, ng)
     bB = load_blocks("B", "geno", nB, ng)
     pB = load_blocks("B", "priv", nB, ng)
-    SkatPplain = federated_skat_p_from_blocks(aB, bB, pB, XA, yA, XB, yB, ridge_rel=RIDGE_REL)
-    SkatPsec = np.atleast_1d(np.loadtxt(skat_p_file))
-    # SKAT p is Hutchinson-estimated (screening) — looser threshold than the exact stats.
-    skatp_within = compare("SKAT p-value", SkatPsec, SkatPplain, ng, thres=0.05, atol=0.0)
-    summary += f",  SKAT p {skatp_within}/{ng}"
+    WHplain, LiuPlain, DaviesPlain = (np.asarray(x, float)
+                                      for x in federated_skat_p_from_blocks(aB, bB, pB, XA, yA, XB, yB, ridge_rel=RIDGE_REL))
+    SkatPsec = np.atleast_1d(np.loadtxt(skat_p_file))  # secure Wilson-Hilferty p
+    SkatPplain = WHplain  # plain WH — the CSV/scatter reference for the secure output
+
+    print("\n=== SKAT p-value: secure WH vs plaintext references (Liu, Davies) ===")
+    print(f"{'gene':>4} {'secure_WH':>12} {'plain_WH':>12} {'Liu':>12} {'Davies':>12}")
+    for b in range(ng):
+        print(f"{b:>4} {SkatPsec[b]:>12.4e} {WHplain[b]:>12.4e} {LiuPlain[b]:>12.4e} {DaviesPlain[b]:>12.4e}")
+
+    def _r2(a, ref):
+        ss = float(np.sum((ref - ref.mean()) ** 2))
+        return 1 - float(np.sum((a - ref) ** 2)) / ss if ss > 0 else float("nan")
+
+    def _maxrel(a, ref):
+        return max(abs(a[i] - ref[i]) / max(abs(ref[i]), 1e-12) for i in range(len(ref)))
+
+    def _mae(a, ref):
+        return float(np.mean(np.abs(a - ref)))
+
+    print(f"\n  {'comparison':<24} {'R^2':>10} {'max rel':>10} {'mean abs err':>13}")
+    for name, ref in [("secure-WH vs plain-WH", WHplain), ("WH vs Liu", LiuPlain), ("WH vs Davies", DaviesPlain)]:
+        print(f"  {name:<24} {_r2(SkatPsec, ref):>10.6f} {_maxrel(SkatPsec, ref):>10.2e} {_mae(SkatPsec, ref):>13.2e}")
+    summary += f",  SKAT p (WH vs Liu R^2={_r2(SkatPsec, LiuPlain):.4f}, vs Davies R^2={_r2(SkatPsec, DaviesPlain):.4f})"
 print(summary)
 
 
