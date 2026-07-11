@@ -197,6 +197,8 @@ type skatNull struct {
 	betaRep  crypto.CipherVector // betaRep[ℓ] = Enc(β̂_ℓ) in every slot (PART B CKKS score)
 	betaSS   mpc_core.RVec       // β̂ in secret shares (exact SS score)
 	xtxSS    mpc_core.RMat       // XᵀX in secret shares (reused by the Burden-variance solve)
+	xtxL     mpc_core.RMat       // cached Cholesky factor of xtxSS (factor once, choleskySolve per RHS)
+	xtxDinv  mpc_core.RVec       // 1/diag(xtxL); pairs with xtxL for every moment/burden solve
 	rssSS    mpc_core.RElem      // residual-norm RSS = y₀ᵀy₀ − 2Xᵀy₀·β̂ + β̂ᵀXᵀXβ̂ (robust σ̂²)
 	xtyEnc   crypto.CipherVector // global Xᵀy₀ (aggregated; xtySS derives from it in the null)
 	y0ty0Enc crypto.CipherVector // global y₀ᵀy₀ (for RSS)
@@ -212,18 +214,17 @@ const ridgeRel = 1e-6
 // a large-m gene's m×m gram is revealed in O(gtgChunkRows·m) pieces instead of one O(m²) blob (OOM).
 const gtgChunkRows = 256
 
-// solveSPD solves the small SPD system A·x = b (A = XᵀX, b = Xᵀy₀) in secret shares via Cholesky
-// (A = L·Lᵀ) + forward/back substitution.
-func (ast *AssocTest) solveSPD(A mpc_core.RMat, b mpc_core.RVec) mpc_core.RVec {
+// choleskyFactor computes the Cholesky factor L and dInv=1/diag(L) of an SPD matrix A (A=L·Lᵀ) in
+// secret shares. The factor is RHS-independent, so for a reused A (e.g. XᵀX) factor ONCE and call
+// choleskySolve per RHS — this is where the per-probe/per-gene SqrtAndSqrtInverse cost is saved.
+func (ast *AssocTest) choleskyFactor(A mpc_core.RMat) (mpc_core.RMat, mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
-	c := len(b)
-
+	c := len(A)
 	mul := func(x, y mpc_core.RElem) mpc_core.RElem { // SS scalar product, back to fracBits
 		return mpcObj.TruncVec(mpcObj.SSMultElemVec(mpc_core.RVec{x}, mpc_core.RVec{y}), db, fb)[0]
 	}
-
 	L := mpc_core.InitRMat(rtype.Zero(), c, c) // lower-triangular Cholesky factor
 	dInv := make(mpc_core.RVec, c)             // dInv[j] = 1/L[j][j]
 	for j := 0; j < c; j++ {
@@ -241,7 +242,18 @@ func (ast *AssocTest) solveSPD(A mpc_core.RMat, b mpc_core.RVec) mpc_core.RVec {
 			L[i][j] = mul(v, dInv[j])
 		}
 	}
+	return L, dInv
+}
 
+// choleskySolve solves A·x=b given the precomputed factor (L,dInv) from choleskyFactor(A), via
+// forward (L·z=b) then back (Lᵀ·x=z) substitution.
+func (ast *AssocTest) choleskySolve(L mpc_core.RMat, dInv mpc_core.RVec, b mpc_core.RVec) mpc_core.RVec {
+	mpcObj := ast.general.mpcObj[0]
+	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
+	c := len(b)
+	mul := func(x, y mpc_core.RElem) mpc_core.RElem {
+		return mpcObj.TruncVec(mpcObj.SSMultElemVec(mpc_core.RVec{x}, mpc_core.RVec{y}), db, fb)[0]
+	}
 	z := make(mpc_core.RVec, c) // forward:  L·z = b
 	for i := 0; i < c; i++ {
 		v := b[i].Copy()
@@ -381,7 +393,8 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 		xtyCt = xtyEnc[0]
 	}
 	xtySS := mpcObj.CiphertextToSS(cps, rtype, xtyCt, mpcObj.GetHubPid(), c)
-	betaSS := ast.solveSPD(xtxSS, xtySS)
+	xtxL, xtxDinv := ast.choleskyFactor(xtxSS) // factor once; reused by every moment/burden solve
+	betaSS := ast.choleskySolve(xtxL, xtxDinv, xtySS)
 	fedTimings.nullInv = time.Since(tNull)
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: XtX->SS + Cholesky solve %v", fedTimings.nullInv.Round(time.Millisecond)))
 	tNull = time.Now()
@@ -433,7 +446,7 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 
 	fedTimings.nullBeta = time.Since(tNull)
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: Xty->SS + beta=inv*Xty + betaRep %v", fedTimings.nullBeta.Round(time.Millisecond)))
-	return skatNull{betaHat: betaHat, betaRep: betaRep, betaSS: betaSS, xtxSS: xtxSS, rssSS: rssSS, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
+	return skatNull{betaHat: betaHat, betaRep: betaRep, betaSS: betaSS, xtxSS: xtxSS, xtxL: xtxL, xtxDinv: xtxDinv, rssSS: rssSS, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
 }
 
 // computeNullRSSEnc wraps the residual-norm RSS (formed in SS as null.rssSS) as a 1-element
@@ -866,7 +879,7 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 	}
 
 	// zᵀPz = zz − (Xᵀz)ᵀ(XtX)⁻¹(Xᵀz), reusing the null Cholesky solve.
-	a := ast.solveSPD(null.xtxSS, xtz)
+	a := ast.choleskySolve(null.xtxL, null.xtxDinv, xtz)
 	return zz.Sub(vdot(xtz, a))
 }
 
@@ -886,9 +899,6 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, mPrivMax, nProbes int, null skatNu
 	c := null.c
 	m := nsnps + mPrivMax // full-gene size (public list + padded private)
 
-	mul := func(a, b mpc_core.RElem) mpc_core.RElem {
-		return mpcObj.TruncVec(mpcObj.SSMultElemVec(mpc_core.RVec{a}, mpc_core.RVec{b}), db, fb)[0]
-	}
 	vdot := func(a, bb mpc_core.RVec) mpc_core.RElem {
 		p := mpcObj.TruncVec(mpcObj.SSMultElemVec(a, bb), db, fb)
 		acc := rtype.Zero()
@@ -899,6 +909,19 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, mPrivMax, nProbes int, null skatNu
 	}
 	pmul := func(a mpc_core.RElem, cf float64) mpc_core.RElem { // secret × public constant → fb
 		return mpcObj.TruncVec(mpc_core.RVec{a.Mul(rtype.FromFloat64(cf, fb))}, db, fb)[0]
+	}
+	// Vectorized elementwise product / public-scale (one network round for the whole length-m vector
+	// instead of m length-1 rounds); identical products + truncations to per-element mul/pmul.
+	vmul := func(a, bb mpc_core.RVec) mpc_core.RVec {
+		return mpcObj.TruncVec(mpcObj.SSMultElemVec(a, bb), db, fb)
+	}
+	vpmul := func(a mpc_core.RVec, cf float64) mpc_core.RVec {
+		cfE := rtype.FromFloat64(cf, fb)
+		out := make(mpc_core.RVec, len(a))
+		for i := range a {
+			out[i] = a[i].Mul(cfE)
+		}
+		return mpcObj.TruncVec(out, db, fb)
 	}
 
 	// Normalize the kernel by N (public): with G→G/√N, M = GᵀPG → M/N, so K → K/N and moments →
@@ -974,18 +997,34 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, mPrivMax, nProbes int, null skatNu
 			}
 		}
 		ga = mpcObj.TruncVec(ga, db, fb)
-		xtGa := make(mpc_core.RVec, c) // (XᵀG)·a
+		// xtGa = (GᵀX)ᵀ·a  (c×m · m×1) via ONE SSMultMat instead of c vdots.
+		gtxT := mpc_core.InitRMat(rtype.Zero(), c, m)
 		for l := 0; l < c; l++ {
-			col := make(mpc_core.RVec, m)
 			for j := 0; j < m; j++ {
-				col[j] = gtxSS[j][l]
+				gtxT[l][j] = gtxSS[j][l]
 			}
-			xtGa[l] = vdot(a, col)
 		}
-		sol := ast.solveSPD(null.xtxSS, xtGa)
+		xtGaM := mpcObj.SSMultMat(gtxT, aCol) // c×1 (untruncated 2·fb)
+		xtGa := make(mpc_core.RVec, c)
+		for l := 0; l < c; l++ {
+			xtGa[l] = xtGaM[l][0]
+		}
+		xtGa = mpcObj.TruncVec(xtGa, db, fb)
+		sol := ast.choleskySolve(null.xtxL, null.xtxDinv, xtGa) // reuse the cached xtxSS factor
+		// (GᵀX)·sol  (m×c · c×1) via ONE SSMultMat instead of m vdots.
+		solCol := make(mpc_core.RMat, c)
+		for l := 0; l < c; l++ {
+			solCol[l] = mpc_core.RVec{sol[l]}
+		}
+		gxsolM := mpcObj.SSMultMat(gtxSS, solCol) // m×1 (untruncated 2·fb)
+		gxsol := make(mpc_core.RVec, m)
+		for j := 0; j < m; j++ {
+			gxsol[j] = gxsolM[j][0]
+		}
+		gxsol = mpcObj.TruncVec(gxsol, db, fb)
 		Mv := make(mpc_core.RVec, m)
 		for j := 0; j < m; j++ {
-			Mv[j] = ga[j].Sub(vdot(gtxSS[j], sol)) // (GᵀG)·a − (GᵀX)·sol
+			Mv[j] = ga[j].Sub(gxsol[j]) // (GᵀG)·a − (GᵀX)·sol
 		}
 		return Mv
 	}
@@ -1005,19 +1044,10 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, mPrivMax, nProbes int, null skatNu
 			}
 		}
 		Mv := mAction(Dv)
-		u1 := make(mpc_core.RVec, m) // K·v = ½ w⊙M(Dv)
-		for j := 0; j < m; j++ {
-			u1[j] = pmul(mul(w[j], Mv[j]), 0.5)
-		}
-		Du1 := make(mpc_core.RVec, m)
-		for j := 0; j < m; j++ {
-			Du1[j] = mul(w[j], u1[j])
-		}
+		u1 := vpmul(vmul(w, Mv), 0.5) // K·v = ½ w⊙M(Dv)  (was m length-1 rounds → 2)
+		Du1 := vmul(w, u1)
 		Mu1 := mAction(Du1)
-		u2 := make(mpc_core.RVec, m) // K·u1
-		for j := 0; j < m; j++ {
-			u2[j] = pmul(mul(w[j], Mu1[j]), 0.5)
-		}
+		u2 := vpmul(vmul(w, Mu1), 0.5)       // K·u1
 		S1 = S1.Add(pmul(vdot(Dv, Mv), 0.5)) // vᵀKv = ½ Dv·Mv
 		S2 = S2.Add(vdot(u1, u1))            // vᵀK²v
 		S3 = S3.Add(vdot(u1, u2))            // vᵀK³v
