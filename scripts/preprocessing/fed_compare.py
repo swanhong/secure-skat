@@ -105,7 +105,9 @@ burdenp_within = compare("Burden p-value", Psec, Pplain, ng, atol=0.0)
 # revealed p (T ↔ p bijective), so no new information leaves; shown for interpretability.
 Tsec = np.array([2 * _erfcinv(p) ** 2 for p in np.atleast_1d(Psec)])
 Tplain = np.array([2 * _erfcinv(p) ** 2 for p in np.atleast_1d(Pplain)])
-burdenT_within = compare("Burden T (=2·erfcinv(p)²)", Tsec, Tplain, ng, atol=1e-6)
+# atol=0.02: T=2·erfcinv(p)² amplifies the relative error at high p (T→0), so a small-T gene can miss
+# a pure-rel threshold while its authoritative Burden p is within — the absolute floor absorbs that.
+burdenT_within = compare("Burden T (=2·erfcinv(p)²)", Tsec, Tplain, ng, atol=0.02)
 summary = f"\nwithin threshold ({THRES}):  "
 summary += f"SKAT Q {skat_within}/{ng},  " if skat_within is not None else ""
 summary += f"Burden p {burdenp_within}/{ng},  Burden T {burdenT_within}/{ng}"

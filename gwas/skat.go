@@ -1563,6 +1563,13 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		accSkat := mpc_core.InitRVec(rtype.Zero(), 1)
 		accBurden := mpc_core.InitRVec(rtype.Zero(), 1)
 		nsnps := ast.skatBlockNumSnps(b) // collective; public-list size for gene b
+		if mpcObj.GetPid() == mpcObj.GetHubPid() {
+			if nProbes > 0 { // moments dominate; m_full=nsnps+skat_priv_max drives the O(m²·probes) cost
+				log.LLvl1(fmt.Sprintf("[skat_fed] gene %d/%d start (m_pub=%d, m_full=%d, probes=%d)", b+1, nB, nsnps, nsnps+skatPriv, nProbes))
+			} else {
+				log.LLvl1(fmt.Sprintf("[skat_fed] gene %d/%d start (m_pub=%d)", b+1, nB, nsnps))
+			}
+		}
 
 		// PART A: secure SKAT over the public list (existing per-block path).
 		var wSignedA mpc_core.RVec // signed weight from PART A, reused by burdenVarSS below
@@ -1588,7 +1595,11 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		if nProbes > 0 {                                                                // SKAT p-value kernel moments (N-normalized)
 			s1B[b], s2B[b], s3B[b] = ast.skatMomentsSS(b, nsnps, skatPriv, nProbes, null, X, y0, G)
 		}
-		blockSecs = append(blockSecs, time.Since(tb).Seconds())
+		dt := time.Since(tb).Seconds()
+		blockSecs = append(blockSecs, dt)
+		if mpcObj.GetPid() == mpcObj.GetHubPid() {
+			log.LLvl1(fmt.Sprintf("[skat_fed] gene %d/%d done  %.1fs | elapsed %.1fs", b+1, nB, dt, time.Since(tBlocks).Seconds()))
+		}
 	}
 	fedTimings.blocks = time.Since(tBlocks)
 	fedTimings.blockSecs = blockSecs
