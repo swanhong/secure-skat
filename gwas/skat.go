@@ -1563,12 +1563,11 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		accSkat := mpc_core.InitRVec(rtype.Zero(), 1)
 		accBurden := mpc_core.InitRVec(rtype.Zero(), 1)
 		nsnps := ast.skatBlockNumSnps(b) // collective; public-list size for gene b
-		if mpcObj.GetPid() == mpcObj.GetHubPid() {
-			if nProbes > 0 { // moments dominate; m_full=nsnps+skat_priv_max drives the O(m²·probes) cost
-				log.LLvl1(fmt.Sprintf("[skat_fed] gene %d/%d start (m_pub=%d, m_full=%d, probes=%d)", b+1, nB, nsnps, nsnps+skatPriv, nProbes))
-			} else {
-				log.LLvl1(fmt.Sprintf("[skat_fed] gene %d/%d start (m_pub=%d)", b+1, nB, nsnps))
-			}
+		// Not hub-gated: run_fed.sh tees party 2 (not the hub) to the terminal, so every party logs this.
+		if nProbes > 0 { // moments dominate; m_full=nsnps+skat_priv_max drives the O(m²·probes) cost
+			log.LLvl1(fmt.Sprintf("[skat_fed] gene %d/%d start (m_pub=%d, m_full=%d, probes=%d)", b+1, nB, nsnps, nsnps+skatPriv, nProbes))
+		} else {
+			log.LLvl1(fmt.Sprintf("[skat_fed] gene %d/%d start (m_pub=%d)", b+1, nB, nsnps))
 		}
 
 		// PART A: secure SKAT over the public list (existing per-block path).
@@ -1597,9 +1596,7 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		}
 		dt := time.Since(tb).Seconds()
 		blockSecs = append(blockSecs, dt)
-		if mpcObj.GetPid() == mpcObj.GetHubPid() {
-			log.LLvl1(fmt.Sprintf("[skat_fed] gene %d/%d done  %.1fs | elapsed %.1fs", b+1, nB, dt, time.Since(tBlocks).Seconds()))
-		}
+		log.LLvl1(fmt.Sprintf("[skat_fed] gene %d/%d done  %.1fs | elapsed %.1fs", b+1, nB, dt, time.Since(tBlocks).Seconds()))
 	}
 	fedTimings.blocks = time.Since(tBlocks)
 	fedTimings.blockSecs = blockSecs

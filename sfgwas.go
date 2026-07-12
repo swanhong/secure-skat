@@ -26,6 +26,14 @@ func envOr(key, def string) string {
 	return def
 }
 
+// nopWatchdogLogger silences go-watchdog's per-GC heap logging (assigned to watchdog.Logger).
+type nopWatchdogLogger struct{}
+
+func (nopWatchdogLogger) Debugf(string, ...interface{}) {}
+func (nopWatchdogLogger) Infof(string, ...interface{})  {}
+func (nopWatchdogLogger) Warnf(string, ...interface{})  {}
+func (nopWatchdogLogger) Errorf(string, ...interface{}) {}
+
 func main() {
 	RunProtocol()
 }
@@ -67,7 +75,8 @@ func RunProtocol() {
 	// Initialize protocol
 	prot := InitProtocol(CONFIG_PATH)
 
-	// Invoke memory manager
+	// Invoke memory manager. Silence its per-GC heap log (keeps the OOM-protection watchdog itself).
+	watchdog.Logger = nopWatchdogLogger{}
 	err, stopFn := watchdog.HeapDriven(prot.GetConfig().MemoryLimit, 40, watchdog.NewAdaptivePolicy(0.5))
 	if err != nil {
 		panic(err)
