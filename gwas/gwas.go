@@ -93,10 +93,9 @@ type Config struct {
 	PrivatePid        int    `toml:"private_pid"`
 	PrivateOnlyPrefix string `toml:"private_only_prefix"`
 
-	// skat_fed SKAT p-value (Wilson-Hilferty, screening): number of Hutchinson probes (0 = disabled),
-	// and the PUBLIC per-gene upper bound on private-variant count for the padded full-gene moments.
+	// skat_fed SKAT p-value (Wilson-Hilferty, screening): number of Hutchinson probes (0 = disabled).
+	// The private-variant moment contribution is block-contracted (no padding, count hidden).
 	SkatPValueProbes int `toml:"skat_pvalue_probes"`
-	SkatPrivMax      int `toml:"skat_priv_max"`
 
 	// RotKeyPow2Only generates only power-of-two rotation keys (InnerSumAll), skipping the
 	// baby-step-giant-step/matmul keys — ~8× less rot-key RAM. Safe for skat_fed (no matmul/PCA).

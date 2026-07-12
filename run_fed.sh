@@ -10,7 +10,6 @@
 # config is reused as-is. SKIP_BUILD=1 skips go build. FED_CSV=1 makes step [4/4] also dump
 # fed_results.csv (per-gene positions + secure/plain p-values) for scripts/analysis/fed_plot.py.
 # FED_PROBES=N (N>0) turns ON the SKAT p-value (Hutchinson probes → WH pivot z; 0 = Q+burden p only);
-# FED_PRIVMAX overrides skat_priv_max (blank = auto = max per-gene private count). Both baked at prep.
 set -eo pipefail
 
 REPO=$(cd "$(dirname "$0")" && pwd)
@@ -20,10 +19,10 @@ PREP=$REPO/scripts/preprocessing
 T_PREP=0 T_BUILD=0 T_SECURE=0 T_COMPARE=0
 
 echo "=== run knobs (env; blank = fed_prep default) ==="
-printf '  PLINK2=%s\n  FED_CHR=%s FED_NSUB=%s FED_NGENES=%s FED_NPCS=%s\n  FED_CKKS=%s FED_DATABITS=%s FED_FRACBITS=%s FED_PHENO_COL=%s\n  FED_PROBES=%s FED_PRIVMAX=%s\n  SKIP_PREP=%s SKIP_BUILD=%s FED_CSV=%s\n' \
+printf '  PLINK2=%s\n  FED_CHR=%s FED_NSUB=%s FED_NGENES=%s FED_NPCS=%s\n  FED_CKKS=%s FED_DATABITS=%s FED_FRACBITS=%s FED_PHENO_COL=%s\n   FED_PROBES=%s\n  SKIP_PREP=%s SKIP_BUILD=%s FED_CSV=%s\n' \
   "${PLINK2:-plink2}" "${FED_CHR:-}" "${FED_NSUB:-}" "${FED_NGENES:-}" "${FED_NPCS:-}" \
   "${FED_CKKS:-}" "${FED_DATABITS:-}" "${FED_FRACBITS:-}" "${FED_PHENO_COL:-}" \
-  "${FED_PROBES:-}" "${FED_PRIVMAX:-}" \
+  "${FED_PROBES:-}" \
   "${SKIP_PREP:-}" "${SKIP_BUILD:-}" "${FED_CSV:-}"
 
 if [ -z "$SKIP_PREP" ]; then

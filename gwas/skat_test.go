@@ -1548,7 +1548,7 @@ func TestSKATMomentsSS(t *testing.T) {
 		}
 		return col
 	}
-	const mPub, mPriv, mPrivMax = 20, 6, 8 // 20 shared public + 6 private (B); padded to 8 (2 inert cols)
+	const mPub, mPriv = 20, 6 // 20 shared public + 6 private (B); block contraction uses the actual count
 	covA, yA := drawCohort(n1)
 	covB, yB := drawCohort(n2)
 	genoA := make([][]float64, mPub)      // A's public list
@@ -1589,8 +1589,8 @@ func TestSKATMomentsSS(t *testing.T) {
 	assocTest := prot.InitAssociationTests(nil)
 	null, nullRSS, X, y0 := assocTest.nullSetup()
 	const R = 1000
-	s1ss, s2ss, s3ss := assocTest.skatMomentsSS(0, mPub, mPrivMax, R, null, X, y0, privG)
-	zss := assocTest.skatPValueSS(0, mPub, mPrivMax, R, null, nullRSS, X, y0, privG, 2)
+	s1ss, s2ss, s3ss := assocTest.skatMomentsSS(0, mPub, R, null, X, y0, privG)
+	zss := assocTest.skatPValueSS(0, mPub, R, null, nullRSS, X, y0, privG, 2)
 	mpcObj := prot.mpcObj[0]
 	rev := mpcObj.RevealSymVec(mpc_core.RVec{s1ss, s2ss, s3ss, zss}).ToFloat(mpcObj.GetFracBits())
 	if pid != 1 {
