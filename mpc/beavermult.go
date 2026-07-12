@@ -1,8 +1,49 @@
 package mpc
 
 import (
+	"runtime"
+	"sync"
+
 	mpc_core "github.com/hhcho/mpc-core"
 )
+
+func parMultMat(a, b mpc_core.RMat) mpc_core.RMat {
+	rtype := a.Type()
+	r1, c1 := a.Dims()
+	_, c2 := b.Dims()
+	out := mpc_core.InitRMat(rtype.Zero(), r1, c2)
+	row := func(i int) {
+		for j := 0; j < c2; j++ {
+			for k := 0; k < c1; k++ {
+				out[i][j] = out[i][j].Add(a[i][k].Mul(b[k][j]))
+			}
+		}
+	}
+	nw := runtime.GOMAXPROCS(0)
+	if nw <= 1 || r1 < 2*nw || int64(r1)*int64(c2)*int64(c1) < 1<<18 {
+		for i := 0; i < r1; i++ {
+			row(i)
+		}
+		return out
+	}
+	var wg sync.WaitGroup
+	chunk := (r1 + nw - 1) / nw
+	for lo := 0; lo < r1; lo += chunk {
+		hi := lo + chunk
+		if hi > r1 {
+			hi = r1
+		}
+		wg.Add(1)
+		go func(lo, hi int) {
+			defer wg.Done()
+			for i := lo; i < hi; i++ {
+				row(i)
+			}
+		}(lo, hi)
+	}
+	wg.Wait()
+	return out
+}
 
 func (mpcObj *MPC) BeaverPartition(a mpc_core.RElem) (mpc_core.RElem, mpc_core.RElem) {
 	ar, am := mpcObj.BeaverPartitionMat(mpc_core.RMat{mpc_core.RVec{a}})
@@ -135,13 +176,13 @@ func (mpcObj *MPC) BeaverMultElemMat(ar, am, br, bm mpc_core.RMat) mpc_core.RMat
 func (mpcObj *MPC) BeaverMultMat(ar, am, br, bm mpc_core.RMat) mpc_core.RMat {
 	pid := mpcObj.Network.pid
 	if pid == 0 {
-		return mpc_core.RMultMat(am, bm)
+		return parMultMat(am, bm)
 	}
 
-	out := mpc_core.RMultMat(ar, bm)
-	out.Add(mpc_core.RMultMat(am, br))
+	out := parMultMat(ar, bm)
+	out.Add(parMultMat(am, br))
 	if pid == 1 {
-		out.Add(mpc_core.RMultMat(ar, br))
+		out.Add(parMultMat(ar, br))
 	}
 	return out
 }
