@@ -185,7 +185,7 @@ func SKATPlain(G, X *mat.Dense, y []float64) SKATPlainResult {
 
 // --- federated SKAT with party-private variants: plaintext oracle ---
 //
-// Plaintext mirror of the secure ComputeSKATFederatedPrivate (skat.go); equals the pooled
+// Plaintext mirror of the secure ComputeSKATFederatedPrivate; equals the pooled
 // single-cohort SKAT Q. See that doc for the design.
 
 // FedParty is one party's plaintext data. Variants are columns of G, each labelled by Gene and
