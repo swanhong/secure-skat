@@ -1589,7 +1589,7 @@ func TestSKATMomentsSS(t *testing.T) {
 	assocTest := prot.InitAssociationTests(nil)
 	null, nullRSS, X, y0 := assocTest.nullSetup()
 	const R = 1000
-	s1ss, s2ss, s3ss := assocTest.skatMomentsSS(0, mPub, R, null, X, y0, privG)
+	s1ss, s2ss, s3ss := assocTest.skatMomentsSS(0, mPub, R, null, X, y0, privG, nil)
 	zss := assocTest.skatPValueSS(0, mPub, R, null, nullRSS, X, y0, privG, 2)
 	mpcObj := prot.mpcObj[0]
 	rev := mpcObj.RevealSymVec(mpc_core.RVec{s1ss, s2ss, s3ss, zss}).ToFloat(mpcObj.GetFracBits())

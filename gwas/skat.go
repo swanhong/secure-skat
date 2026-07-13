@@ -69,12 +69,12 @@ func LocalContract(G, X *mat.Dense, y0 []float64) LocalContraction {
 	}
 }
 
-// Add sums two contractions party-wise (all fields additive).
+// Add sums two contractions party-wise (all fields additive) — the n-independence invariant
+// (Σ_party == full cohort) checked by TestSKATLocalPartyAdditivity.
 func (a LocalContraction) Add(b LocalContraction) LocalContraction {
 	var XtX, GtX mat.Dense
 	XtX.Add(a.XtX, b.XtX)
 	GtX.Add(a.GtX, b.GtX)
-
 	addVec := func(x, y []float64) []float64 {
 		out := make([]float64, len(x))
 		for i := range x {
@@ -82,7 +82,6 @@ func (a LocalContraction) Add(b LocalContraction) LocalContraction {
 		}
 		return out
 	}
-
 	return LocalContraction{
 		XtX:       &XtX,
 		Xty0:      addVec(a.Xty0, b.Xty0),
@@ -91,6 +90,29 @@ func (a LocalContraction) Add(b LocalContraction) LocalContraction {
 		Gty0:      addVec(a.Gty0, b.Gty0),
 		DosageSum: addVec(a.DosageSum, b.DosageSum),
 	}
+}
+
+type geneLocal struct {
+	LocalContraction            // the n-free aggregates (GᵀX, Gᵀy0, dosage), promoted for direct access
+	Gloc             *mat.Dense // this party's aligned public genotype block (n×m — the n-dim data LocalContraction never holds)
+	gg               *mat.Dense // GᵀpubGpub local Gram
+}
+
+func (ast *AssocTest) computeGeneLocal(b, nsnps int, X *mat.Dense, y0 []float64) *geneLocal {
+	if ast.general.mpcObj[0].GetPid() == 0 || nsnps == 0 {
+		return &geneLocal{}
+	}
+	Gloc := ast.readGenoBlockLocal(b)
+	var gg mat.Dense
+	gg.Mul(Gloc.T(), Gloc)
+	return &geneLocal{LocalContraction: LocalContract(Gloc, X, y0), Gloc: Gloc, gg: &gg}
+}
+
+func (ast *AssocTest) localFor(b, nsnps int, X *mat.Dense, y0 []float64, gl *geneLocal) *geneLocal {
+	if gl != nil {
+		return gl
+	}
+	return ast.computeGeneLocal(b, nsnps, X, y0)
 }
 
 // --- CKKS level alignment (mixed-provenance ciphertexts in the low-rank path) ---
@@ -782,7 +804,7 @@ func (ast *AssocTest) nullSetup() (null skatNull, nullRSS crypto.CipherVector, X
 // blockStat computes one block's raw statistics as 1-elem RVecs: qRawSS = Σ ŵ²s²
 // and bLinSS = Σ ŵ·s (burden linear term, squared by the caller). Local plaintext
 // contraction → key-free score → AggregateCMat → oriented weights → ScoreCalculation → SS.
-func (ast *AssocTest) blockStat(b, nsnps int, null skatNull, X *mat.Dense, y0 []float64) (qRawSS, bLinSS, wSignedSS mpc_core.RVec) {
+func (ast *AssocTest) blockStat(b, nsnps int, null skatNull, X *mat.Dense, y0 []float64, gl *geneLocal) (qRawSS, bLinSS, wSignedSS mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	cps := ast.general.cps
 	pid := mpcObj.GetPid()
@@ -791,7 +813,12 @@ func (ast *AssocTest) blockStat(b, nsnps int, null skatNull, X *mat.Dense, y0 []
 	var Gty0 []float64
 	dosage := make([]float64, nsnps)
 	if pid > 0 {
-		lc := LocalContract(ast.readGenoBlockLocal(b), X, y0)
+		var lc LocalContraction
+		if gl != nil && gl.Gloc != nil {
+			lc = gl.LocalContraction
+		} else {
+			lc = LocalContract(ast.readGenoBlockLocal(b), X, y0)
+		}
 		GtX, Gty0, dosage = lc.GtX, lc.Gty0, lc.DosageSum
 	}
 
@@ -817,7 +844,7 @@ func (ast *AssocTest) blockStat(b, nsnps int, null skatNull, X *mat.Dense, y0 []
 // where the public GᵀG/GᵀX are federated by the "local contraction = SS share → global sum" trick
 // (same as scoreSS), and the private party contributes d = G_pubᵀz_priv (m_pub), z_privᵀz_priv, and
 // Xᵀz_priv (all n-contracted locally, so the private variant count m_priv stays hidden).
-func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 []float64, privG *mat.Dense, privatePid int, wPubIn mpc_core.RVec) mpc_core.RElem {
+func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 []float64, privG *mat.Dense, privatePid int, wPubIn mpc_core.RVec, gl *geneLocal) mpc_core.RElem {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
@@ -845,15 +872,11 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 	var Gloc, gg *mat.Dense // Gloc = local aligned public genotype (reused by the cross term); gg = local GᵀG
 	gtxSS := mpc_core.InitRMat(rtype.Zero(), nsnps, c)
 	if pid > 0 && nsnps > 0 {
-		Gloc = ast.readGenoBlockLocal(b)
-		lc := LocalContract(Gloc, X, y0)
-		dosage = lc.DosageSum
-		var m mat.Dense
-		m.Mul(Gloc.T(), Gloc)
-		gg = &m
+		g := ast.localFor(b, nsnps, X, y0, gl)
+		Gloc, gg, dosage = g.Gloc, g.gg, g.DosageSum
 		for j := 0; j < nsnps; j++ {
 			for l := 0; l < c; l++ {
-				gtxSS[j][l] = rtype.FromFloat64(lc.GtX.At(j, l)/sqrtN, fb) // GᵀX/√N
+				gtxSS[j][l] = rtype.FromFloat64(g.GtX.At(j, l)/sqrtN, fb) // GᵀX/√N
 			}
 		}
 	}
@@ -1052,7 +1075,7 @@ func subMat(a, b mpc_core.RMat) mpc_core.RMat {
 // moments τₖ=tr(K_ppᵏ) come from a Hutchinson estimator over nsnps-length probes; the private and
 // cross terms are added from per-gene tables (Ψ,Ξ,Π,s) party B builds in plaintext and shares. Moments
 // are N-normalized (Sₖ/Nᵏ); w is the unsigned SKAT weight; S₄ is unneeded since K is PSD.
-func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat.Dense, y0 []float64, privG *mat.Dense) (S1, S2, S3 mpc_core.RElem) {
+func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat.Dense, y0 []float64, privG *mat.Dense, gl *geneLocal) (S1, S2, S3 mpc_core.RElem) {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
@@ -1148,12 +1171,8 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 	haveGram := false
 	gtxSS := mpc_core.InitRMat(rtype.Zero(), m, c)
 	if pid > 0 && nsnps > 0 {
-		Gloc = ast.readGenoBlockLocal(b)
-		lc = LocalContract(Gloc, X, y0)
-		dosage = lc.DosageSum
-		var mm mat.Dense
-		mm.Mul(Gloc.T(), Gloc)
-		gg = &mm
+		g := ast.localFor(b, nsnps, X, y0, gl)
+		Gloc, gg, lc, dosage = g.Gloc, g.gg, g.LocalContraction, g.DosageSum
 		haveGram = true
 		for j := 0; j < m; j++ {
 			for l := 0; l < c; l++ {
@@ -1364,12 +1383,12 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 			dvSvv2 := matMul(dvSvv, dvSvv)
 			s1v, s2v, s3v = matTrace(dvSvv), matTrace(dvSvv2), matTrace(matMul(dvSvv2, dvSvv))
 			// Π₀,Π₁,Π₂ (c×c)
-			uvD2 := matMulD(uv, dv2)                             // Uv·D²
-			pi0v = matMulT(uvD2, uv)                             // Uv D² Uvᵀ
-			uvD2Svv := matMul(uvD2, svv)                         // Uv D² Svv
-			pi1v = matMulT(matMulD(uvD2Svv, dv2), uv)            // Uv D² Svv D² Uvᵀ
-			uvD2SvvD2Svv := matMul(matMulD(uvD2Svv, dv2), svv)   // Uv D² Svv D² Svv
-			pi2v = matMulT(matMulD(uvD2SvvD2Svv, dv2), uv)       // ·D² Uvᵀ
+			uvD2 := matMulD(uv, dv2)                           // Uv·D²
+			pi0v = matMulT(uvD2, uv)                           // Uv D² Uvᵀ
+			uvD2Svv := matMul(uvD2, svv)                       // Uv D² Svv
+			pi1v = matMulT(matMulD(uvD2Svv, dv2), uv)          // Uv D² Svv D² Uvᵀ
+			uvD2SvvD2Svv := matMul(matMulD(uvD2Svv, dv2), svv) // Uv D² Svv D² Svv
+			pi2v = matMulT(matMulD(uvD2SvvD2Svv, dv2), uv)     // ·D² Uvᵀ
 			if nsnps > 0 {
 				a1D2 := matMulD(a1, dv2) // A₁·D²
 				// diag(Ψ₁)[j] = Σ_k A₁[j][k]² D²[k]
@@ -1398,9 +1417,9 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 					}
 					xi1diagv[j] = s
 				}
-				psi2v = matMulT(a1D2, uv)                        // Ψ₂ = A₁ D² Uvᵀ (m×c)
+				psi2v = matMulT(a1D2, uv) // Ψ₂ = A₁ D² Uvᵀ (m×c)
 				a1D2Svv := matMul(a1D2, svv)
-				xi2v = matMulT(matMulD(a1D2Svv, dv2), uv)        // Ξ₂ = A₁ D² Svv D² Uvᵀ (m×c)
+				xi2v = matMulT(matMulD(a1D2Svv, dv2), uv) // Ξ₂ = A₁ D² Svv D² Uvᵀ (m×c)
 				// Ψ₁·U = A₁ D²(A₁ᵀU) (m×R), computed in B's plaintext (A₁ᵀU is mp×R).
 				a1T := make([][]float64, mp)
 				for k := 0; k < mp; k++ {
@@ -1467,8 +1486,8 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 		}
 		trDp2C = vdot(Dp2, diagC)
 		// diag(C₂): (Ξ₁diag − rowdot(Ψ₂Ω',Ψ₂)) − 2·rowdot(termB,Θ) + rowdot(ΘtermD,Θ)
-		termB := subMat(Xi2, ssMulM(Psi2, OmPi0))        // m×c
-		termD := subMat(Pi1, ssMulM(Pi0, OmPi0))         // c×c
+		termB := subMat(Xi2, ssMulM(Psi2, OmPi0)) // m×c
+		termD := subMat(Pi1, ssMulM(Pi0, OmPi0))  // c×c
 		rdA := rowdot(ssMulM(Psi2, Omp), Psi2)
 		rdB := rowdot(termB, Theta)
 		rdD := rowdot(ssMulM(Theta, termD), Theta)
@@ -1600,7 +1619,7 @@ func (ast *AssocTest) skatPValueSS(b, nsnps, nProbes int, null skatNull, nullRSS
 	rtype := mpcObj.GetRType()
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
 	// full-gene SKAT statistic Q = Σŵ²s² over public list (PART A) + private variants (PART B)
-	qPub, _, _ := ast.blockStat(b, nsnps, null, X, y0)
+	qPub, _, _ := ast.blockStat(b, nsnps, null, X, y0, nil)
 	qPriv, _ := ast.privateBlockStat(privG, null, X, y0, privatePid)
 	qRaw := mpc_core.RVec{qPub[0].Add(qPriv[0])}
 	scaleSS, ok := ast.general.rareVariantScaleShares(nullRSS)
@@ -1611,7 +1630,7 @@ func (ast *AssocTest) skatPValueSS(b, nsnps, nProbes int, null skatNull, nullRSS
 	// Normalize Q by N to match the N-normalized moments (kernel /N); WH ratios are scale-invariant.
 	invN := rtype.FromFloat64(1.0/float64(ast.skatTotalNumInds()), fb)
 	Q = mpcObj.TruncVec(mpc_core.RVec{Q.Mul(invN)}, db, fb)[0]
-	S1, S2, S3 := ast.skatMomentsSS(b, nsnps, nProbes, null, X, y0, privG)
+	S1, S2, S3 := ast.skatMomentsSS(b, nsnps, nProbes, null, X, y0, privG, nil)
 	return ast.skatZSS(Q, S1, S2, S3)
 }
 
@@ -1631,7 +1650,7 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat, qBurden crypto.CipherVecto
 		if nsnps == 0 {
 			continue
 		}
-		qRawSS, bLinSS, _ := ast.blockStat(b, nsnps, null, X, y0)
+		qRawSS, bLinSS, _ := ast.blockStat(b, nsnps, null, X, y0, nil)
 		finalQSS.Add(qRawSS)
 		finalBurdenSS.Add(bLinSS)
 	}
@@ -1669,7 +1688,7 @@ func (ast *AssocTest) ComputeSKATStatisticsPerBlock() (qPerBlock, burdenPerBlock
 			continue
 		}
 		tb := time.Now()
-		q, bl, _ := ast.blockStat(b, nsnps, null, X, y0)
+		q, bl, _ := ast.blockStat(b, nsnps, null, X, y0, nil)
 		qBlockSS[b] = q[0]
 		bLinBlockSS[b] = bl[0]
 		done++
@@ -1948,7 +1967,7 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	bLinBlockSS := mpc_core.InitRVec(rtype.Zero(), nB) // Σ ŵ·s    (Burden linear term, per gene)
 	zpzBlockSS := mpc_core.InitRVec(rtype.Zero(), nB)  // zᵀPz     (Burden variance, per gene; unscaled)
 	nProbes := ast.general.config.SkatPValueProbes     // SKAT p-value (Hutchinson); 0 = disabled
-	s1B := mpc_core.InitRVec(rtype.Zero(), nB) // SKAT kernel moments per gene (N-normalized), if enabled
+	s1B := mpc_core.InitRVec(rtype.Zero(), nB)         // SKAT kernel moments per gene (N-normalized), if enabled
 	s2B := mpc_core.InitRVec(rtype.Zero(), nB)
 	s3B := mpc_core.InitRVec(rtype.Zero(), nB)
 	tBlocks := time.Now()
@@ -1965,10 +1984,13 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 			log.LLvl1(fmt.Sprintf("[skat_fed] gene %d/%d start (m_pub=%d)", b+1, nB, nsnps))
 		}
 
+		// Read + contract + Gram the public block ONCE per gene; blockStat/burdenVarSS/skatMomentsSS reuse it.
+		gl := ast.computeGeneLocal(b, nsnps, X, y0)
+
 		// PART A: secure SKAT over the public list (existing per-block path).
 		var wSignedA mpc_core.RVec // signed weight from PART A, reused by burdenVarSS below
 		if nsnps > 0 {
-			skatA, burdenA, wA := ast.blockStat(b, nsnps, null, X, y0)
+			skatA, burdenA, wA := ast.blockStat(b, nsnps, null, X, y0, gl)
 			accSkat.Add(skatA)
 			accBurden.Add(burdenA)
 			wSignedA = wA
@@ -1985,9 +2007,9 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 
 		skatBlockSS[b] = accSkat[0]
 		bLinBlockSS[b] = accBurden[0]
-		zpzBlockSS[b] = ast.burdenVarSS(b, nsnps, null, X, y0, G, privatePid, wSignedA) // Burden variance zᵀPz
-		if nProbes > 0 {                                                                // SKAT p-value kernel moments (N-normalized)
-			s1B[b], s2B[b], s3B[b] = ast.skatMomentsSS(b, nsnps, nProbes, null, X, y0, G)
+		zpzBlockSS[b] = ast.burdenVarSS(b, nsnps, null, X, y0, G, privatePid, wSignedA, gl) // Burden variance zᵀPz
+		if nProbes > 0 {                                                                    // SKAT p-value kernel moments (N-normalized)
+			s1B[b], s2B[b], s3B[b] = ast.skatMomentsSS(b, nsnps, nProbes, null, X, y0, G, gl)
 		}
 		dt := time.Since(tb).Seconds()
 		blockSecs = append(blockSecs, dt)
