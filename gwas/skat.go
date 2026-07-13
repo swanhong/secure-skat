@@ -1189,6 +1189,13 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 			gtxT[l][j] = gtxSS[j][l]
 		}
 	}
+	// tqdm-style progress over the gene's secure matvec work: total column-chunks across all mActionMat
+	// calls = ⌈m/chunk⌉·(τ 2·probes + Ψ₁ probes + quads 2·c); log at each 10% (hub only).
+	nChunks := (m + gtgChunkRows - 1) / gtgChunkRows
+	momTotal := float64(nChunks * (3*nProbes + 2*c))
+	momDone := 0.0
+	momStart := time.Now()
+	momPct := 0
 	mActionMat := func(A mpc_core.RMat) mpc_core.RMat { // M_pp·A = (GᵀG/N)A − (GᵀX/√N)(XtX)⁻¹(XᵀG/√N)A
 		R := len(A[0])
 		ga := mpc_core.InitRMat(rtype.Zero(), m, R)
@@ -1209,6 +1216,13 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 			for j := start; j < end; j++ {
 				for p := 0; p < R; p++ {
 					ga[j][p] = res[j-start][p]
+				}
+			}
+			momDone += float64(R)
+			if hub && momTotal > 0 {
+				if p := int(10 * momDone / momTotal); p > momPct {
+					momPct = p
+					log.LLvl1(fmt.Sprintf("[skat_fed]   moments %3d%% (elapsed %.0fs)", p*10, time.Since(momStart).Seconds()))
 				}
 			}
 		}
@@ -1236,6 +1250,7 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 		return mpcObj.TruncMat(out, db, fb)
 	}
 
+	tTau := time.Now()
 	tau1, tau2, tau3 := rtype.Zero(), rtype.Zero(), rtype.Zero()
 	if m > 0 {
 		DvMat := mpc_core.InitRMat(rtype.Zero(), m, nProbes)
@@ -1265,6 +1280,8 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 		tau2 = pmul(sumAllMat(vmulMat(u1, u1)), inv)
 		tau3 = pmul(sumAllMat(vmulMat(u1, u2)), inv)
 	}
+	tauSecs := time.Since(tTau).Seconds() // τ = pub Hutchinson (2 matvec passes); the dominant secure cost
+	tRest := time.Now()
 
 	// ---- private/cross corrections Δₖ, added to τₖ. Party B builds the per-gene tables in plaintext and
 	// shares them: diagonals of Ψ₁,Ξ₁ (length m), Ψ₂,Ξ₂ (m×c), Π₀,Π₁,Π₂ (c×c), scalars sₖ. The one m×m
@@ -1543,6 +1560,10 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 	S1 = tau1.Add(d1)
 	S2 = tau2.Add(d2)
 	S3 = tau3.Add(d3)
+	if hub {
+		log.LLvl1(fmt.Sprintf("[skat_fed]   moments split: τ-hutch(2 pass) %.0fs | private+combine(Ψ₁ pass) %.0fs",
+			tauSecs, time.Since(tRest).Seconds()))
+	}
 	return
 }
 
@@ -1972,6 +1993,12 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	s3B := mpc_core.InitRVec(rtype.Zero(), nB)
 	tBlocks := time.Now()
 	blockSecs := make([]float64, 0, nB)
+	// ETA weight: the moment cost is O(m_pub²·probes), so weight each gene by nsnps² of its public block.
+	var totalWork, doneWork float64
+	for b := 0; b < nB; b++ {
+		m := float64(ast.general.genoBlockSizes[b])
+		totalWork += m * m
+	}
 	for b := 0; b < nB; b++ {
 		tb := time.Now()
 		accSkat := mpc_core.InitRVec(rtype.Zero(), 1)
@@ -1989,8 +2016,11 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 
 		// PART A: secure SKAT over the public list (existing per-block path).
 		var wSignedA mpc_core.RVec // signed weight from PART A, reused by burdenVarSS below
+		var tBlk, tBur, tMom float64
 		if nsnps > 0 {
+			t := time.Now()
 			skatA, burdenA, wA := ast.blockStat(b, nsnps, null, X, y0, gl)
+			tBlk = time.Since(t).Seconds()
 			accSkat.Add(skatA)
 			accBurden.Add(burdenA)
 			wSignedA = wA
@@ -2007,13 +2037,25 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 
 		skatBlockSS[b] = accSkat[0]
 		bLinBlockSS[b] = accBurden[0]
+		tBurStart := time.Now()
 		zpzBlockSS[b] = ast.burdenVarSS(b, nsnps, null, X, y0, G, privatePid, wSignedA, gl) // Burden variance zᵀPz
-		if nProbes > 0 {                                                                    // SKAT p-value kernel moments (N-normalized)
+		tBur = time.Since(tBurStart).Seconds()
+		if nProbes > 0 { // SKAT p-value kernel moments (N-normalized)
+			t := time.Now()
 			s1B[b], s2B[b], s3B[b] = ast.skatMomentsSS(b, nsnps, nProbes, null, X, y0, G, gl)
+			tMom = time.Since(t).Seconds()
 		}
 		dt := time.Since(tb).Seconds()
 		blockSecs = append(blockSecs, dt)
-		log.LLvl1(fmt.Sprintf("[skat_fed] gene %d/%d done  %.1fs | elapsed %.1fs", b+1, nB, dt, time.Since(tBlocks).Seconds()))
+		// ETA weights remaining genes by m² (the O(m_pub²·R) moment cost dominates).
+		doneWork += float64(nsnps) * float64(nsnps)
+		elapsed := time.Since(tBlocks).Seconds()
+		eta := 0.0
+		if doneWork > 0 {
+			eta = elapsed * (totalWork - doneWork) / doneWork
+		}
+		log.LLvl1(fmt.Sprintf("[skat_fed] gene %d/%d done %.0fs [blockStat %.0f | burden %.0f | moments %.0f] | elapsed %.0fs  ETA ~%.0fm (%.0f%%)",
+			b+1, nB, dt, tBlk, tBur, tMom, elapsed, eta/60, 100*doneWork/totalWork))
 	}
 	fedTimings.blocks = time.Since(tBlocks)
 	fedTimings.blockSecs = blockSecs
