@@ -1750,14 +1750,8 @@ func (ast *AssocTest) skatTotalNumInds() int {
 	return total
 }
 
-func (ast *AssocTest) zeroPlainVectorForNonDataParty() crypto.PlainVector {
-	zeros := make([]float64, ast.general.cps.GetSlots())
-	pv, _ := crypto.EncodeFloatVector(ast.general.cps, zeros)
-	return pv
-}
-
-// weightsCalculation computes the shared beta-density term used by the SKAT score.
-// weightsCalculation returns (pVec=1−p̄, pBarVec=p̄, w24=25(1−MAF)^24), all in secret shares.
+// weightsCalculation returns the SKAT beta-density weights in secret shares:
+// pVec=1−p̄, pBarVec=p̄, w24=25(1−MAF)^24.
 func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (mpc_core.RVec, mpc_core.RVec, mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
@@ -1775,15 +1769,14 @@ func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (
 		}
 	}
 
-	// Calculate MAF securely
-	// Total number of individuals N is perfectly public across all parties, so 2N is public.
-	// We can compute p_j = xSum / (2N) securely by multiplying the secret-shared xSumRVec by the plaintext scalar 1/(2N).
+	// 2N is public (N public across parties), so p_j = xSum/(2N) is a secret-share ×
+	// public-scalar multiply — no party interaction.
 	totalIndivs := ast.skatTotalNumInds()
 	inv2N := rtype.FromFloat64(1.0/float64(2*totalIndivs), mpcObj.GetFracBits())
 
 	p_j := xSumRVec.Copy()
 	p_j.MulScalar(inv2N)
-	// p_j inherently possesses mpcObj.GetFracBits() precision now (0 bits * frac bits = frac bits)
+	// p_j carries GetFracBits() precision (0 bits × frac bits = frac bits).
 
 	one := rtype.FromFloat64(1.0, mpcObj.GetFracBits())
 	var onesRVec mpc_core.RVec
@@ -1834,9 +1827,8 @@ func (ast *AssocTest) weightsCalculation(dosageSum []float64, nsnps_block int) (
 	return pVec, p_j, w24
 }
 
-// ScoreCalculation calculates the final SKAT Score statistic iteratively
-// ScoreCalculation returns Q=Σw²s² and Burden=Σw·s (1-elem CipherVectors), plus the
-// intermediates S2/w2/w2S2/wS for debug.
+// ScoreCalculation returns Q=Σw²s² and Burden=Σw·s (1-elem CipherVectors); the
+// remaining returns (S2, w2, w2S2, wS) are intermediates for debugging.
 func (ast *AssocTest) ScoreCalculation(S_vec crypto.CipherVector, w_enc crypto.CipherVector) (
 	crypto.CipherVector, crypto.CipherVector, crypto.CipherVector, crypto.CipherVector, crypto.CipherVector, crypto.CipherVector) {
 	cryptoParams := ast.general.cps

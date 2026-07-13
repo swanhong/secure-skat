@@ -446,7 +446,7 @@ func (g *ProtocolInfo) runRareVariant() (skat, burden []float64) {
 		}
 	}
 
-	assoc, burdenEnc, _, _ := g.ComputeSKATStatistics()
+	assoc, burdenEnc := g.ComputeSKATStatistics()
 	g.mpcObj.GetNetworks().PrintNetworkLog()
 
 	if pid > 0 {
@@ -604,11 +604,10 @@ func (g *ProtocolInfo) SetPhenoAndCov(pheno, cov *mat.Dense) {
 }
 
 // ComputeSKATStatistics runs the low-rank per-block secure SKAT: returns per-block Q and
-// Burden (slot b = block b's per-gene statistic). The trailing nils are legacy slots.
-func (g *ProtocolInfo) ComputeSKATStatistics() (crypto.CipherVector, crypto.CipherVector, crypto.CipherMatrix, []bool) {
+// Burden (slot b = block b's per-gene statistic).
+func (g *ProtocolInfo) ComputeSKATStatistics() (crypto.CipherVector, crypto.CipherVector) {
 	assocTest := g.InitAssociationTests(nil) // SKAT does not use PCA
-	q, b := assocTest.ComputeSKATStatisticsPerBlock()
-	return q, b, nil, nil
+	return assocTest.ComputeSKATStatisticsPerBlock()
 }
 
 // rareVariantScaleShares returns the shared 1/(2σ̂²) = (dof/2)/RSS scale factor (dof = N−c),
