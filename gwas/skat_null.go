@@ -176,7 +176,6 @@ func (ln localNull) matrices(c int) (xtx [][]float64, xty []float64, y0ty0 float
 
 // skatNull holds the secure null-model results from the c-dim aggregates.
 type skatNull struct {
-	betaHat  crypto.CipherVector // β̂ in slots 0..c-1
 	betaRep  crypto.CipherVector // betaRep[ℓ] = Enc(β̂_ℓ) in every slot (PART B CKKS score)
 	betaSS   mpc_core.RVec       // β̂ in secret shares (exact SS score)
 	xtxSS    mpc_core.RMat       // XᵀX in secret shares (reused by the Burden-variance solve)
@@ -189,13 +188,10 @@ type skatNull struct {
 	center   float64 // public centering constant, reused by the score
 }
 
-// ridgeRel: tiny Tikhonov ridge on the XᵀX diagonal (hub, once, intercept excluded)
-// to keep the inverse finite on a singular design; negligible on a well-conditioned one.
+// ridgeRel: relative Tikhonov ridge on the covariate diagonal, keeps XᵀX⁻¹ finite on a singular design.
 const ridgeRel = 1e-6
 
 // choleskyFactor returns the Cholesky factor L and dInv=1/diag(L) of an SPD matrix A (A=L·Lᵀ) in
-// secret shares. The factor is RHS-independent: a reused A (e.g. XᵀX) is factored once and every
-// solve against it goes through choleskySolve / choleskySolveMat with the stored (L, dInv).
 func (ast *AssocTest) choleskyFactor(A mpc_core.RMat) (mpc_core.RMat, mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
@@ -317,8 +313,7 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 	ln := localNullEquations(ast.general.cov, ast.general.pheno, center)
 	xtxLocal, xtyLocal, y0ty0Local := ln.matrices(c)
 
-	// Ridge on the hub only (AggregateCMat sums per-party XᵀX, so add ε once); skip intercept.
-	if pid == mpcObj.GetHubPid() {
+	if pid > 0 {
 		var trace float64
 		for k := 1; k < c; k++ {
 			trace += xtxLocal[k][k]
@@ -337,23 +332,19 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 	xtyEnc, _ := crypto.EncryptFloatVector(cps, xtyLocal)
 	y0ty0Enc, _ := crypto.EncryptFloatVector(cps, []float64{y0ty0Local})
 
+	aggVec := func(v crypto.CipherVector) crypto.CipherVector {
+		if rows := mpcObj.Network.AggregateCMat(cps, crypto.CipherMatrix{v}); len(rows) > 0 {
+			return rows[0]
+		}
+		return nil
+	}
 	xtxEnc = mpcObj.Network.AggregateCMat(cps, xtxEnc)
-	if rows := mpcObj.Network.AggregateCMat(cps, crypto.CipherMatrix{xtyEnc}); len(rows) > 0 {
-		xtyEnc = rows[0]
-	} else {
-		xtyEnc = nil
-	}
-	if rows := mpcObj.Network.AggregateCMat(cps, crypto.CipherMatrix{y0ty0Enc}); len(rows) > 0 {
-		y0ty0Enc = rows[0]
-	} else {
-		y0ty0Enc = nil
-	}
-	xtxEnc = mpcObj.Network.CollectiveBootstrapMat(cps, xtxEnc, -1)
+	xtyEnc = aggVec(xtyEnc)
+	y0ty0Enc = aggVec(y0ty0Enc)
 	fedTimings.nullAgg = time.Since(tNull)
-	log.LLvl1(fmt.Sprintf("[skat_fed]   null: encrypt+AggregateCMat(XtX,Xty,y0ty0)+bootstrap %v", fedTimings.nullAgg.Round(time.Millisecond)))
+	log.LLvl1(fmt.Sprintf("[skat_fed]   null: encrypt+AggregateCMat(XtX,Xty,y0ty0) %v", fedTimings.nullAgg.Round(time.Millisecond)))
 	tNull = time.Now()
 
-	// Solve (XᵀX)·β̂ = Xᵀy₀ for the small SPD system by Cholesky + forward/back substitution
 	xtxSS := mpcObj.CMatToSS(cps, rtype, xtxEnc, -1, c, 1, c)
 	var xtyCt *rlwe.Ciphertext
 	if len(xtyEnc) > 0 {
@@ -394,8 +385,6 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 	y0ty0SS := mpcObj.CiphertextToSS(cps, rtype, y0Ct, mpcObj.GetHubPid(), 1)[0]
 	rssSS := y0ty0SS.Sub(xtyBeta).Sub(xtyBeta).Add(betaXtxBeta) // y₀ᵀy₀ − 2·Xᵀy₀·β̂ + β̂ᵀXᵀXβ̂
 
-	betaHat := mpcObj.SSToCVec(cps, betaSS)
-
 	// betaRep[ℓ] = β̂_ℓ replicated in every slot (for the score's CPMult). pid-0 → nil.
 	slots := cps.GetSlots()
 	betaRep := make(crypto.CipherVector, c)
@@ -413,7 +402,7 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 
 	fedTimings.nullBeta = time.Since(tNull)
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: Xty->SS + beta=inv*Xty + betaRep %v", fedTimings.nullBeta.Round(time.Millisecond)))
-	return skatNull{betaHat: betaHat, betaRep: betaRep, betaSS: betaSS, xtxSS: xtxSS, xtxL: xtxL, xtxDinv: xtxDinv, rssSS: rssSS, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
+	return skatNull{betaRep: betaRep, betaSS: betaSS, xtxSS: xtxSS, xtxL: xtxL, xtxDinv: xtxDinv, rssSS: rssSS, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
 }
 
 // computeNullRSSEnc wraps the residual-norm RSS (formed in SS as null.rssSS) as a 1-element

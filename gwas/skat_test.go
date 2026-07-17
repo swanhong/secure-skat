@@ -605,10 +605,11 @@ func TestSKATNullModel(t *testing.T) {
 
 	assocTest := prot.InitAssociationTests(nil)
 	null := assocTest.computeBetaHatEnc()
-	rssEnc := assocTest.computeNullRSSEnc(null) // nil on pid 0
+	betaHatCV := mpcObj.SSToCVec(cps, null.betaSS) // β̂ → CKKS for the oracle check (collective; test-only)
+	rssEnc := assocTest.computeNullRSSEnc(null)    // nil on pid 0
 
 	if pid == 1 {
-		betaDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, null.betaHat, 1))[:c]
+		betaDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, betaHatCV, 1))[:c]
 		rssDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, rssEnc, 1))[0]
 
 		fullX := mat.NewDense(nIndsTotal, c, nil)
@@ -650,7 +651,7 @@ func TestSKATNullModel(t *testing.T) {
 			t.Errorf("RSS secure vs oracle rel %.3e exceeds tol %.1e", rssRel, rssTol)
 		}
 	} else if pid > 0 {
-		mpcObj.Network.CollectiveDecryptVec(cps, null.betaHat, 1)
+		mpcObj.Network.CollectiveDecryptVec(cps, betaHatCV, 1)
 		mpcObj.Network.CollectiveDecryptVec(cps, rssEnc, 1)
 	} else {
 		mpcObj.Network.CollectiveDecryptVec(cps, nil, 1)
@@ -658,7 +659,7 @@ func TestSKATNullModel(t *testing.T) {
 	}
 }
 
-// --- low-rank score + weights (skat.go partyScore / signedWeight) ---
+// --- low-rank score + weights (skat.go scoreHE / signedWeight) ---
 
 // Key-free low-rank score s = Gᵀy₀ − (GᵀX)β̂ vs gonum oracle on the full (G,X,y), center 0.
 func TestSKATScore(t *testing.T) {
@@ -744,7 +745,7 @@ func TestSKATScore(t *testing.T) {
 			}
 		}
 		lc := LocalContract(localG, localX, localY0)
-		SBlock = crypto.CipherMatrix{assocTest.partyScore(lc.GtX, lc.Gty0, null)}
+		SBlock = crypto.CipherMatrix{assocTest.scoreHE(lc.GtX, lc.Gty0, null)}
 	}
 
 	sAggr := mpcObj.Network.AggregateCMat(cps, SBlock)

@@ -43,9 +43,9 @@ func alignCipherVectorLevels(cps *crypto.CryptoParams, left, right crypto.Cipher
 
 // --- low-rank key-free secure score + oriented weight ---
 
-// partyScore returns this party's encrypted score s = Enc(Gᵀy₀) − Σ_ℓ (GᵀX)[:,ℓ]·Enc(β̂_ℓ)
+// scoreHE returns this party's encrypted score s = Enc(Gᵀy₀) − Σ_ℓ (GᵀX)[:,ℓ]·Enc(β̂_ℓ)
 // from its plaintext contraction × the shared β̂. Each term is plaintext×cipher (key-free). pid-0 → nil.
-func (ast *AssocTest) partyScore(GtX *mat.Dense, Gty0 []float64, null skatNull) crypto.CipherVector {
+func (ast *AssocTest) scoreHE(GtX *mat.Dense, Gty0 []float64, null skatNull) crypto.CipherVector {
 	cps := ast.general.cps
 	m := len(Gty0)
 	if m == 0 {

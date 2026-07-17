@@ -70,7 +70,7 @@ func (ast *AssocTest) privateRawStats(G *mat.Dense, null skatNull, X *mat.Dense,
 	}
 
 	lc := LocalContract(G, X, y0)
-	s := ast.partyScore(lc.GtX, lc.Gty0, null)
+	s := ast.scoreHE(lc.GtX, lc.Gty0, null)
 	wEnc, _ := crypto.EncryptFloatVector(cps, skatBetaWeightSigned(lc.DosageSum, ast.skatTotalNumInds()))
 
 	s, wEnc = alignCipherVectorLevels(cps, s, wEnc)
