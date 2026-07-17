@@ -18,6 +18,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import math
 import os
@@ -302,6 +303,208 @@ def ratio(value: float, denominator: float) -> float | None:
     return finite(value / denominator)
 
 
+def top_fraction(values: np.ndarray, count: int) -> float | None:
+    total = float(np.sum(values))
+    if total == 0.0:
+        return None
+    count = min(count, values.size)
+    if count == values.size:
+        return 1.0
+    return finite(float(np.partition(values, -count)[-count:].sum()) / total)
+
+
+def contribution_concentration(values: np.ndarray) -> dict:
+    total = float(np.sum(values))
+    squared_total = float(np.sum(values**2))
+    return {
+        "effective_count": (
+            finite(total**2 / squared_total) if squared_total > 0.0 else None
+        ),
+        "top_1_fraction": top_fraction(values, 1),
+        "top_10_fraction": top_fraction(values, 10),
+        "top_100_fraction": top_fraction(values, 100),
+        "top_1000_fraction": top_fraction(values, 1000),
+    }
+
+
+def exact_concentration(kernel: np.ndarray, exact: ExactMoments) -> dict:
+    diagonal = np.diag(kernel)
+    upper_i, upper_j = np.triu_indices(kernel.shape[0], k=1)
+    upper_squares = kernel[upper_i, upper_j] ** 2
+    offdiag_s2_contributions = 2.0 * upper_squares
+    w3_contributions = (
+        3.0 * (diagonal[upper_i] + diagonal[upper_j]) * upper_squares
+    )
+    d2 = float(np.sum(diagonal**2))
+    return {
+        "d2": finite(d2),
+        "d2_over_s2": ratio(d2, exact.s2),
+        "offdiag_s2": finite(exact.s2 - d2),
+        "offdiag_s2_concentration": contribution_concentration(
+            offdiag_s2_contributions
+        ),
+        "offdiag_s2_over_s2": ratio(exact.s2 - d2, exact.s2),
+        "w3_concentration": contribution_concentration(w3_contributions),
+    }
+
+
+def draw_distinct_pairs(
+    rng: np.random.Generator,
+    count: int,
+    first_probability: np.ndarray,
+    second_probability: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    first_parts: list[np.ndarray] = []
+    second_parts: list[np.ndarray] = []
+    accepted = 0
+    size = first_probability.size
+    while accepted < count:
+        batch = max(1024, 2 * (count - accepted))
+        first = rng.choice(size, size=batch, p=first_probability)
+        second = rng.choice(size, size=batch, p=second_probability)
+        keep = first != second
+        first_parts.append(first[keep])
+        second_parts.append(second[keep])
+        accepted += int(np.count_nonzero(keep))
+    first = np.concatenate(first_parts)[:count]
+    second = np.concatenate(second_parts)[:count]
+    return np.minimum(first, second), np.maximum(first, second)
+
+
+def draw_distinct_triples(
+    rng: np.random.Generator,
+    count: int,
+    probability: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    parts: list[np.ndarray] = []
+    accepted = 0
+    size = probability.size
+    while accepted < count:
+        batch = max(1024, 2 * (count - accepted))
+        triples = np.column_stack(
+            (
+                rng.choice(size, size=batch, p=probability),
+                rng.choice(size, size=batch, p=probability),
+                rng.choice(size, size=batch, p=probability),
+            )
+        )
+        keep = (
+            (triples[:, 0] != triples[:, 1])
+            & (triples[:, 0] != triples[:, 2])
+            & (triples[:, 1] != triples[:, 2])
+        )
+        parts.append(np.sort(triples[keep], axis=1))
+        accepted += int(np.count_nonzero(keep))
+    triples = np.concatenate(parts, axis=0)[:count]
+    return triples[:, 0], triples[:, 1], triples[:, 2]
+
+
+def importance_grid(
+    kernel: np.ndarray,
+    exact: ExactMoments,
+    constants: Sequence[float],
+    seeds: int,
+    base_seed: int,
+) -> Iterable[dict]:
+    """Diagonal-aware importance estimator with an explicit entry-query budget."""
+    size = kernel.shape[0]
+    diagonal = np.maximum(np.diag(kernel), 0.0)
+    d1 = float(np.sum(diagonal))
+    d2 = float(np.sum(diagonal**2))
+    d3 = float(np.sum(diagonal**3))
+    positive = int(np.count_nonzero(diagonal))
+    if positive < 2 or d1 == 0.0 or d2 == 0.0:
+        raise ValueError("importance sampling requires at least two positive diagonals")
+
+    probability_d = diagonal / d1
+    probability_d2 = diagonal**2 / d2
+    z2 = 0.5 * (d1**2 - d2)
+    zw = d1 * d2 - d3
+    zt = (d1**3 - 3.0 * d1 * d2 + 2.0 * d3) / 6.0
+
+    seed_sequence = np.random.SeedSequence(base_seed + 1_000_000_007)
+    child_seeds = seed_sequence.spawn(seeds)
+    edge_count = math.comb(size, 2)
+
+    for constant in constants:
+        probability = min(1.0, constant * size ** (-2.0 / 3.0))
+        entry_query_budget = max(1, int(math.ceil(edge_count * probability)))
+        pair_samples = max(1, entry_query_budget // 2)
+        triangle_samples = (
+            max(1, (entry_query_budget - pair_samples) // 3)
+            if positive >= 3 and zt > 0.0
+            else 0
+        )
+        actual_entry_queries = pair_samples + 3 * triangle_samples
+        estimates = {"s2": [], "w3": [], "t3": [], "s3": []}
+
+        for child_seed in child_seeds:
+            rng = np.random.default_rng(child_seed)
+            use_q2 = rng.random(pair_samples) < 0.5
+            q2_count = int(np.count_nonzero(use_q2))
+            qw_count = pair_samples - q2_count
+            pair_i_parts: list[np.ndarray] = []
+            pair_j_parts: list[np.ndarray] = []
+            if q2_count:
+                pair_i, pair_j = draw_distinct_pairs(
+                    rng, q2_count, probability_d, probability_d
+                )
+                pair_i_parts.append(pair_i)
+                pair_j_parts.append(pair_j)
+            if qw_count:
+                pair_i, pair_j = draw_distinct_pairs(
+                    rng, qw_count, probability_d2, probability_d
+                )
+                pair_i_parts.append(pair_i)
+                pair_j_parts.append(pair_j)
+            pair_i = np.concatenate(pair_i_parts)
+            pair_j = np.concatenate(pair_j_parts)
+            di = diagonal[pair_i]
+            dj = diagonal[pair_j]
+            q2 = di * dj / z2
+            qw = (di + dj) * di * dj / zw
+            qmix = 0.5 * (q2 + qw)
+            kij_squared = kernel[pair_i, pair_j] ** 2
+            s2_hat = d2 + float(np.mean(2.0 * kij_squared / qmix))
+            w3_hat = float(np.mean(3.0 * (di + dj) * kij_squared / qmix))
+
+            if triangle_samples:
+                tri_i, tri_j, tri_k = draw_distinct_triples(
+                    rng, triangle_samples, probability_d
+                )
+                qtri = diagonal[tri_i] * diagonal[tri_j] * diagonal[tri_k] / zt
+                triangle = (
+                    kernel[tri_i, tri_j]
+                    * kernel[tri_j, tri_k]
+                    * kernel[tri_k, tri_i]
+                )
+                t3_hat = float(np.mean(6.0 * triangle / qtri))
+            else:
+                t3_hat = 0.0
+
+            estimates["s2"].append(s2_hat)
+            estimates["w3"].append(w3_hat)
+            estimates["t3"].append(t3_hat)
+            estimates["s3"].append(exact.d3 + w3_hat + t3_hat)
+
+        yield {
+            "constant": constant,
+            "diagonal_queries": size,
+            "entry_query_budget": entry_query_budget,
+            "entry_queries_actual": actual_entry_queries,
+            "entry_queries_total_with_diagonal": size + actual_entry_queries,
+            "negative_s3_rate": finite(
+                float(np.mean(np.asarray(estimates["s3"]) <= 0.0))
+            ),
+            "pair_samples": pair_samples,
+            "s2": summarize_errors(estimates["s2"], exact.s2, exact.s2),
+            "s3": summarize_errors(estimates["s3"], exact.s3, exact.s3),
+            "t3": summarize_errors(estimates["t3"], exact.t3, exact.s3),
+            "triangle_samples": triangle_samples,
+            "w3": summarize_errors(estimates["w3"], exact.w3, exact.s3),
+        }
+
+
 def run_self_test() -> None:
     rng = np.random.default_rng(7)
 
@@ -333,6 +536,71 @@ def run_self_test() -> None:
         exact.s3, exact.d3 + exact.w3 + exact.t3, rtol=1e-12, atol=1e-12
     ):
         raise AssertionError("D3/W3/T3 decomposition failed")
+
+    importance_diagonal = np.diag(kernel)
+    importance_i, importance_j = np.triu_indices(kernel.shape[0], k=1)
+    importance_d1 = float(np.sum(importance_diagonal))
+    importance_d2 = float(np.sum(importance_diagonal**2))
+    importance_d3 = float(np.sum(importance_diagonal**3))
+    importance_z2 = 0.5 * (importance_d1**2 - importance_d2)
+    importance_zw = importance_d1 * importance_d2 - importance_d3
+    importance_q2 = (
+        importance_diagonal[importance_i]
+        * importance_diagonal[importance_j]
+        / importance_z2
+    )
+    importance_qw = (
+        (importance_diagonal[importance_i] + importance_diagonal[importance_j])
+        * importance_diagonal[importance_i]
+        * importance_diagonal[importance_j]
+        / importance_zw
+    )
+    importance_qmix = 0.5 * (importance_q2 + importance_qw)
+    if not np.isclose(np.sum(importance_qmix), 1.0):
+        raise AssertionError("pair importance probabilities do not sum to one")
+    importance_upper_squared = kernel[importance_i, importance_j] ** 2
+    expected_offdiag_s2 = float(
+        np.sum(importance_qmix * 2.0 * importance_upper_squared / importance_qmix)
+    )
+    expected_w3 = float(
+        np.sum(
+            importance_qmix
+            * 3.0
+            * (importance_diagonal[importance_i] + importance_diagonal[importance_j])
+            * importance_upper_squared
+            / importance_qmix
+        )
+    )
+    if not np.isclose(expected_offdiag_s2, exact.s2 - importance_d2):
+        raise AssertionError("S2 importance estimator is not unbiased")
+    if not np.isclose(expected_w3, exact.w3):
+        raise AssertionError("W3 importance estimator is not unbiased")
+
+    triples = np.asarray(
+        list(itertools.combinations(range(kernel.shape[0]), 3)), dtype=np.int64
+    )
+    importance_zt = (
+        importance_d1**3
+        - 3.0 * importance_d1 * importance_d2
+        + 2.0 * importance_d3
+    ) / 6.0
+    importance_qt = (
+        importance_diagonal[triples[:, 0]]
+        * importance_diagonal[triples[:, 1]]
+        * importance_diagonal[triples[:, 2]]
+        / importance_zt
+    )
+    triangle_values = (
+        6.0
+        * kernel[triples[:, 0], triples[:, 1]]
+        * kernel[triples[:, 1], triples[:, 2]]
+        * kernel[triples[:, 2], triples[:, 0]]
+    )
+    expected_t3 = float(np.sum(importance_qt * triangle_values / importance_qt))
+    if not np.isclose(np.sum(importance_qt), 1.0):
+        raise AssertionError("triangle importance probabilities do not sum to one")
+    if not np.isclose(expected_t3, exact.t3, rtol=1e-10, atol=1e-12):
+        raise AssertionError("T3 importance estimator is not unbiased")
 
     # Exhaust all edge subsets of a 3x3 kernel to verify unbiased scaling.
     small = kernel[:3, :3]
@@ -377,6 +645,10 @@ def run_self_test() -> None:
     for component in ("s2", "s3", "w3", "t3"):
         if result[component]["error_over_scale_abs_max"] > 1e-12:
             raise AssertionError("p=1 estimator failed")
+    importance_result = next(importance_grid(kernel, exact, [1.0], 3, 13))
+    for component in ("s2", "s3", "w3", "t3"):
+        if importance_result[component]["estimate_mean"] is None:
+            raise AssertionError("importance sampling returned a non-finite estimate")
     emit({"record": "self_test", "status": "ok"})
 
 
@@ -410,6 +682,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=512,
         help="rows per streaming genotype chunk (default: 512)",
+    )
+    parser.add_argument(
+        "--estimator",
+        choices=("importance", "uniform", "both"),
+        default="importance",
+        help="estimator to run (default: importance)",
     )
     parser.add_argument("--self-test", action="store_true")
     return parser
@@ -446,8 +724,9 @@ def main() -> None:
             "kernel": "normalized_public_public_K",
             "private_blocks_read": False,
             "record": "config",
-            "schema": "skat_few_entry_schatten3_v1",
+            "schema": "skat_few_entry_schatten3_v2",
             "seeds": args.seeds,
+            "estimator": args.estimator,
         }
     )
 
@@ -475,6 +754,7 @@ def main() -> None:
         )
         del stats_a, stats_b
         exact = exact_moments(kernel)
+        concentration = exact_concentration(kernel, exact)
 
         emit(
             {
@@ -490,20 +770,34 @@ def main() -> None:
                 "t3_over_s3": ratio(exact.t3, exact.s3),
                 "w3": finite(exact.w3),
                 "w3_over_s3": ratio(exact.w3, exact.s3),
+                **concentration,
             }
         )
 
-        for summary in estimate_grid(
-            kernel, exact, constants, args.seeds, args.seed + gene_index
-        ):
-            emit(
-                {
-                    "gene_index": gene_index,
-                    "m_public": size,
-                    "record": "estimate",
-                    **summary,
-                }
-            )
+        if args.estimator in ("uniform", "both"):
+            for summary in estimate_grid(
+                kernel, exact, constants, args.seeds, args.seed + gene_index
+            ):
+                emit(
+                    {
+                        "gene_index": gene_index,
+                        "m_public": size,
+                        "record": "uniform_estimate",
+                        **summary,
+                    }
+                )
+        if args.estimator in ("importance", "both"):
+            for summary in importance_grid(
+                kernel, exact, constants, args.seeds, args.seed + gene_index
+            ):
+                emit(
+                    {
+                        "gene_index": gene_index,
+                        "m_public": size,
+                        "record": "importance_estimate",
+                        **summary,
+                    }
+                )
 
 
 if __name__ == "__main__":
