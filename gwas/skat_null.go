@@ -98,7 +98,7 @@ func (ast *AssocTest) computeGeneLocal(b, nsnps int, X *mat.Dense, y0 []float64)
 	if ast.general.mpcObj[0].GetPid() == 0 || nsnps == 0 {
 		return &geneLocal{}
 	}
-	Gloc := ast.readGenoBlockLocal(b)
+	Gloc := orientGenotypeLocal(ast.readGenoBlockLocal(b))
 	var gg mat.Dense
 	gg.Mul(Gloc.T(), Gloc)
 	return &geneLocal{LocalContraction: LocalContract(Gloc, X, y0), Gloc: Gloc, gg: &gg}

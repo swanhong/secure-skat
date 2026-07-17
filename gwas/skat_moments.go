@@ -180,7 +180,7 @@ func subMat(a, b mpc_core.RMat) mpc_core.RMat {
 // moments τₖ=tr(K_ppᵏ) come from a Hutchinson estimator over nsnps-length probes; the private and
 // cross terms are added from per-gene tables (Ψ,Ξ,Π,s) party B builds in plaintext and shares. Moments
 // are N-normalized (Sₖ/Nᵏ); w is the unsigned SKAT weight; S₄ is unneeded since K is PSD.
-func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat.Dense, y0 []float64, privG *mat.Dense, gl *geneLocal) (S1, S2, S3 mpc_core.RElem) {
+func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat.Dense, y0 []float64, privG *mat.Dense, gl *geneLocal, wPubIn mpc_core.RVec) (S1, S2, S3 mpc_core.RElem) {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
@@ -285,7 +285,10 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 			}
 		}
 	}
-	_, _, w := ast.weightsCalculation(dosage, nsnps) // unsigned w24 (SS), public list
+	w := wPubIn
+	if w == nil {
+		_, w = ast.blindWeightCKKS(dosage, nsnps) // collective fallback for standalone callers
+	}
 
 	// ---- τₖ = tr(K_ppᵏ): Hutchinson over nsnps probes on the PUBLIC block (M_pp·A via chunked GᵀG). ----
 	gtxT := mpc_core.InitRMat(rtype.Zero(), c, m)
@@ -739,13 +742,14 @@ func (ast *AssocTest) skatZSS(Q, S1, S2, S3 mpc_core.RElem) mpc_core.RElem {
 }
 
 // skatPValueSS returns the SKAT WH pivot z (SS) for gene b's public list: Q (scaled SKAT statistic) +
-// Hutchinson moments + skatZSS. Caller reveals z, then p = ½erfc(z/√2). Public-list only (no private yet).
+// Hutchinson moments + skatZSS.
 func (ast *AssocTest) skatPValueSS(b, nsnps, nProbes int, null skatNull, nullRSS crypto.CipherVector, X *mat.Dense, y0 []float64, privG *mat.Dense, privatePid int) mpc_core.RElem {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
-	// full-gene SKAT statistic Q = Σŵ²s² over public list (PART A) + private variants (PART B)
-	qPub, _, _ := ast.blockStat(b, nsnps, null, X, y0, nil)
+	// full-gene SKAT statistic Q = Σw²s² over locally oriented public + private variants
+	gl := ast.computeGeneLocal(b, nsnps, X, y0)
+	qPub, _, wPub := ast.blockStat(b, nsnps, null, X, y0, gl)
 	qPriv, _ := ast.privateBlockStat(privG, null, X, y0, privatePid)
 	qRaw := mpc_core.RVec{qPub[0].Add(qPriv[0])}
 	scaleSS, ok := ast.general.rareVariantScaleShares(nullRSS)
@@ -756,6 +760,6 @@ func (ast *AssocTest) skatPValueSS(b, nsnps, nProbes int, null skatNull, nullRSS
 	// Normalize Q by N to match the N-normalized moments (kernel /N); WH ratios are scale-invariant.
 	invN := rtype.FromFloat64(1.0/float64(ast.skatTotalNumInds()), fb)
 	Q = mpcObj.TruncVec(mpc_core.RVec{Q.Mul(invN)}, db, fb)[0]
-	S1, S2, S3 := ast.skatMomentsSS(b, nsnps, nProbes, null, X, y0, privG, nil)
+	S1, S2, S3 := ast.skatMomentsSS(b, nsnps, nProbes, null, X, y0, privG, gl, wPub)
 	return ast.skatZSS(Q, S1, S2, S3)
 }

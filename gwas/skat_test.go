@@ -659,7 +659,7 @@ func TestSKATNullModel(t *testing.T) {
 	}
 }
 
-// --- low-rank score + weights (skat.go scoreHE / signedWeight) ---
+// --- low-rank score + blind locally-oriented CKKS weights ---
 
 // Key-free low-rank score s = Gᵀy₀ − (GᵀX)β̂ vs gonum oracle on the full (G,X,y), center 0.
 func TestSKATScore(t *testing.T) {
@@ -859,7 +859,7 @@ func weightFixtureDosage(t *testing.T, prot *ProtocolInfo, pid int, m int) ([]fl
 	return dosage, fullG, nIndsTotal
 }
 
-// Unsigned weights w_j = 25(1−MAF)^24 vs oracle.
+// Blind locally-oriented weights w_j = 25(1−Σ_i localMinorCount_i/(2N))^24 vs oracle.
 func TestSKATWeights(t *testing.T) {
 	prot := InitProtocolForTest(t)
 	if prot == nil {
@@ -875,21 +875,35 @@ func TestSKATWeights(t *testing.T) {
 	dosage, fullG, nIndsTotal := weightFixtureDosage(t, prot, pid, m)
 	assocTest := prot.InitAssociationTests(nil)
 
-	_, _, w24 := assocTest.weightsCalculation(dosage, m)
-	weightEnc := mpcObj.SSToCVec(cps, w24)
+	if pid > 0 {
+		nLocal := prot.GetConfig().NumInds[pid]
+		for j := range dosage {
+			if dosage[j] > float64(nLocal) {
+				dosage[j] = float64(2*nLocal) - dosage[j]
+			}
+		}
+	}
+	weightEnc, _ := assocTest.blindWeightCKKS(dosage, m)
 
 	if pid == 1 {
 		wDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, weightEnc, 1))[:m]
-		twoN := float64(2 * nIndsTotal)
+		nIndsAll := prot.GetConfig().NumInds
 		maxAbs, maxRelSig := 0.0, 0.0
 		for j := 0; j < m; j++ {
-			var colSum float64
-			for i := 0; i < nIndsTotal; i++ {
-				colSum += fullG.At(i, j)
+			minorSum, offset := 0.0, 0
+			for p := 1; p <= prot.GetConfig().NumMainParties; p++ {
+				localSum := 0.0
+				for i := 0; i < nIndsAll[p]; i++ {
+					localSum += fullG.At(offset+i, j)
+				}
+				if localSum > float64(nIndsAll[p]) {
+					localSum = float64(2*nIndsAll[p]) - localSum
+				}
+				minorSum += localSum
+				offset += nIndsAll[p]
 			}
-			pbar := colSum / twoN
-			maf := math.Min(pbar, 1-pbar)
-			wOracle := 25.0 * math.Pow(1-maf, 24)
+			mafBlind := minorSum / float64(2*nIndsTotal)
+			wOracle := 25.0 * math.Pow(1-mafBlind, 24)
 			abs := math.Abs(wDec[j] - wOracle)
 			if abs > maxAbs {
 				maxAbs = abs
@@ -912,64 +926,22 @@ func TestSKATWeights(t *testing.T) {
 	}
 }
 
-// Minor-allele-oriented weight ŵ_j = t_j·w_j (t = −1 iff p̄>½) vs oracle; fixture flips some.
-func TestSKATSignedWeight(t *testing.T) {
-	prot := InitProtocolForTest(t)
-	if prot == nil {
-		return
-	}
-	defer prot.SyncAndTerminate(true)
-
-	mpcObj := prot.mpcObj[0]
-	cps := prot.cps
-	pid := mpcObj.GetPid()
-	const m = 12
-
-	dosage, fullG, nIndsTotal := weightFixtureDosage(t, prot, pid, m)
-	assocTest := prot.InitAssociationTests(nil)
-
-	signedEnc := mpcObj.SSToCVec(cps, assocTest.signedWeight(dosage, m))
-
-	if pid == 1 {
-		wDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, signedEnc, 1))[:m]
-		twoN := float64(2 * nIndsTotal)
-		nFlipped := 0
-		maxAbs, maxRelSig := 0.0, 0.0
-		for j := 0; j < m; j++ {
-			var colSum float64
-			for i := 0; i < nIndsTotal; i++ {
-				colSum += fullG.At(i, j)
-			}
-			pbar := colSum / twoN
-			maf := math.Min(pbar, 1-pbar)
-			sign := 1.0
-			if pbar > 0.5 {
-				sign = -1.0
-				nFlipped++
-			}
-			wOracle := sign * 25.0 * math.Pow(1-maf, 24)
-			abs := math.Abs(wDec[j] - wOracle)
-			if abs > maxAbs {
-				maxAbs = abs
-			}
-			if math.Abs(wOracle) > 1e-2 {
-				if rel := abs / math.Abs(wOracle); rel > maxRelSig {
-					maxRelSig = rel
-				}
-			}
-		}
-		t.Logf("signed weights maxAbs=%.2e maxRelSig=%.2e flipped %d/%d", maxAbs, maxRelSig, nFlipped, m)
-		if nFlipped == 0 {
-			t.Fatalf("fixture exercised no flips; orientation not tested")
-		}
-		const absTol, relTol = 1e-3, 1e-3
-		if maxAbs > absTol || maxRelSig > relTol {
-			t.Errorf("signed weights: maxAbs=%.3e maxRelSig=%.3e", maxAbs, maxRelSig)
-		}
-	} else if pid > 0 {
-		mpcObj.Network.CollectiveDecryptVec(cps, signedEnc, 1)
-	} else {
-		mpcObj.Network.CollectiveDecryptVec(cps, nil, 1)
+func TestSKATLocalOrientation(t *testing.T) {
+	G := mat.NewDense(4, 3, []float64{
+		2, 0, 0,
+		2, 1, 0,
+		1, 1, 2,
+		1, 0, 2,
+	})
+	orientGenotypeLocal(G)
+	want := mat.NewDense(4, 3, []float64{
+		0, 0, 0,
+		0, 1, 0,
+		1, 1, 2,
+		1, 0, 2,
+	})
+	if !mat.Equal(G, want) {
+		t.Fatalf("local orientation mismatch:\ngot  %v\nwant %v", mat.Formatted(G), mat.Formatted(want))
 	}
 }
 
@@ -1097,9 +1069,8 @@ func TestSKATDriverE2E(t *testing.T) {
 
 // TestSKATFederatedPrivate drives the secure federated per-gene SKAT Q for heterogeneous variant
 // sets (pid1 = public-list party, pid2 = private-variant party; MVP+AoU is the motivating instance)
-// and asserts it equals the plaintext oracle SKATFederatedPrivate AND the pooled single-cohort
-// SKATPlain, per gene. Every party regenerates the same full fixture (seed) and injects only its
-// own slice; pid1 reconstructs both oracles from the full data.
+// and asserts it equals the blind-orientation plaintext oracle. This rare/concordant fixture also
+// equals pooled SKATPlain per gene. Every party regenerates the same full fixture and injects its slice.
 func TestSKATFederatedPrivate(t *testing.T) {
 	prot := InitProtocolForTest(t)
 	if prot == nil {
@@ -1300,7 +1271,7 @@ func TestSKATFederatedPrivate(t *testing.T) {
 		}
 		plain := SKATPlain(Gp, Xpool, ypool)
 
-		// three-way check per statistic: secure == federated oracle == pooled single-cohort.
+		// Rare/concordant fixture: secure == blind federated oracle == pooled single-cohort.
 		check := func(stat string, secure, oref, pooled float64) {
 			relOracle := math.Abs(secure-oref) / math.Max(math.Abs(oref), 1e-12)
 			relPool := math.Abs(secure-pooled) / math.Max(math.Abs(pooled), 1e-12)
@@ -1463,7 +1434,10 @@ func TestSKATMomentsSS(t *testing.T) {
 	assocTest := prot.InitAssociationTests(nil)
 	null, nullRSS, X, y0 := assocTest.nullSetup()
 	const R = 1000
-	s1ss, s2ss, s3ss := assocTest.skatMomentsSS(0, mPub, R, null, X, y0, privG, nil)
+	if pid == 2 {
+		privG = orientedGenotypeLocalCopy(privG)
+	}
+	s1ss, s2ss, s3ss := assocTest.skatMomentsSS(0, mPub, R, null, X, y0, privG, nil, nil)
 	zss := assocTest.skatPValueSS(0, mPub, R, null, nullRSS, X, y0, privG, 2)
 	mpcObj := prot.mpcObj[0]
 	rev := mpcObj.RevealSymVec(mpc_core.RVec{s1ss, s2ss, s3ss, zss}).ToFloat(mpcObj.GetFracBits())

@@ -185,8 +185,7 @@ func SKATPlain(G, X *mat.Dense, y []float64) SKATPlainResult {
 
 // --- federated SKAT with party-private variants: plaintext oracle ---
 //
-// Plaintext mirror of the secure ComputeSKATFederatedPrivate; equals the pooled
-// single-cohort SKAT Q. See that doc for the design.
+// Plaintext mirror of the secure ComputeSKATFederatedPrivate under blind local orientation.
 
 // FedParty is one party's plaintext data. Variants are columns of G, each labelled by Gene and
 // Role ∈ {"shared","public_only","private"}; ID aligns shared variants across parties.
@@ -234,7 +233,7 @@ func SKATFederatedPrivate(pub, priv FedParty) (skat, burden, burdenP map[string]
 
 	skat = make(map[string]float64)
 	bLin := make(map[string]float64)
-	// z = Σⱼ ŵⱼ Gⱼ, the weighted burden collapse, kept per gene per cohort (each cohort accumulates
+	// z = Σⱼ wⱼ Gⱼ over locally oriented columns, kept per gene per cohort (each cohort accumulates
 	// its own rows; zᵀPz is then additive across cohorts). Needed only for the Burden p-value.
 	zA := map[string]*mat.VecDense{}
 	zB := map[string]*mat.VecDense{}
@@ -246,41 +245,57 @@ func SKATFederatedPrivate(pub, priv FedParty) (skat, burden, burdenP map[string]
 		}
 		return v
 	}
-	// add folds one variant into SKAT/Burden and returns its minor-allele-oriented weight ŵ (for z).
+	// orientedCol applies the same per-cohort p_i>1/2 recode as the secure input path.
+	orientedCol := func(G *mat.Dense, col int, residual []float64) (score, count float64, v *mat.VecDense) {
+		n, _ := G.Dims()
+		count = fedColSum(G, col)
+		flip := count > float64(n)
+		vals := make([]float64, n)
+		for i := 0; i < n; i++ {
+			vals[i] = G.At(i, col)
+			if flip {
+				vals[i] = 2 - vals[i]
+			}
+			score += vals[i] * residual[i]
+		}
+		if flip {
+			count = float64(2*n) - count
+		}
+		return score, count, mat.NewVecDense(n, vals)
+	}
+	// add folds one blind-oriented variant into SKAT/Burden and returns its unsigned weight (for z).
 	add := func(gene string, score, count float64) float64 {
 		p := count / (2 * N)
-		w := 25 * math.Pow(1-math.Min(p, 1-p), 24)
-		sw := w
-		if p > 0.5 { // orient to minor allele: SKAT invariant, Burden (Σw s)² sign-sensitive
-			score = -score
-			sw = -w
-		}
+		w := 25 * math.Pow(1-p, 24)
 		skat[gene] += w * w * score * score / (2 * sigma2)
 		bLin[gene] += w * score
-		return sw
+		return w
 	}
 
 	// ---- PART A: secure over the public list (the private party adds its shared cols) ----
 	for k := range pub.ID {
-		score := fedColDot(pub.G, k, rp)
-		count := fedColSum(pub.G, k)
+		score, count, pubCol := orientedCol(pub.G, k, rp)
 		jShared := -1
+		var privCol *mat.VecDense
 		if pub.Role[k] == "shared" {
 			jShared = qCol[pub.ID[k]]
-			score += fedColDot(priv.G, jShared, rq) // private party's local contribution (federated sum)
-			count += fedColSum(priv.G, jShared)
+			privScore, privCount, col := orientedCol(priv.G, jShared, rq)
+			score += privScore
+			count += privCount
+			privCol = col
 		}
-		sw := add(pub.Gene[k], score, count)
-		getZ(zA, pub.Gene[k], np).AddScaledVec(getZ(zA, pub.Gene[k], np), sw, pub.G.ColView(k))
+		w := add(pub.Gene[k], score, count)
+		getZ(zA, pub.Gene[k], np).AddScaledVec(getZ(zA, pub.Gene[k], np), w, pubCol)
 		if jShared >= 0 {
-			getZ(zB, pub.Gene[k], nq).AddScaledVec(getZ(zB, pub.Gene[k], nq), sw, priv.G.ColView(jShared))
+			getZ(zB, pub.Gene[k], nq).AddScaledVec(getZ(zB, pub.Gene[k], nq), w, privCol)
 		}
 	}
 	// ---- PART B: private variants, local to the private party ----
 	for j := range priv.ID {
 		if priv.Role[j] == "private" {
-			sw := add(priv.Gene[j], fedColDot(priv.G, j, rq), fedColSum(priv.G, j))
-			getZ(zB, priv.Gene[j], nq).AddScaledVec(getZ(zB, priv.Gene[j], nq), sw, priv.G.ColView(j))
+			score, count, col := orientedCol(priv.G, j, rq)
+			w := add(priv.Gene[j], score, count)
+			getZ(zB, priv.Gene[j], nq).AddScaledVec(getZ(zB, priv.Gene[j], nq), w, col)
 		}
 	}
 

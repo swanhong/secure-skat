@@ -12,10 +12,10 @@ import (
 const gtgChunkRows = 256
 
 // burdenVarSS returns one gene's Burden-variance factor zᵀPz = z_fullᵀP z_full (P = I − X(XᵀX)⁻¹Xᵀ,
-// z_full = Σⱼ ŵⱼ Gⱼ over the public list ∪ private variants) as an SS scalar. It never forms z (which
+// z_full = Σⱼ wⱼ Gⱼ over the public list ∪ private variants) as an SS scalar. It never forms z (which
 // is n-dim); instead it works in the small m/c space:
 //
-//	zᵀPz = ŵ_pubᵀ(GᵀG)_pub ŵ_pub  +  2·ŵ_pubᵀ d  +  z_privᵀz_priv  −  (Xᵀz)ᵀ(XtX)⁻¹(Xᵀz)
+//	zᵀPz = w_pubᵀ(GᵀG)_pub w_pub  +  2·w_pubᵀ d  +  z_privᵀz_priv  −  (Xᵀz)ᵀ(XtX)⁻¹(Xᵀz)
 //
 // where the public GᵀG/GᵀX are federated by the "local contraction = SS share → global sum" trick
 // (same as scoreSS), and the private party contributes d = G_pubᵀz_priv (m_pub), z_privᵀz_priv, and
@@ -27,7 +27,7 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 	pid := mpcObj.GetPid()
 	c := null.c
 
-	// zᵀPz/N (else ŵᵀGᵀGŵ ~2^31 at AoU overflows the fixed-point wall): quadratic pieces /N, Xᵀz pieces
+	// zᵀPz/N (else wᵀGᵀGw ~2^31 at AoU overflows the fixed-point wall): quadratic pieces /N, Xᵀz pieces
 	// /√N so the XtX correction also lands at /N (XtX raw). Caller normalizes Q_b by the same N → √(T/2) unchanged.
 	N := float64(ast.skatTotalNumInds())
 	sqrtN := math.Sqrt(N)
@@ -56,12 +56,12 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 			}
 		}
 	}
-	wPub := wPubIn // signed weight reused from PART A's blockStat (same gene/dosage → same value)
+	wPub := wPubIn // unsigned weight reused from PART A's blockStat (same oriented dosage → same value)
 	if wPub == nil {
-		wPub = ast.signedWeight(dosage, nsnps) // fallback: compute here when not supplied
+		_, wPub = ast.blindWeightCKKS(dosage, nsnps) // collective fallback for standalone callers
 	}
 
-	// pubZZ = ŵ_pubᵀ(GᵀG)ŵ_pub ; pubXtz = (XᵀG_pub)ŵ_pub (c-vector)
+	// pubZZ = w_pubᵀ(GᵀG)w_pub ; pubXtz = (XᵀG_pub)w_pub (c-vector)
 	pubZZ := rtype.Zero()
 	pubXtz := mpc_core.InitRVec(rtype.Zero(), c)
 	if nsnps > 0 {
@@ -69,7 +69,7 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 		for j := 0; j < nsnps; j++ {
 			wCol[j] = mpc_core.RVec{wPub[j]}
 		}
-		// (GᵀG)·ŵ in row-chunks: forming the whole m×m secret gram (and its single Beaver reveal)
+		// (GᵀG)·w in row-chunks: forming the whole m×m secret gram (and its single Beaver reveal)
 		// costs O(m²) memory and OOMs for m~thousands; chunking caps peak memory at O(gtgChunkRows·m)
 		// while the Beaver comm total stays the same.
 		gw := make(mpc_core.RVec, nsnps)
@@ -93,7 +93,7 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 		}
 		gw = mpcObj.TruncVec(gw, db, fb)
 		pubZZ = vdot(wPub, gw)
-		// pubXtz = (GᵀX)ᵀ·ŵ_pub (c-vector) as one SSMultMat over the c×nsnps transpose.
+		// pubXtz = (GᵀX)ᵀ·w_pub (c-vector) as one SSMultMat over the c×nsnps transpose.
 		gtxT := mpc_core.InitRMat(rtype.Zero(), c, nsnps)
 		for l := 0; l < c; l++ {
 			for j := 0; j < nsnps; j++ {
@@ -107,7 +107,7 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 		pubXtz = mpcObj.TruncVec(pubXtz, db, fb)
 	}
 
-	// --- private (privatePid only): z_priv = G_priv·ŵ_priv, contracted locally (count hidden) ---
+	// --- private (privatePid only): z_priv = G_priv·w_priv, contracted locally (count hidden) ---
 	privZZ := rtype.Zero()
 	crossD := mpc_core.InitRVec(rtype.Zero(), nsnps) // d = G_pubᵀ z_priv (m_pub)
 	privXtz := mpc_core.InitRVec(rtype.Zero(), c)    // Xᵀ z_priv (c)
@@ -120,7 +120,7 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 					dpriv[k] += privG.At(i, k)
 				}
 			}
-			wpv := skatBetaWeightSigned(dpriv, ast.skatTotalNumInds())
+			wpv := skatBetaWeight(dpriv, ast.skatTotalNumInds())
 			zpv := make([]float64, np)
 			for i := 0; i < np; i++ {
 				for k := 0; k < mp; k++ {

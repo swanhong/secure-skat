@@ -125,8 +125,7 @@ func TestSKATPlainDof(t *testing.T) {
 	}
 }
 
-// The federated per-gene Q (secure over the public list + private variants computed locally) must
-// equal the pooled single-cohort SKAT Q on the union genotype matrix (0-filled for party-unique).
+// For this rare/concordant fixture, blind local orientation equals pooled single-cohort orientation.
 
 func fedFixture() (pub, priv FedParty) {
 	r := rand.New(rand.NewSource(5))

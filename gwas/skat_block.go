@@ -106,6 +106,37 @@ func denseFromStream(gfs *GenoFileStream) *mat.Dense {
 	return G
 }
 
+// orientGenotypeLocal recodes each locally major-coded column in place so that dosage always counts
+// that cohort's local minor allele. The strict sum>n test is p_i>1/2; ties are left unchanged. All
+// downstream contractions must use this same matrix, because the recode affects score, Gram, Burden,
+// and public-private cross terms together.
+func orientGenotypeLocal(G *mat.Dense) *mat.Dense {
+	if G == nil {
+		return nil
+	}
+	n, m := G.Dims()
+	for j := 0; j < m; j++ {
+		sum := 0.0
+		for i := 0; i < n; i++ {
+			sum += G.At(i, j)
+		}
+		if sum <= float64(n) {
+			continue
+		}
+		for i := 0; i < n; i++ {
+			G.Set(i, j, 2.0-G.At(i, j))
+		}
+	}
+	return G
+}
+
+func orientedGenotypeLocalCopy(G *mat.Dense) *mat.Dense {
+	if G == nil {
+		return nil
+	}
+	return orientGenotypeLocal(mat.DenseCopyOf(G))
+}
+
 // loadDenseBlocks reads nGenes per-gene int8 genotype block files into dense matrices for the
 // federated-private private side. path b = fmt.Sprintf(prefix, b), row-major n×m_b with m_b
 // inferred from file size / n (int8 = 1 byte/cell).
@@ -139,10 +170,9 @@ func (ast *AssocTest) readGenoBlockLocal(b int) *mat.Dense {
 	return denseFromStream(ast.openBlockGenoStream(b))
 }
 
-// blockStat computes one block's raw statistics as 1-elem RVecs: qRawSS = Σ ŵ²s²
-// and bLinSS = Σ ŵ·s (burden linear term, squared by the caller). Local plaintext
-// contraction → key-free score → AggregateCMat → oriented weights → ScoreCalculation → SS.
-func (ast *AssocTest) blockStat(b, nsnps int, null skatNull, X *mat.Dense, y0 []float64, gl *geneLocal) (qRawSS, bLinSS, wSignedSS mpc_core.RVec) {
+// blockStat computes one block's raw statistics as 1-elem RVecs: qRawSS = Σw²s² and
+// bLinSS = Σw·s (burden linear term, squared by the caller).
+func (ast *AssocTest) blockStat(b, nsnps int, null skatNull, X *mat.Dense, y0 []float64, gl *geneLocal) (qRawSS, bLinSS, weightSS mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	cps := ast.general.cps
 	pid := mpcObj.GetPid()
@@ -151,24 +181,18 @@ func (ast *AssocTest) blockStat(b, nsnps int, null skatNull, X *mat.Dense, y0 []
 	var Gty0 []float64
 	dosage := make([]float64, nsnps)
 	if pid > 0 {
-		var lc LocalContraction
-		if gl != nil && gl.Gloc != nil {
-			lc = gl.LocalContraction
-		} else {
-			lc = LocalContract(ast.readGenoBlockLocal(b), X, y0)
-		}
+		lc := ast.localFor(b, nsnps, X, y0, gl).LocalContraction
 		GtX, Gty0, dosage = lc.GtX, lc.Gty0, lc.DosageSum
 	}
 
 	// Score in secret shares — the Gᵀy₀ − GᵀX·β̂ cancellation is exact in fixed-point (β̂ from the
 	// Cholesky null solve is accurate). All parties (incl. pid 0, with zero shares) take part.
 	sCVec := mpcObj.SSToCVec(cps, ast.scoreSS(GtX, Gty0, null.betaSS, nsnps))
-	wSigned := ast.signedWeight(dosage, nsnps) // SS signed weight; also returned for the Burden-variance solve
-	weightEnc := mpcObj.SSToCVec(cps, wSigned)
+	weightEnc, weightSS := ast.blindWeightCKKS(dosage, nsnps)
 
 	var qRaw, bLin crypto.CipherVector
 	if pid > 0 && len(sCVec) > 0 {
 		qRaw, bLin, _, _, _, _ = ast.ScoreCalculation(sCVec, weightEnc)
 	}
-	return ast.scalarCiphertextToShares(qRaw), ast.scalarCiphertextToShares(bLin), wSigned
+	return ast.scalarCiphertextToShares(qRaw), ast.scalarCiphertextToShares(bLin), weightSS
 }
