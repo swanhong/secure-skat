@@ -48,7 +48,7 @@ FRAC_BITS = int(os.environ.get("FED_FRACBITS", "30"))  # fractional bits (intege
 N_PCS = int(os.environ.get("FED_NPCS", "5"))     # first N PCs from ancestry_preds as covariates (age/sex deferred)
 N_SUB = int(os.environ.get("FED_NSUB", "5000"))  # samples per cohort; <= eligible//2. secure is n-independent
 N_GENES = int(os.environ.get("FED_NGENES", "20"))  # genes (spread across chrom); >= chrom total picks all
-PROBES = int(os.environ.get("FED_PROBES", "0"))    # SKAT p-value: Hutchinson probes (0 = skat-p off, Q+burden p only)
+PROBES = int(os.environ.get("FED_PROBES", "0"))    # SKAT p: trace budget; exact if m_pub<=budget, else Hutchinson (0=off)
 SEED = 71
 FRAC_SHARED, FRAC_PUBONLY = 0.6, 0.2   # rest = private
 PLINK2 = os.environ.get("PLINK2", "plink2")   # override: PLINK2=/path/to/plink2 python3 fed_prep.py

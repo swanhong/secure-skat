@@ -3,10 +3,61 @@ package gwas
 import (
 	"math"
 	"math/rand"
+	"reflect"
 	"testing"
 
 	"gonum.org/v1/gonum/mat"
 )
+
+func TestSKATTraceProbes(t *testing.T) {
+	exact, mult, isExact := skatTraceProbes(3, 10, 7)
+	wantIdentity := [][]float64{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}
+	if !isExact || mult != 1 || !reflect.DeepEqual(exact, wantIdentity) {
+		t.Fatalf("exact probes: exact=%v multiplier=%g values=%v", isExact, mult, exact)
+	}
+
+	// The exact basis must recover tr(K²) and tr(K³), not merely be deterministic.
+	K := [][]float64{{2, 1, 0}, {1, 3, 1}, {0, 1, 4}}
+	K2 := matMul(K, K)
+	trace2, trace3 := 0.0, 0.0
+	for p := 0; p < 3; p++ {
+		for i := 0; i < 3; i++ {
+			trace2 += K[i][p] * K[i][p]
+			trace3 += K[i][p] * K2[i][p]
+		}
+	}
+	if trace2 != matTrace(K2) || trace3 != matTraceProduct(K2, K) {
+		t.Fatalf("basis traces: got (%g,%g), want (%g,%g)", trace2, trace3, matTrace(K2), matTraceProduct(K2, K))
+	}
+
+	r1, rmult, rexact := skatTraceProbes(5, 3, 11)
+	r2, _, _ := skatTraceProbes(5, 3, 11)
+	if rexact || rmult != 1.0/3.0 || !reflect.DeepEqual(r1, r2) {
+		t.Fatalf("Rademacher probes are not deterministic or normalized")
+	}
+	for j := range r1 {
+		for p := range r1[j] {
+			if r1[j][p] != -1 && r1[j][p] != 1 {
+				t.Fatalf("probe[%d][%d]=%g, want +/-1", j, p, r1[j][p])
+			}
+		}
+	}
+}
+
+func TestSKATMomentFloor(t *testing.T) {
+	if got := skatMomentFloor(30); got != 1e-8 {
+		t.Fatalf("30-bit floor = %g, want 1e-8", got)
+	}
+	if got, want := skatMomentFloor(20), math.Ldexp(1.0, -20); got != want {
+		t.Fatalf("20-bit floor = %g, want one fixed-point quantum %g", got, want)
+	}
+	if got := skatSkewFloor(30); got != 1e-4 {
+		t.Fatalf("30-bit skew floor = %g, want 1e-4", got)
+	}
+	if got, want := skatSkewFloor(20), 3.0*math.Sqrt(math.Ldexp(1.0, -20)); got != want {
+		t.Fatalf("20-bit skew floor = %g, want %g", got, want)
+	}
+}
 
 // Go/gonum plaintext L1 oracle for the low-rank SKAT/Burden statistic.
 //

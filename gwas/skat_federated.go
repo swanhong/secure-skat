@@ -37,15 +37,111 @@ func skatBetaWeight(dosageSum []float64, totalInds int) []float64 {
 	return w
 }
 
+// privateGeneLocal memoizes the private party's per-gene plaintext work shared by Q, Burden, and
+// trace moments. It never crosses the party boundary; in particular len(Weight) still reveals no
+// private-variant count through an MPC message shape.
+type privateGeneLocal struct {
+	LocalContraction
+	Weight      []float64
+	BurdenZZ    float64     // w_vᵀG_vᵀG_vw_v/N
+	BurdenCross []float64   // G_pᵀG_vw_v/N (m_p), empty when m_p=0
+	BurdenXtz   []float64   // XᵀG_vw_v/√N (c)
+	Svv         [][]float64 // G_vᵀG_v/N (m_v×m_v), built only for trace moments
+	A1          [][]float64 // G_pᵀG_v/N (m_p×m_v), built only for trace moments
+}
+
+func (ast *AssocTest) computePrivateGeneLocal(G, X *mat.Dense, y0 []float64, gl *geneLocal, needMoments bool) *privateGeneLocal {
+	pl := &privateGeneLocal{}
+	if G == nil {
+		return pl
+	}
+	_, m := G.Dims()
+	if m == 0 {
+		return pl
+	}
+	pl.LocalContraction = localGenotypeContract(G, X, y0)
+	pl.Weight = skatBetaWeight(pl.DosageSum, ast.skatTotalNumInds())
+	N := float64(ast.skatTotalNumInds())
+	invN := 1.0 / N
+	invSqrtN := 1.0 / math.Sqrt(N)
+	_, c := X.Dims()
+	pl.BurdenXtz = make([]float64, c)
+	for l := 0; l < c; l++ {
+		for k, w := range pl.Weight {
+			pl.BurdenXtz[l] += pl.GtX.At(k, l) * w * invSqrtN
+		}
+	}
+
+	// Burden-only mode needs just G_vw_v and its contractions, not the O(m_v²) moment tables.
+	// This keeps the default nProbes=0 path linear in the number of private variants.
+	if !needMoments {
+		n, _ := G.Dims()
+		z := make([]float64, n)
+		for i := 0; i < n; i++ {
+			for k, w := range pl.Weight {
+				z[i] += G.At(i, k) * w
+			}
+			pl.BurdenZZ += z[i] * z[i] * invN
+		}
+		if gl != nil && gl.Gloc != nil {
+			ng, mp := gl.Gloc.Dims()
+			if ng != n {
+				panic("computePrivateGeneLocal: public/private row mismatch")
+			}
+			pl.BurdenCross = make([]float64, mp)
+			for j := 0; j < mp; j++ {
+				for i := 0; i < n; i++ {
+					pl.BurdenCross[j] += gl.Gloc.At(i, j) * z[i] * invN
+				}
+			}
+		}
+		return pl
+	}
+
+	toRows := func(d *mat.Dense) [][]float64 {
+		r, c := d.Dims()
+		out := make([][]float64, r)
+		for i := 0; i < r; i++ {
+			out[i] = make([]float64, c)
+			for j := 0; j < c; j++ {
+				out[i][j] = d.At(i, j) * invN
+			}
+		}
+		return out
+	}
+	var svv mat.Dense
+	svv.Mul(G.T(), G)
+	pl.Svv = toRows(&svv)
+	if gl != nil && gl.Gloc != nil {
+		var a1 mat.Dense
+		a1.Mul(gl.Gloc.T(), G)
+		pl.A1 = toRows(&a1)
+	}
+	for k, w := range pl.Weight {
+		for k2, w2 := range pl.Weight {
+			pl.BurdenZZ += w * pl.Svv[k][k2] * w2
+		}
+	}
+	if len(pl.A1) > 0 {
+		pl.BurdenCross = make([]float64, len(pl.A1))
+		for j := range pl.A1 {
+			for k, w := range pl.Weight {
+				pl.BurdenCross[j] += pl.A1[j][k] * w
+			}
+		}
+	}
+	return pl
+}
+
 // privateRawStats returns the private party's local raw SKAT = Σw²s² and Burden linear term Σw·s.
 // G is already locally minor-oriented, so no signed weight or comparison is needed. The private
 // variant count remains hidden: only the two scalar ciphertexts leave the owner.
-func (ast *AssocTest) privateRawStats(G *mat.Dense, null skatNull, X *mat.Dense, y0 []float64) (skat, burdenLin crypto.CipherVector) {
+func (ast *AssocTest) privateRawStats(pl *privateGeneLocal, null skatNull) (skat, burdenLin crypto.CipherVector) {
 	cps := ast.general.cps
 
-	var m int
-	if G != nil {
-		_, m = G.Dims()
+	m := 0
+	if pl != nil {
+		m = len(pl.Weight)
 	}
 	if m == 0 {
 		z, _ := crypto.EncryptFloatVector(cps, []float64{0})
@@ -53,9 +149,8 @@ func (ast *AssocTest) privateRawStats(G *mat.Dense, null skatNull, X *mat.Dense,
 		return z, zb
 	}
 
-	lc := LocalContract(G, X, y0)
-	s := ast.scoreHE(lc.GtX, lc.Gty0, null)
-	wEnc, _ := crypto.EncryptFloatVector(cps, skatBetaWeight(lc.DosageSum, ast.skatTotalNumInds()))
+	s := ast.scoreHE(pl.GtX, pl.Gty0, null)
+	wEnc, _ := crypto.EncryptFloatVector(cps, pl.Weight)
 
 	s, wEnc = alignCipherVectorLevels(cps, s, wEnc)
 	skat, burdenLin, _, _, _, _ = ast.ScoreCalculation(s, wEnc)
@@ -66,13 +161,13 @@ func (ast *AssocTest) privateRawStats(G *mat.Dense, null skatNull, X *mat.Dense,
 // RVecs. The private party computes them locally (privateRawStats); CiphertextToSS reshares each from
 // privatePid (the other party gets only the ciphertext, pid 0 sits out). Must run for EVERY gene —
 // the Enc(0) on empty genes keeps which genes have private variants indistinguishable.
-func (ast *AssocTest) privateBlockStat(G *mat.Dense, null skatNull, X *mat.Dense, y0 []float64, privatePid int) (skatSS, burdenSS mpc_core.RVec) {
+func (ast *AssocTest) privateBlockStat(pl *privateGeneLocal, null skatNull, privatePid int) (skatSS, burdenSS mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
 
 	var skatCt, burdenCt *rlwe.Ciphertext
 	if mpcObj.GetPid() == privatePid {
-		skat, burdenLin := ast.privateRawStats(G, null, X, y0)
+		skat, burdenLin := ast.privateRawStats(pl, null)
 		if len(skat) > 0 {
 			skatCt = skat[0]
 		}
@@ -132,7 +227,7 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	skatBlockSS := mpc_core.InitRVec(rtype.Zero(), nB) // Σw²s² (SKAT raw, per gene)
 	bLinBlockSS := mpc_core.InitRVec(rtype.Zero(), nB) // Σw·s  (Burden linear term, per gene)
 	zpzBlockSS := mpc_core.InitRVec(rtype.Zero(), nB)  // zᵀPz     (Burden variance, per gene; unscaled)
-	nProbes := ast.general.config.SkatPValueProbes     // SKAT p-value (Hutchinson); 0 = disabled
+	nProbes := ast.general.config.SkatPValueProbes     // trace-column budget (exact basis when m<=budget); 0 = disabled
 	s1B := mpc_core.InitRVec(rtype.Zero(), nB)         // SKAT kernel moments per gene (N-normalized), if enabled
 	s2B := mpc_core.InitRVec(rtype.Zero(), nB)
 	s3B := mpc_core.InitRVec(rtype.Zero(), nB)
@@ -150,7 +245,7 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		accBurden := mpc_core.InitRVec(rtype.Zero(), 1)
 		nsnps := ast.skatBlockNumSnps(b) // collective; public-list size for gene b
 		// Not hub-gated: run_fed.sh tees party 2 (not the hub) to the terminal, so every party logs this.
-		if nProbes > 0 { // moments: tr(K_ppᵏ) Hutchinson (O(m_pub²·probes)) + block-contracted private
+		if nProbes > 0 { // moments: exact basis or Hutchinson + block-contracted private corrections
 			log.LLvl1(fmt.Sprintf("[skat_fed] gene %d/%d start (m_pub=%d, probes=%d)", b+1, nB, nsnps, nProbes))
 		} else {
 			log.LLvl1(fmt.Sprintf("[skat_fed] gene %d/%d start (m_pub=%d)", b+1, nB, nsnps))
@@ -176,18 +271,19 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		if mpcObj.GetPid() == privatePid && b < len(privateOnly) {
 			G = orientedGenotypeLocalCopy(privateOnly[b])
 		}
-		skatB, burdenB := ast.privateBlockStat(G, null, X, y0, privatePid)
+		pl := ast.computePrivateGeneLocal(G, X, y0, gl, nProbes > 0)
+		skatB, burdenB := ast.privateBlockStat(pl, null, privatePid)
 		accSkat.Add(skatB)
 		accBurden.Add(burdenB)
 
 		skatBlockSS[b] = accSkat[0]
 		bLinBlockSS[b] = accBurden[0]
 		tBurStart := time.Now()
-		zpzBlockSS[b] = ast.burdenVarSS(b, nsnps, null, X, y0, G, privatePid, wA, gl) // Burden variance zᵀPz
+		zpzBlockSS[b] = ast.burdenVarSS(b, nsnps, null, X, y0, pl, privatePid, wA, gl) // Burden variance zᵀPz
 		tBur = time.Since(tBurStart).Seconds()
 		if nProbes > 0 { // SKAT p-value kernel moments (N-normalized)
 			t := time.Now()
-			s1B[b], s2B[b], s3B[b] = ast.skatMomentsSS(b, nsnps, nProbes, null, X, y0, G, gl, wA)
+			s1B[b], s2B[b], s3B[b] = ast.skatMomentsSS(b, nsnps, nProbes, null, X, y0, pl, gl, wA)
 			tMom = time.Since(t).Seconds()
 		}
 		dt := time.Since(tb).Seconds()
@@ -196,11 +292,17 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		doneWork += float64(nsnps) * float64(nsnps)
 		elapsed := time.Since(tBlocks).Seconds()
 		eta := 0.0
+		pct := 100 * float64(b+1) / float64(nB)
 		if doneWork > 0 {
 			eta = elapsed * (totalWork - doneWork) / doneWork
 		}
+		if totalWork > 0 {
+			pct = 100 * doneWork / totalWork
+		} else { // hub has no local genotype sizes; fall back to gene-count progress
+			eta = elapsed * float64(nB-b-1) / float64(b+1)
+		}
 		log.LLvl1(fmt.Sprintf("[skat_fed] gene %d/%d done %.0fs [blockStat %.0f | burden %.0f | moments %.0f] | elapsed %.0fs  ETA ~%.0fm (%.0f%%)",
-			b+1, nB, dt, tBlk, tBur, tMom, elapsed, eta/60, 100*doneWork/totalWork))
+			b+1, nB, dt, tBlk, tBur, tMom, elapsed, eta/60, pct))
 	}
 	fedTimings.blocks = time.Since(tBlocks)
 	fedTimings.blockSecs = blockSecs

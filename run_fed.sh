@@ -12,7 +12,8 @@
 # FED_DATABITS etc. only take effect when fed_prep runs; with SKIP_PREP=1 the existing config is reused as-is
 # (FED_PREP_SRC seeds it into the fresh dir). SKIP_BUILD=1 skips go build. FED_CSV=1 makes step [4/4] also dump
 # fed_results.csv (per-gene positions + secure/plain p-values) for scripts/analysis/fed_plot.py.
-# FED_PROBES=N (N>0) turns ON the SKAT p-value (Hutchinson probes → WH pivot z; 0 = Q+burden p only);
+# FED_PROBES=N (N>0) turns ON the SKAT p-value (exact traces when m_pub<=N, else Hutchinson → WH z;
+# 0 = Q+burden p only);
 set -eo pipefail
 
 REPO=$(cd "$(dirname "$0")" && pwd)

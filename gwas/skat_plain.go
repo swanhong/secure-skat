@@ -49,7 +49,8 @@ func whCleanZ(Q, S1, S2, S3 float64) float64 {
 }
 
 // skatMoments returns tr(K), tr(K²), tr(K³) of the SKAT kernel K = ½ D(GᵀPG)D, D=diag(w). Exact
-// (plaintext oracle); the secure path estimates tr(K³) by Hutchinson.
+// (plaintext oracle); the secure path uses an exact public basis when it fits the configured trace
+// budget and otherwise estimates the public-block trace by Hutchinson.
 func skatMoments(GtPG *mat.Dense, w []float64) (S1, S2, S3 float64) {
 	m := len(w)
 	K := mat.NewDense(m, m, nil)

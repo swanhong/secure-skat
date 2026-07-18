@@ -20,7 +20,7 @@ const gtgChunkRows = 256
 // where the public GᵀG/GᵀX are federated by the "local contraction = SS share → global sum" trick
 // (same as scoreSS), and the private party contributes d = G_pubᵀz_priv (m_pub), z_privᵀz_priv, and
 // Xᵀz_priv (all n-contracted locally, so the private variant count m_priv stays hidden).
-func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 []float64, privG *mat.Dense, privatePid int, wPubIn mpc_core.RVec, gl *geneLocal) mpc_core.RElem {
+func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 []float64, priv *privateGeneLocal, privatePid int, wPubIn mpc_core.RVec, gl *geneLocal) mpc_core.RElem {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
@@ -45,14 +45,14 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 	// --- public list: GᵀX (m×c, small) as SS shares; the m×m GᵀG is kept as a local plaintext gram
 	// (gg) and streamed in row-chunks below, so a full m×m *secret* matrix never materializes. ---
 	var dosage []float64
-	var Gloc, gg *mat.Dense // Gloc = local aligned public genotype (reused by the cross term); gg = local GᵀG
-	gtxSS := mpc_core.InitRMat(rtype.Zero(), nsnps, c)
+	var gg *mat.Dense
+	gtxT := mpc_core.InitRMat(rtype.Zero(), c, nsnps)
 	if pid > 0 && nsnps > 0 {
 		g := ast.localFor(b, nsnps, X, y0, gl)
-		Gloc, gg, dosage = g.Gloc, g.gg, g.DosageSum
+		gg, dosage = g.gg, g.DosageSum
 		for j := 0; j < nsnps; j++ {
 			for l := 0; l < c; l++ {
-				gtxSS[j][l] = rtype.FromFloat64(g.GtX.At(j, l)/sqrtN, fb) // GᵀX/√N
+				gtxT[l][j] = rtype.FromFloat64(g.GtX.At(j, l)/sqrtN, fb) // XᵀG/√N
 			}
 		}
 	}
@@ -94,12 +94,6 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 		gw = mpcObj.TruncVec(gw, db, fb)
 		pubZZ = vdot(wPub, gw)
 		// pubXtz = (GᵀX)ᵀ·w_pub (c-vector) as one SSMultMat over the c×nsnps transpose.
-		gtxT := mpc_core.InitRMat(rtype.Zero(), c, nsnps)
-		for l := 0; l < c; l++ {
-			for j := 0; j < nsnps; j++ {
-				gtxT[l][j] = gtxSS[j][l]
-			}
-		}
 		pxM := mpcObj.SSMultMat(gtxT, wCol) // c×1 (untruncated 2·fb)
 		for l := 0; l < c; l++ {
 			pubXtz[l] = pxM[l][0]
@@ -111,41 +105,22 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 	privZZ := rtype.Zero()
 	crossD := mpc_core.InitRVec(rtype.Zero(), nsnps) // d = G_pubᵀ z_priv (m_pub)
 	privXtz := mpc_core.InitRVec(rtype.Zero(), c)    // Xᵀ z_priv (c)
-	if pid == privatePid && privG != nil {
-		np, mp := privG.Dims()
+	if pid == privatePid && priv != nil {
+		mp := len(priv.Weight)
 		if mp > 0 {
-			dpriv := make([]float64, mp)
-			for k := 0; k < mp; k++ {
-				for i := 0; i < np; i++ {
-					dpriv[k] += privG.At(i, k)
+			privZZ = rtype.FromFloat64(priv.BurdenZZ, fb)
+			if len(priv.BurdenXtz) != c {
+				panic("burdenVarSS: private cache missing covariate contraction")
+			}
+			for l, s := range priv.BurdenXtz {
+				privXtz[l] = rtype.FromFloat64(s, fb)
+			}
+			if nsnps > 0 {
+				if len(priv.BurdenCross) != nsnps {
+					panic("burdenVarSS: private cache missing public-private contraction")
 				}
-			}
-			wpv := skatBetaWeight(dpriv, ast.skatTotalNumInds())
-			zpv := make([]float64, np)
-			for i := 0; i < np; i++ {
-				for k := 0; k < mp; k++ {
-					zpv[i] += privG.At(i, k) * wpv[k]
-				}
-			}
-			zz := 0.0
-			for i := 0; i < np; i++ {
-				zz += zpv[i] * zpv[i]
-			}
-			privZZ = rtype.FromFloat64(zz/N, fb) // priv-priv quadratic /N
-			for l := 0; l < c; l++ {
-				s := 0.0
-				for i := 0; i < np; i++ {
-					s += X.At(i, l) * zpv[i]
-				}
-				privXtz[l] = rtype.FromFloat64(s/sqrtN, fb) // Xᵀz_priv /√N
-			}
-			if nsnps > 0 { // cross term needs B's aligned public genotype (Gloc)
-				for j := 0; j < nsnps; j++ {
-					s := 0.0
-					for i := 0; i < np; i++ {
-						s += Gloc.At(i, j) * zpv[i]
-					}
-					crossD[j] = rtype.FromFloat64(s/N, fb) // G_pubᵀz_priv /N (cross quadratic)
+				for j, s := range priv.BurdenCross {
+					crossD[j] = rtype.FromFloat64(s, fb) // (G_pubᵀG_v/N)w_v
 				}
 			}
 		}
@@ -161,7 +136,17 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 		xtz[l] = pubXtz[l].Add(privXtz[l])
 	}
 
-	// zᵀPz = zz − (Xᵀz)ᵀ(XtX)⁻¹(Xᵀz), reusing the null Cholesky solve.
-	a := ast.choleskySolve(null.xtxL, null.xtxDinv, xtz)
-	return zz.Sub(vdot(xtz, a))
+	// zᵀPz/N = zz − (1/N)·xtzᵀΩ'xtz, Ω'=N(XtX)⁻¹ cached once by the null model.
+	xtzCol := make(mpc_core.RMat, c)
+	for l := 0; l < c; l++ {
+		xtzCol[l] = mpc_core.RVec{xtz[l]}
+	}
+	aMat := mpcObj.TruncMat(mpcObj.SSMultMat(null.omp, xtzCol), db, fb)
+	a := make(mpc_core.RVec, c)
+	for l := 0; l < c; l++ {
+		a[l] = aMat[l][0]
+	}
+	corr := vdot(xtz, a)
+	corr = mpcObj.TruncVec(mpc_core.RVec{corr.Mul(rtype.FromFloat64(1.0/N, fb))}, db, fb)[0]
+	return zz.Sub(corr)
 }

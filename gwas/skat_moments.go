@@ -7,14 +7,12 @@ import (
 	"time"
 
 	mpc_core "github.com/hhcho/mpc-core"
-	"github.com/hhcho/sfgwas/crypto"
 	"go.dedis.ch/onet/v3/log"
 	"gonum.org/v1/gonum/mat"
 )
 
-// secureClamp returns min(max(x, loPub), hiPub) for SECRET x via two secure compares + branch-free
-// selects (x ← cond ? bound : x). Keeps the cube-root arg in secureCbrt's window: out of it the
-// inverse-Newton ring-wraps to a wrong z (a spurious hit); clamped genes are extreme-tail (p≈1 or capped).
+// secureClampVec returns min(max(x, loPub), hiPub) for SECRET x via two secure compares and
+// branch-free selects. It is shared by the moment-domain guards and the cube-root Newton core.
 func (ast *AssocTest) secureClampVec(x mpc_core.RVec, loPub, hiPub float64) mpc_core.RVec {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
@@ -42,15 +40,46 @@ func (ast *AssocTest) secureClampVec(x mpc_core.RVec, loPub, hiPub float64) mpc_
 	return x
 }
 
-func (ast *AssocTest) secureClamp(x mpc_core.RElem, loPub, hiPub float64) mpc_core.RElem {
-	return ast.secureClampVec(mpc_core.RVec{x}, loPub, hiPub)[0]
+// secureSelectVec returns cond ? whenTrue : whenFalse without revealing the scale-0 secret bit cond.
+func (ast *AssocTest) secureSelectVec(cond, whenTrue, whenFalse mpc_core.RVec) mpc_core.RVec {
+	mpcObj := ast.general.mpcObj[0]
+	rtype := mpcObj.GetRType()
+	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
+	cond = cond.Copy()
+	cond.MulScalar(rtype.FromFloat64(1.0, fb))
+	diff := whenTrue.Copy()
+	diff.Sub(whenFalse)
+	delta := mpcObj.TruncVec(mpcObj.SSMultElemVec(cond, diff), db, fb)
+	out := whenFalse.Copy()
+	out.Add(delta)
+	return out
 }
 
-// secureCbrt returns x^(1/3) for a SECRET x. The fixed-seed inverse-Newton converges only on
-// ~[0.05, 10.1] (outside it diverges and RING-WRAPS to a finite wrong value — no NaN in the ring),
-// so the caller (skatZSS) MUST clamp the arg into that window first (secureClamp to [0.1, 9]).
-// Branch-free inverse-cube-root Newton — NO data-dependent range reduction (the bounded arg converges):
-// y → x^(-1/3) via y ← y(4 − x·y³)/3 from seed 0.7, then x^(1/3) = x·y². 8 iters (P0: rel err ~3e-9).
+// secureSelectOrPublicVec returns valid ? x : fallbackPub without revealing valid.
+// valid is an arithmetic sharing of bits at scale 0; x/fallback use the configured fixed-point scale.
+func (ast *AssocTest) secureSelectOrPublicVec(valid, x mpc_core.RVec, fallbackPub float64) mpc_core.RVec {
+	mpcObj := ast.general.mpcObj[0]
+	rtype := mpcObj.GetRType()
+	fb := mpcObj.GetFracBits()
+	hub := mpcObj.GetPid() == mpcObj.GetHubPid()
+
+	fallback := mpc_core.InitRVec(rtype.Zero(), len(x))
+	if hub {
+		fallbackElem := rtype.FromFloat64(fallbackPub, fb)
+		for i := range fallback {
+			fallback[i] = fallbackElem
+		}
+	}
+	return ast.secureSelectVec(valid, x, fallback)
+}
+
+// secureCbrtVec returns the real signed cube root of SECRET x. It classifies |x| against a fixed,
+// public ladder of powers of eight, constructs the corresponding secret range/root multipliers,
+// and applies them in a fixed number of public groups. Thus every representable nonzero input is
+// moved into the Newton core's [0.1,9] interval without revealing its magnitude; zero is exact.
+// Branch-free inverse-cube-root Newton on the positive reduced input:
+// y → x^(-1/3) via y ← (4y − x·y⁴)/3 from seed 0.7, then x^(1/3) = x·y². The rearranged
+// update is identical to y(4−xy³)/3 but saves one secret multiplication per iteration.
 func (ast *AssocTest) secureCbrtVec(x mpc_core.RVec) mpc_core.RVec {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
@@ -61,6 +90,9 @@ func (ast *AssocTest) secureCbrtVec(x mpc_core.RVec) mpc_core.RVec {
 	mul := func(a, b mpc_core.RVec) mpc_core.RVec { // secret × secret → truncate to fb
 		return mpcObj.TruncVec(mpcObj.SSMultElemVec(a, b), db, fb)
 	}
+	square := func(a mpc_core.RVec) mpc_core.RVec {
+		return mpcObj.TruncVec(mpcObj.SSSquareElemVec(a), db, fb)
+	}
 	pmul := func(a mpc_core.RVec, cf float64) mpc_core.RVec { // secret × public constant → fb
 		cfE := rtype.FromFloat64(cf, fb)
 		out := make(mpc_core.RVec, len(a))
@@ -69,6 +101,90 @@ func (ast *AssocTest) secureCbrtVec(x mpc_core.RVec) mpc_core.RVec {
 		}
 		return mpcObj.TruncVec(out, db, fb)
 	}
+	addScaledBits := func(dst, bits mpc_core.RVec, cf float64) {
+		cfE := rtype.FromFloat64(cf, fb)
+		for i := range dst {
+			dst[i] = dst[i].Add(bits[i].Mul(cfE)) // scale-0 bit × public fixed-point constant
+		}
+	}
+	publicOnes := func() mpc_core.RVec {
+		out := mpc_core.InitRVec(rtype.Zero(), n)
+		if hub {
+			one := rtype.FromFloat64(1.0, fb)
+			for i := range out {
+				out[i] = one
+			}
+		}
+		return out
+	}
+
+	bv := mpcObj.GetBooleanShareFlag()
+	neg := mpcObj.LessThanPublic(x, rtype.Zero(), bv)
+	negX := x.Copy()
+	for i := range negX {
+		negX[i] = negX[i].Neg()
+	}
+	absX := ast.secureSelectVec(neg, negX, x)
+
+	// If n nested ladder predicates hold, these linear identities give the secret factors:
+	//   8^-n = 1 - Σ 7/8^(k+1),  2^n = 1 + Σ 2^k,
+	//   8^n  = 1 + Σ 7·8^k,      2^-n = 1 - Σ 2^-(k+1).
+	// A group is capped so its smallest fractional and largest integer coefficient are representable;
+	// repeating a public number of groups supports asymmetric db/fb configurations as well as 60/30.
+	integerBits := db - fb - 1
+	if integerBits < 4 || fb < 3 {
+		panic("secureCbrtVec: fixed-point format needs at least 4 integer and 3 fractional bits")
+	}
+	ceilPositive := func(v float64) int {
+		if v <= 0 {
+			return 0
+		}
+		return int(math.Ceil(v))
+	}
+	highSteps := ceilPositive((float64(integerBits) - math.Log2(9.0)) / 3.0)
+	lowSteps := ceilPositive((float64(fb) + math.Log2(0.1)) / 3.0)
+	rootScales := make([]mpc_core.RVec, 0, 2)
+	reduce := func(steps, maxGroup int, high bool) {
+		for steps > 0 {
+			group := steps
+			if group > maxGroup {
+				group = maxGroup
+			}
+			rangeScale, rootScale := publicOnes(), publicOnes()
+			highThreshold, highRootCoeff := 8.0, 1.0
+			lowThreshold, lowRangeCoeff, lowRootCoeff := 0.1, 7.0, 0.5
+			for k := 0; k < group; k++ {
+				if high {
+					bit := mpcObj.NotLessThanPublic(absX, rtype.FromFloat64(highThreshold, fb), bv)
+					addScaledBits(rangeScale, bit, -7.0/highThreshold)
+					addScaledBits(rootScale, bit, highRootCoeff)
+					highThreshold *= 8.0
+					highRootCoeff *= 2.0
+				} else {
+					bit := mpcObj.LessThanPublic(absX, rtype.FromFloat64(lowThreshold, fb), bv)
+					addScaledBits(rangeScale, bit, lowRangeCoeff)
+					addScaledBits(rootScale, bit, -lowRootCoeff)
+					lowThreshold /= 8.0
+					lowRangeCoeff *= 8.0
+					lowRootCoeff *= 0.5
+				}
+			}
+			absX = mul(absX, rangeScale)
+			rootScales = append(rootScales, rootScale)
+			steps -= group
+		}
+	}
+	reduce(highSteps, fb/3, true)              // 8^-group must remain representable
+	reduce(lowSteps, (integerBits-1)/3, false) // 8^group must fit the signed integer range
+	// After the full public ladder, every representable nonzero magnitude is >=0.1; only zero is tiny.
+	tiny := mpcObj.LessThanPublic(absX, rtype.FromFloat64(0.1, fb), bv)
+	zeroSurrogate := mpc_core.InitRVec(rtype.Zero(), n)
+	if hub {
+		for i := range zeroSurrogate {
+			zeroSurrogate[i] = rtype.FromFloat64(0.1, fb)
+		}
+	}
+	x = ast.secureSelectVec(tiny, zeroSurrogate, absX)
 
 	y := mpc_core.InitRVec(rtype.Zero(), n) // seed 0.7 as an additive share (hub holds it, others 0)
 	if hub {
@@ -76,23 +192,32 @@ func (ast *AssocTest) secureCbrtVec(x mpc_core.RVec) mpc_core.RVec {
 			y[i] = rtype.FromFloat64(0.7, fb)
 		}
 	}
-	four := rtype.FromFloat64(4.0, fb)
+	four := rtype.FromFloat64(4.0, 0)
 	for it := 0; it < 8; it++ {
-		y3 := mul(mul(y, y), y)
-		t := mul(x, y3)
-		for i := range t {
-			t[i] = t[i].Neg() // −x·y³
-			if hub {
-				t[i] = t[i].Add(four) // 4 − x·y³
-			}
+		y2 := square(y)
+		y4 := square(y2)
+		xy4 := mul(x, y4)
+		next := make(mpc_core.RVec, n)
+		for i := range next {
+			next[i] = y[i].Mul(four).Sub(xy4[i]) // 4y − x·y⁴
 		}
-		y = pmul(mul(y, t), 1.0/3.0) // y·(4 − x·y³)/3
+		y = pmul(next, 1.0/3.0)
 	}
-	return mul(x, mul(y, y)) // x·y² = x^(1/3)
-}
-
-func (ast *AssocTest) secureCbrt(x mpc_core.RElem) mpc_core.RElem {
-	return ast.secureCbrtVec(mpc_core.RVec{x})[0]
+	root := mul(x, square(y)) // x·y² = x^(1/3) on the reduced interval
+	for _, rootScale := range rootScales {
+		root = mul(root, rootScale)
+	}
+	// signNonzero is +1 (positive), -1 (negative), or 0 (zero); neg and tiny are disjoint.
+	signNonzero := mpc_core.InitRVec(rtype.Zero(), n)
+	if hub {
+		one := rtype.FromFloat64(1.0, fb)
+		for i := range signNonzero {
+			signNonzero[i] = one
+		}
+	}
+	addScaledBits(signNonzero, neg, -2.0)
+	addScaledBits(signNonzero, tiny, -1.0)
+	return mul(root, signNonzero)
 }
 
 // Small plaintext float64 matrix ops: matMul (a·b), matMulT (a·bᵀ), matMulD (a·diag(d), column scale),
@@ -164,6 +289,56 @@ func matTrace(a [][]float64) float64 {
 	return s
 }
 
+// matTraceProduct returns tr(a*b) without materializing the full product.
+// It is especially useful for tr(A^3)=tr((A^2)A), where A^2 is already available.
+func matTraceProduct(a, b [][]float64) float64 {
+	s := 0.0
+	for i := range a {
+		for j := range a[i] {
+			s += a[i][j] * b[j][i]
+		}
+	}
+	return s
+}
+
+// skatTraceProbes returns public probe columns and their trace multiplier. When requested >= m,
+// the m standard-basis vectors give an exact trace with fewer columns; otherwise deterministic
+// Rademacher probes preserve the existing estimator. The branch depends only on public dimensions.
+func skatTraceProbes(m, requested int, seed int64) (values [][]float64, multiplier float64, exact bool) {
+	if requested <= 0 {
+		panic("skatTraceProbes: requested must be positive")
+	}
+	if m == 0 {
+		return nil, 1.0, true
+	}
+	n := requested
+	if n >= m {
+		n = m
+		exact = true
+	}
+	values = make([][]float64, m)
+	for j := range values {
+		values[j] = make([]float64, n)
+	}
+	if exact {
+		for j := 0; j < m; j++ {
+			values[j][j] = 1.0
+		}
+		return values, 1.0, true
+	}
+	prng := rand.New(rand.NewSource(seed))
+	for p := 0; p < n; p++ {
+		for j := 0; j < m; j++ {
+			if prng.Intn(2) == 0 {
+				values[j][p] = 1.0
+			} else {
+				values[j][p] = -1.0
+			}
+		}
+	}
+	return values, 1.0 / float64(n), false
+}
+
 func subMat(a, b mpc_core.RMat) mpc_core.RMat {
 	out := make(mpc_core.RMat, len(a))
 	for i := range a {
@@ -177,10 +352,14 @@ func subMat(a, b mpc_core.RMat) mpc_core.RMat {
 
 // skatMomentsSS returns the SKAT-kernel power sums S₁,S₂,S₃ = tr(Kᵏ) for one gene, K = ½D(GᵀPG/N)D,
 // over the public list (nsnps, both parties) plus party B's private variants (privG). The public
-// moments τₖ=tr(K_ppᵏ) come from a Hutchinson estimator over nsnps-length probes; the private and
-// cross terms are added from per-gene tables (Ψ,Ξ,Π,s) party B builds in plaintext and shares. Moments
+// moment τ₁=tr(K_pp) is exact; τ₂,τ₃ use either an exact public basis (m<=requested probes) or
+// Hutchinson probes. Private/cross terms come from per-gene tables (Ψ,Ξ,Π,s) party B builds in
+// plaintext and shares. Moments
 // are N-normalized (Sₖ/Nᵏ); w is the unsigned SKAT weight; S₄ is unneeded since K is PSD.
-func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat.Dense, y0 []float64, privG *mat.Dense, gl *geneLocal, wPubIn mpc_core.RVec) (S1, S2, S3 mpc_core.RElem) {
+func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat.Dense, y0 []float64, priv *privateGeneLocal, gl *geneLocal, wPubIn mpc_core.RVec) (S1, S2, S3 mpc_core.RElem) {
+	if nProbes <= 0 {
+		panic("skatMomentsSS: nProbes must be positive")
+	}
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
@@ -190,12 +369,17 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 	m := nsnps // public block only; the private variants enter via the contracted corrections below
 
 	// Kernel normalized by N (public) so SS intermediates stay O(1) and the WH ratios are unchanged.
-	// Hutchinson uses gg/N and GᵀX/√N; the combine uses Uₚ=GᵀX/N and Ω'=(XᵀX/N)⁻¹.
+	// Both Hutchinson and the private combine reuse Uₚ=GᵀX/N, Ω'=(XᵀX/N)⁻¹, and Θ=UₚΩ'.
 	N := float64(ast.skatTotalNumInds())
-	sqrtN := math.Sqrt(N)
 
 	// ---- SS helpers ----
 	pmul := func(a mpc_core.RElem, cf float64) mpc_core.RElem { // secret × public const → truncated
+		if cf == 1 {
+			return a.Copy()
+		}
+		if cf == math.Trunc(cf) {
+			return a.Mul(rtype.FromInt(int(cf))) // integer coefficient preserves fixed-point scale
+		}
 		return mpcObj.TruncVec(mpc_core.RVec{a.Mul(rtype.FromFloat64(cf, fb))}, db, fb)[0]
 	}
 	ssMulM := func(a, bb mpc_core.RMat) mpc_core.RMat { return mpcObj.TruncMat(mpcObj.SSMultMat(a, bb), db, fb) }
@@ -218,6 +402,25 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 			for p := range a[j] {
 				acc = acc.Add(a[j][p])
 			}
+		}
+		return acc
+	}
+	sumSquaresMat := func(a mpc_core.RMat) mpc_core.RElem {
+		flat := make(mpc_core.RVec, 0, len(a)*len(a[0]))
+		for i := range a {
+			flat = append(flat, a[i]...)
+		}
+		sq := mpcObj.TruncVec(mpcObj.SSSquareElemVec(flat), db, fb)
+		acc := rtype.Zero()
+		for i := range sq {
+			acc = acc.Add(sq[i])
+		}
+		return acc
+	}
+	traceSS := func(a mpc_core.RMat) mpc_core.RElem {
+		acc := rtype.Zero()
+		for i := range a {
+			acc = acc.Add(a[i][i])
 		}
 		return acc
 	}
@@ -267,21 +470,19 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 		return rtype.Zero()
 	}
 
-	// ---- public-block gram (local plaintext): gg = Gᵀpub·Gpub, gtxSS = GᵀX/√N (SS), and lc.GtX for
-	// the /N combine. Gloc = this party's aligned public genotype (reused for the private A₁ term). ----
+	// ---- public-block gram/coupling. gg=GᵀpubGpub stays local plaintext, while Up=GᵀpubX/N is
+	// entered once as an additive share; the private cache already holds the local A₁ contraction. ----
 	var gg *mat.Dense
 	var dosage []float64
-	var Gloc *mat.Dense
-	var lc LocalContraction
-	haveGram := false
-	gtxSS := mpc_core.InitRMat(rtype.Zero(), m, c)
+	Up := mpc_core.InitRMat(rtype.Zero(), m, c)
+	sppDiag := mpc_core.InitRVec(rtype.Zero(), m)
 	if pid > 0 && nsnps > 0 {
 		g := ast.localFor(b, nsnps, X, y0, gl)
-		Gloc, gg, lc, dosage = g.Gloc, g.gg, g.LocalContraction, g.DosageSum
-		haveGram = true
+		gg, dosage = g.gg, g.DosageSum
 		for j := 0; j < m; j++ {
+			sppDiag[j] = rtype.FromFloat64(gg.At(j, j)/N, fb)
 			for l := 0; l < c; l++ {
-				gtxSS[j][l] = rtype.FromFloat64(lc.GtX.At(j, l)/sqrtN, fb)
+				Up[j][l] = rtype.FromFloat64(g.GtX.At(j, l)/N, fb)
 			}
 		}
 	}
@@ -289,22 +490,37 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 	if w == nil {
 		_, w = ast.blindWeightCKKS(dosage, nsnps) // collective fallback for standalone callers
 	}
-
-	// ---- τₖ = tr(K_ppᵏ): Hutchinson over nsnps probes on the PUBLIC block (M_pp·A via chunked GᵀG). ----
-	gtxT := mpc_core.InitRMat(rtype.Zero(), c, m)
-	for l := 0; l < c; l++ {
-		for j := 0; j < m; j++ {
-			gtxT[l][j] = gtxSS[j][l]
-		}
+	tauProbe, tauMultiplier, exactPublic := skatTraceProbes(m, nProbes, int64(b)*1000003+1)
+	psiProbe, psiMultiplier := tauProbe, tauMultiplier
+	if !exactPublic {
+		psiProbe, psiMultiplier, _ = skatTraceProbes(m, nProbes, int64(b)*1000003+7)
 	}
-	// tqdm-style progress over the gene's secure matvec work: total column-chunks across all mActionMat
-	// calls = ⌈m/chunk⌉·(τ 2·probes + Ψ₁ probes + quads 2·c); log at each 10% (hub only).
+	probeCount := 0
+	if m > 0 {
+		probeCount = len(tauProbe[0])
+	}
+	Omp := null.omp // c×c = N(XtX)⁻¹; cached once by the null model
+	// m==0 (all-private gene): public objects are empty; only the pure-private Π/s terms contribute.
+	Theta := mpc_core.InitRMat(rtype.Zero(), m, c)
+	Dp2 := mpc_core.InitRVec(rtype.Zero(), m)
+	if m > 0 {
+		Theta = ssMulM(Up, Omp)
+		Dp2 = mpcObj.TruncVec(mpcObj.SSSquareElemVec(w), db, fb)
+	}
+	upT := transpose(Up)
+
+	// ---- τ₁ exact; τ₂,τ₃ exact-basis or Hutchinson over public probes (M_pp·A via chunked GᵀG). ----
+	// Hutchinson-only progress over secure M actions. Exact-basis mode forms K directly and skips this
+	// chunked path, so it has no synthetic percentage counter.
 	nChunks := (m + gtgChunkRows - 1) / gtgChunkRows
-	momTotal := float64(nChunks * (3*nProbes + 2*c))
+	momTotal := 0.0
+	if !exactPublic {
+		momTotal = float64(nChunks * (3*probeCount + 2*c))
+	}
 	momDone := 0.0
 	momStart := time.Now()
 	momPct := 0
-	mActionMat := func(A mpc_core.RMat) mpc_core.RMat { // M_pp·A = (GᵀG/N)A − (GᵀX/√N)(XtX)⁻¹(XᵀG/√N)A
+	mActionMat := func(A mpc_core.RMat) mpc_core.RMat { // M_pp·A = (GᵀG/N)A − Θ(UₚᵀA)
 		R := len(A[0])
 		ga := mpc_core.InitRMat(rtype.Zero(), m, R)
 		for start := 0; start < m; start += gtgChunkRows {
@@ -335,9 +551,10 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 			}
 		}
 		ga = mpcObj.TruncMat(ga, db, fb)
-		xtGA := mpcObj.TruncMat(mpcObj.SSMultMat(gtxT, A), db, fb)
-		solMat := ast.choleskySolveMat(null.xtxL, null.xtxDinv, xtGA)
-		gxsol := mpcObj.TruncMat(mpcObj.SSMultMat(gtxSS, solMat), db, fb)
+		// Θ and Uₚ already contain the one per-gene inverse solve. Reusing them here avoids solving
+		// (XtX) against every probe/correction batch while computing the identical projection term.
+		upTA := ssMulM(upT, A)
+		gxsol := ssMulM(Theta, upTA)
 		Mv := mpc_core.InitRMat(rtype.Zero(), m, R)
 		for j := 0; j < m; j++ {
 			for p := 0; p < R; p++ {
@@ -346,7 +563,6 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 		}
 		return Mv
 	}
-	vmulMat := func(a, bb mpc_core.RMat) mpc_core.RMat { return mpcObj.TruncMat(mpcObj.SSMultElemMat(a, bb), db, fb) }
 	vpmulMat := func(a mpc_core.RMat, cf float64) mpc_core.RMat {
 		cfE := rtype.FromFloat64(cf, fb)
 		out := mpc_core.InitRMat(rtype.Zero(), len(a), len(a[0]))
@@ -360,143 +576,91 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 
 	tTau := time.Now()
 	tau1, tau2, tau3 := rtype.Zero(), rtype.Zero(), rtype.Zero()
+	var Kexact mpc_core.RMat
 	if m > 0 {
-		DvMat := mpc_core.InitRMat(rtype.Zero(), m, nProbes)
-		prng := rand.New(rand.NewSource(int64(b)*1000003 + 1))
-		for p := 0; p < nProbes; p++ {
+		if exactPublic {
+			// The probe basis is I_m. Avoid the generic first M_pp·diag(w) dense multiply: form
+			// K=½D(S_pp−ΘU_pᵀ)D with O(m²c)+elementwise work, then use one dense K² multiply.
+			Spp := mpc_core.InitRMat(rtype.Zero(), m, m)
 			for j := 0; j < m; j++ {
-				if prng.Intn(2) == 0 {
-					DvMat[j][p] = w[j].Copy()
-				} else {
-					DvMat[j][p] = w[j].Copy().Neg()
+				if gg != nil {
+					for k := 0; k < m; k++ {
+						Spp[j][k] = rtype.FromFloat64(gg.At(j, k)/N, fb)
+					}
 				}
 			}
-		}
-		wMat := mpc_core.InitRMat(rtype.Zero(), m, nProbes)
-		for j := 0; j < m; j++ {
-			for p := 0; p < nProbes; p++ {
-				wMat[j][p] = w[j].Copy()
+			Mpp := subMat(Spp, ssMulM(Theta, upT))
+			wCols := mpc_core.InitRMat(rtype.Zero(), m, m)
+			for j := 0; j < m; j++ {
+				for k := 0; k < m; k++ {
+					wCols[j][k] = w[k].Copy()
+				}
 			}
+			Kexact = vpmulMat(elemMulM(scaleRows(w, Mpp), wCols), 0.5)
+			K2 := ssMulM(Kexact, Kexact)
+			tau1 = traceSS(Kexact)
+			tau2 = traceSS(K2)
+			tau3 = trProd(K2, Kexact)
+		} else {
+			DvMat := mpc_core.InitRMat(rtype.Zero(), m, probeCount)
+			for p := 0; p < probeCount; p++ {
+				for j := 0; j < m; j++ {
+					if tauProbe[j][p] > 0 {
+						DvMat[j][p] = w[j].Copy()
+					} else {
+						DvMat[j][p] = w[j].Copy().Neg()
+					}
+				}
+			}
+			wMat := mpc_core.InitRMat(rtype.Zero(), m, probeCount)
+			for j := 0; j < m; j++ {
+				for p := 0; p < probeCount; p++ {
+					wMat[j][p] = w[j].Copy()
+				}
+			}
+			MvMat := mActionMat(DvMat)
+			u1 := vpmulMat(elemMulM(wMat, MvMat), 0.5) // Kv
+			Du1 := elemMulM(wMat, u1)
+			Mu1Mat := mActionMat(Du1)
+			u2 := vpmulMat(elemMulM(wMat, Mu1Mat), 0.5) // K²v
+			tau2 = pmul(sumSquaresMat(u1), tauMultiplier)
+			tau3 = pmul(sumAllMat(elemMulM(u1, u2)), tauMultiplier)
 		}
-		MvMat := mActionMat(DvMat)
-		u1 := vpmulMat(vmulMat(wMat, MvMat), 0.5) // Kv
-		Du1 := vmulMat(wMat, u1)
-		Mu1Mat := mActionMat(Du1)
-		u2 := vpmulMat(vmulMat(wMat, Mu1Mat), 0.5) // K²v
-		inv := 1.0 / float64(nProbes)
-		tau1 = pmul(sumAllMat(vmulMat(DvMat, MvMat)), 0.5*inv)
-		tau2 = pmul(sumAllMat(vmulMat(u1, u1)), inv)
-		tau3 = pmul(sumAllMat(vmulMat(u1, u2)), inv)
 	}
-	tauSecs := time.Since(tTau).Seconds() // τ = pub Hutchinson (2 matvec passes); the dominant secure cost
+	tauSecs := time.Since(tTau).Seconds() // public τ₂/τ₃ phase (explicit K or two-pass Hutchinson)
 	tRest := time.Now()
 
 	// ---- private/cross corrections Δₖ, added to τₖ. Party B builds the per-gene tables in plaintext and
 	// shares them: diagonals of Ψ₁,Ξ₁ (length m), Ψ₂,Ξ₂ (m×c), Π₀,Π₁,Π₂ (c×c), scalars sₖ. The one m×m
-	// term tr(D_p²M_ppD_p²Ψ₁) uses Hutchinson: B forms Ψ₁·u = A₁D_v²(A₁ᵀu) locally for public probes u. ----
-	// Federated Up = GᵀpubX/N (m×c); Ω' = N(XtX)⁻¹; Θ = Up·Ω'.
-	upVals := [][]float64(nil)
-	if haveGram {
-		upVals = make([][]float64, m)
-		for j := 0; j < m; j++ {
-			upVals[j] = make([]float64, c)
-			for l := 0; l < c; l++ {
-				upVals[j][l] = lc.GtX.At(j, l) / N
-			}
-		}
-	}
-	Up := shareMat(upVals, m, c)
-	NIc := mpc_core.InitRMat(rtype.Zero(), c, c)
-	if hub {
-		nE := rtype.FromFloat64(N, fb)
-		for l := 0; l < c; l++ {
-			NIc[l][l] = nE
-		}
-	}
-	Omp := ast.choleskySolveMat(null.xtxL, null.xtxDinv, NIc) // c×c = N(XtX)⁻¹
-	// m==0 (all-private gene): the public-block objects are empty; skip their zero-row SS ops (SSMultMat
-	// and SSMultElemVec deref a[0]) and let only the pure-private Π/s corrections below contribute.
-	Theta := mpc_core.InitRMat(rtype.Zero(), m, c) // m×c (empty when m==0)
-	Dp2 := mpc_core.InitRVec(rtype.Zero(), m)      // m (empty when m==0)
-	if m > 0 {
-		Theta = ssMulM(Up, Omp)
-		Dp2 = mpcObj.TruncVec(mpcObj.SSMultElemVec(w, w), db, fb)
-	}
-
-	// Public raw Rademacher probe signs (m×R) for the Ψ₁ Hutchinson term; byte-identical across parties.
-	uSign := make([][]float64, m)
-	for j := 0; j < m; j++ {
-		uSign[j] = make([]float64, nProbes)
-	}
-	{
-		prng := rand.New(rand.NewSource(int64(b)*1000003 + 7))
-		for p := 0; p < nProbes; p++ {
-			for j := 0; j < m; j++ {
-				if prng.Intn(2) == 0 {
-					uSign[j][p] = 1.0
-				} else {
-					uSign[j][p] = -1.0
-				}
-			}
-		}
-	}
-
+	// term tr(D_p²M_ppD_p²Ψ₁) uses the same exact/Hutchinson rule: B forms
+	// Ψ₁·u = A₁D_v²(A₁ᵀu) locally for public probes u. ----
 	// Party B's reduced tables (plaintext; nil on other parties → zero share).
 	var psi1diagv, xi1diagv []float64
 	var psi2v, xi2v, pi0v, pi1v, pi2v, psi1Uv [][]float64
 	var s1v, s2v, s3v float64
 	haveB := false
-	if pid > 0 && privG != nil {
-		np, mp := privG.Dims()
+	if pid > 0 && priv != nil {
+		mp := len(priv.Weight)
 		if mp > 0 {
 			haveB = true
-			dpriv := make([]float64, mp)
-			for k := 0; k < mp; k++ {
-				for i := 0; i < np; i++ {
-					dpriv[k] += privG.At(i, k)
-				}
-			}
-			wv := skatBetaWeight(dpriv, ast.skatTotalNumInds())
+			wv := priv.Weight
 			dv2 := make([]float64, mp)
 			for k := range wv {
 				dv2[k] = wv[k] * wv[k]
 			}
-			// raw aggregates (/N): Svv (mp×mp), Uv (c×mp), A₁ (m×mp)
-			svv := make([][]float64, mp)
-			for k := 0; k < mp; k++ {
-				svv[k] = make([]float64, mp)
-				for k2 := 0; k2 < mp; k2++ {
-					s := 0.0
-					for i := 0; i < np; i++ {
-						s += privG.At(i, k) * privG.At(i, k2)
-					}
-					svv[k][k2] = s / N
-				}
+			// Reuse the cached /N contractions Svv=G_vᵀG_v/N and A₁=G_pᵀG_v/N.
+			svv := priv.Svv
+			if len(svv) != mp || (m > 0 && len(priv.A1) != m) {
+				panic("skatMomentsSS: incomplete private gene cache")
 			}
 			uv := make([][]float64, c)
 			for l := 0; l < c; l++ {
 				uv[l] = make([]float64, mp)
 				for k := 0; k < mp; k++ {
-					s := 0.0
-					for i := 0; i < np; i++ {
-						s += X.At(i, l) * privG.At(i, k)
-					}
-					uv[l][k] = s / N
+					uv[l][k] = priv.GtX.At(k, l) / N
 				}
 			}
-			a1 := make([][]float64, m)
-			for j := 0; j < m; j++ {
-				a1[j] = make([]float64, mp)
-				if Gloc != nil {
-					for k := 0; k < mp; k++ {
-						s := 0.0
-						for i := 0; i < np; i++ {
-							s += Gloc.At(i, j) * privG.At(i, k)
-						}
-						a1[j][k] = s / N
-					}
-				}
-			}
+			a1 := priv.A1
 			// s_k = tr((D_v² S_vv)^k)
 			dvSvv := make([][]float64, mp)
 			for k := 0; k < mp; k++ {
@@ -506,14 +670,15 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 				}
 			}
 			dvSvv2 := matMul(dvSvv, dvSvv)
-			s1v, s2v, s3v = matTrace(dvSvv), matTrace(dvSvv2), matTrace(matMul(dvSvv2, dvSvv))
+			s1v, s2v, s3v = matTrace(dvSvv), matTrace(dvSvv2), matTraceProduct(dvSvv2, dvSvv)
 			// Π₀,Π₁,Π₂ (c×c)
-			uvD2 := matMulD(uv, dv2)                           // Uv·D²
-			pi0v = matMulT(uvD2, uv)                           // Uv D² Uvᵀ
-			uvD2Svv := matMul(uvD2, svv)                       // Uv D² Svv
-			pi1v = matMulT(matMulD(uvD2Svv, dv2), uv)          // Uv D² Svv D² Uvᵀ
-			uvD2SvvD2Svv := matMul(matMulD(uvD2Svv, dv2), svv) // Uv D² Svv D² Svv
-			pi2v = matMulT(matMulD(uvD2SvvD2Svv, dv2), uv)     // ·D² Uvᵀ
+			uvD2 := matMulD(uv, dv2)                       // Uv·D²
+			pi0v = matMulT(uvD2, uv)                       // Uv D² Uvᵀ
+			uvD2Svv := matMul(uvD2, svv)                   // Uv D² Svv
+			uvD2SvvD2 := matMulD(uvD2Svv, dv2)             // Uv D² Svv D²
+			pi1v = matMulT(uvD2SvvD2, uv)                  // Uv D² Svv D² Uvᵀ
+			uvD2SvvD2Svv := matMul(uvD2SvvD2, svv)         // Uv D² Svv D² Svv
+			pi2v = matMulT(matMulD(uvD2SvvD2Svv, dv2), uv) // ·D² Uvᵀ
 			if nsnps > 0 {
 				a1D2 := matMulD(a1, dv2) // A₁·D²
 				// diag(Ψ₁)[j] = Σ_k A₁[j][k]² D²[k]
@@ -526,14 +691,8 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 					psi1diagv[j] = s
 				}
 				// diag(Ξ₁)[j] = A₁[j]·(D² Svv D²)·A₁[j]ᵀ
-				bmat := make([][]float64, mp) // D² Svv D²
-				for k := 0; k < mp; k++ {
-					bmat[k] = make([]float64, mp)
-					for k2 := 0; k2 < mp; k2++ {
-						bmat[k][k2] = dv2[k] * svv[k][k2] * dv2[k2]
-					}
-				}
-				a1B := matMul(a1, bmat) // m×mp
+				a1D2Svv := matMul(a1D2, svv)
+				a1B := matMulD(a1D2Svv, dv2) // A₁ D² Svv D² (m×mp)
 				xi1diagv = make([]float64, m)
 				for j := 0; j < m; j++ {
 					s := 0.0
@@ -543,8 +702,7 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 					xi1diagv[j] = s
 				}
 				psi2v = matMulT(a1D2, uv) // Ψ₂ = A₁ D² Uvᵀ (m×c)
-				a1D2Svv := matMul(a1D2, svv)
-				xi2v = matMulT(matMulD(a1D2Svv, dv2), uv) // Ξ₂ = A₁ D² Svv D² Uvᵀ (m×c)
+				xi2v = matMulT(a1B, uv)   // Ξ₂ = A₁ D² Svv D² Uvᵀ (m×c); reuse the matrix above
 				// Ψ₁·U = A₁ D²(A₁ᵀU) (m×R), computed in B's plaintext (A₁ᵀU is mp×R).
 				a1T := make([][]float64, mp)
 				for k := 0; k < mp; k++ {
@@ -553,9 +711,9 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 						a1T[k][j] = a1[j][k]
 					}
 				}
-				a1tUd := matMul(a1T, uSign) // A₁ᵀU (mp×R)
+				a1tUd := matMul(a1T, psiProbe) // A₁ᵀU (mp×probeCount)
 				for k := 0; k < mp; k++ {
-					for p := 0; p < nProbes; p++ {
+					for p := 0; p < probeCount; p++ {
 						a1tUd[k][p] *= dv2[k]
 					}
 				}
@@ -579,7 +737,7 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 	Pi0 := shareMat(pi0v, c, c)
 	Pi1 := shareMat(pi1v, c, c)
 	Pi2 := shareMat(pi2v, c, c)
-	Psi1U := shareMat(psi1Uv, m, nProbes)
+	Psi1U := shareMat(psi1Uv, m, probeCount)
 	s1 := shareScalar(s1v, haveB)
 	s2 := shareScalar(s2v, haveB)
 	s3 := shareScalar(s3v, haveB)
@@ -626,36 +784,85 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 	// tr(D_p² M_pp D_p² C) = tr(D_p²M_ppD_p²Ψ₁) − 2·quad(Ψ₂) + tr(quad(Θ)·Π₀), M_pp via mActionMat.
 	trDp2MppDp2C := rtype.Zero()
 	if m > 0 {
-		// Ψ₁ Hutchinson: (1/R) Σ_jp uSign·(D_p²·M_pp·(D_p²·Ψ₁U))
-		DB1 := scaleRows(Dp2, Psi1U)
-		DMDB1 := scaleRows(Dp2, mActionMat(DB1))
+		// Hutchinson corrections share one wide M action; exact-basis corrections reuse explicit K.
+		basis := mpc_core.InitRMat(rtype.Zero(), m, probeCount+2*c)
+		for j := 0; j < m; j++ {
+			for p := 0; p < probeCount; p++ {
+				basis[j][p] = Psi1U[j][p].Copy()
+			}
+			for l := 0; l < c; l++ {
+				basis[j][probeCount+l] = Psi2[j][l].Copy()
+				basis[j][probeCount+c+l] = Theta[j][l].Copy()
+			}
+		}
+		var acted mpc_core.RMat
+		if exactPublic {
+			// D²M_ppD²B = 2·D·K·D·B, reusing the explicit exact-basis K.
+			acted = scaleRows(w, ssMulM(Kexact, scaleRows(w, basis)))
+			for j := range acted {
+				acted[j].MulScalar(rtype.FromInt(2))
+			}
+		} else {
+			weightedBasis := scaleRows(Dp2, basis)
+			// τ₁ = ½[Σ_j d_j²Spp_jj − Σ_jl(d_j²Θ_jl)Up_jl] exactly.
+			tauLeft := make(mpc_core.RVec, m*(c+1))
+			tauRight := make(mpc_core.RVec, m*(c+1))
+			for j := 0; j < m; j++ {
+				tauLeft[j], tauRight[j] = Dp2[j], sppDiag[j]
+				for l := 0; l < c; l++ {
+					idx := m + j*c + l
+					tauLeft[idx] = weightedBasis[j][probeCount+c+l]
+					tauRight[idx] = Up[j][l]
+				}
+			}
+			tauTerms := mpcObj.TruncVec(mpcObj.SSMultElemVec(tauLeft, tauRight), db, fb)
+			tau1Acc := rtype.Zero()
+			for i := 0; i < m; i++ {
+				tau1Acc = tau1Acc.Add(tauTerms[i])
+			}
+			for i := m; i < len(tauTerms); i++ {
+				tau1Acc = tau1Acc.Sub(tauTerms[i])
+			}
+			tau1 = pmul(tau1Acc, 0.5)
+			acted = scaleRows(Dp2, mActionMat(weightedBasis))
+		}
+
+		// Ψ₁ trace: basis sum if exact, otherwise (1/R)Σ uᵀD_p²M_ppD_p²Ψ₁u.
 		psiAcc := rtype.Zero()
 		for j := 0; j < m; j++ {
-			for p := 0; p < nProbes; p++ {
-				if uSign[j][p] > 0 {
-					psiAcc = psiAcc.Add(DMDB1[j][p])
-				} else {
-					psiAcc = psiAcc.Sub(DMDB1[j][p])
+			for p := 0; p < probeCount; p++ {
+				if psiProbe[j][p] > 0 {
+					psiAcc = psiAcc.Add(acted[j][p])
+				} else if psiProbe[j][p] < 0 {
+					psiAcc = psiAcc.Sub(acted[j][p])
 				}
 			}
 		}
-		trPsi1 := pmul(psiAcc, 1.0/float64(nProbes))
+		trPsi1 := pmul(psiAcc, psiMultiplier)
 		// quad(Ψ₂) = tr(Θᵀ·D_p²M_ppD_p²·Ψ₂) = sumAll(Θ ⊙ D_p²M_pp(D_p²Ψ₂))
-		DMV2 := scaleRows(Dp2, mActionMat(scaleRows(Dp2, Psi2)))
+		DMV2 := mpc_core.InitRMat(rtype.Zero(), m, c)
+		DMVt := mpc_core.InitRMat(rtype.Zero(), m, c)
+		for j := 0; j < m; j++ {
+			for l := 0; l < c; l++ {
+				DMV2[j][l] = acted[j][probeCount+l]
+				DMVt[j][l] = acted[j][probeCount+c+l]
+			}
+		}
 		quadPsi2 := sumAllMat(elemMulM(Theta, DMV2))
 		// quad(Θ) = Θᵀ·D_p²M_ppD_p²·Θ (c×c); tr(quad(Θ)·Π₀)
-		DMVt := scaleRows(Dp2, mActionMat(scaleRows(Dp2, Theta)))
 		quadTh := ssMulM(transpose(Theta), DMVt) // c×c
 		trDp2MppDp2C = trPsi1.Sub(pmul(quadPsi2, 2.0)).Add(trProd(quadTh, Pi0))
 	}
 
 	// pure-private traces (c×c / scalar): tr(Ω'Πₖ), tr((Ω'Π₀)²), tr((Ω'Π₀)³), tr(Π₁Ω'Π₀Ω')
-	trOmPi0 := trProd(Omp, Pi0)
-	trOmPi1 := trProd(Omp, Pi1)
+	OmPi1 := ssMulM(Omp, Pi1)
+	M0sq := ssMulM(OmPi0, OmPi0)
+	trOmPi0 := traceSS(OmPi0)
+	trOmPi1 := traceSS(OmPi1)
 	trOmPi2 := trProd(Omp, Pi2)
-	trM0sq := trProd(OmPi0, OmPi0)
-	trM0cu := trProd(ssMulM(OmPi0, OmPi0), OmPi0)
-	trP1OP0O := trProd(ssMulM(Pi1, Omp), ssMulM(Pi0, Omp))
+	trM0sq := traceSS(M0sq)
+	trM0cu := trProd(M0sq, OmPi0)
+	trP1OP0O := trProd(OmPi1, OmPi0) // cyclic: tr((OΠ₁)(OΠ₀)) = tr(Π₁OΠ₀O)
 
 	// Δ₁ = ½(s₁ − tr(Ω'Π₀))
 	d1 := pmul(s1.Sub(trOmPi0), 0.5)
@@ -669,18 +876,32 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 	S2 = tau2.Add(d2)
 	S3 = tau3.Add(d3)
 	if hub {
-		log.LLvl1(fmt.Sprintf("[skat_fed]   moments split: τ-hutch(2 pass) %.0fs | private+combine(Ψ₁ pass) %.0fs",
-			tauSecs, time.Since(tRest).Seconds()))
+		mode := fmt.Sprintf("hutch(%d cols, 2 M actions)", probeCount)
+		if exactPublic {
+			mode = fmt.Sprintf("exact-basis(%d cols, explicit K+K²)", probeCount)
+		}
+		log.LLvl1(fmt.Sprintf("[skat_fed]   moments split: public-%s %.0fs | τ1/private/combine %.0fs",
+			mode, tauSecs, time.Since(tRest).Seconds()))
 	}
 	return
 }
 
+func skatMomentFloor(fracBits int) float64 {
+	// Never choose a positive guard that rounds to zero in the configured fixed-point format.
+	return math.Max(1e-8, math.Ldexp(1.0, -fracBits))
+}
+
+func skatSkewFloor(fracBits int) float64 {
+	// h=2*skew²/9 must also remain positive after fixed-point quantization; this gives h>=2 quanta.
+	return math.Max(1e-4, 3.0*math.Sqrt(math.Ldexp(1.0, -fracBits)))
+}
+
 // skatZSS assembles the Wilson-Hilferty pivot z from (Q, S1, S2, S3) in secret shares (δ=0, S4 unused).
-// Uses the ORIGINAL Liu form (s1=S3/S2^1.5, l=1/s1², t=(Q−S1)√(S2)⁻¹/s1+l, arg=t/l=1+u, h=2/(9l)):
+// Uses the algebraically reduced Liu form s=S3/S2^1.5, u=(Q−S1)s/√S2, h=2s²/9:
 //
 //	z = (∛(arg) − 1 + h)/√h.
 //
-// 1/x via (1/√x)²; √S2,√h via SqrtAndSqrtInverse; ∛ via secureCbrt. Reveal z ⇒ p = ½erfc(z/√2).
+// √S2,√h use SqrtAndSqrtInverse; ∛ uses secureCbrt. Reveal z ⇒ p = ½erfc(z/√2).
 func (ast *AssocTest) skatZSSVec(Q, S1, S2, S3 mpc_core.RVec) mpc_core.RVec {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
@@ -688,6 +909,9 @@ func (ast *AssocTest) skatZSSVec(Q, S1, S2, S3 mpc_core.RVec) mpc_core.RVec {
 	hub := mpcObj.GetPid() == mpcObj.GetHubPid()
 	mul := func(a, b mpc_core.RVec) mpc_core.RVec {
 		return mpcObj.TruncVec(mpcObj.SSMultElemVec(a, b), db, fb)
+	}
+	square := func(a mpc_core.RVec) mpc_core.RVec {
+		return mpcObj.TruncVec(mpcObj.SSSquareElemVec(a), db, fb)
 	}
 	pmul := func(a mpc_core.RVec, cf float64) mpc_core.RVec {
 		cfE := rtype.FromFloat64(cf, fb)
@@ -697,34 +921,66 @@ func (ast *AssocTest) skatZSSVec(Q, S1, S2, S3 mpc_core.RVec) mpc_core.RVec {
 		}
 		return mpcObj.TruncVec(out, db, fb)
 	}
-	inv := func(x mpc_core.RVec) mpc_core.RVec { // 1/x = (1/√x)²
-		_, si := mpcObj.SqrtAndSqrtInverse(x, false)
-		return mul(si, si)
-	}
+	// Record the PSD/fixed-point domain guard before clamping. The bit remains secret; invalid,
+	// underflow, or unrepresentably large genes use safe surrogate inputs and end at z=-9 (p≈1).
+	momentFloor := skatMomentFloor(fb)
+	momentCeil := math.Ldexp(1.0, db-fb-2) // one signed-integer headroom bit for sqrt/intermediates
+	bv := mpcObj.GetBooleanShareFlag()
+	s2Valid := mpcObj.NotLessThanPublic(S2, rtype.FromFloat64(momentFloor, fb), bv)
+	s3Valid := mpcObj.NotLessThanPublic(S3, rtype.FromFloat64(momentFloor, fb), bv)
+	s2BelowCeil := mpcObj.LessThanPublic(S2, rtype.FromFloat64(momentCeil, fb), bv)
+	valid := mpcObj.SSMultElemVec(s2Valid, s3Valid)
+	valid = mpcObj.SSMultElemVec(valid, s2BelowCeil) // scale-0 AND
 
 	// Floor S2 off zero: an all-common window underflows S2/N² to 0 → SqrtAndSqrtInverse(0) garbage.
-	// Real rare genes sit far above 1e-8, so this only catches the degenerate/underflow case.
-	S2 = ast.secureClampVec(S2, 1e-8, 1e12)
+	// The ceil leaves one signed-integer headroom bit so the bound is representable under the
+	// configured db/fb fixed-point format and is valid input to the normalizer-backed sqrt.
+	S2 = ast.secureSelectOrPublicVec(s2Valid, S2, momentFloor)
+	S2 = ast.secureSelectOrPublicVec(s2BelowCeil, S2, momentCeil)
+	S3 = ast.secureSelectOrPublicVec(valid, S3, momentFloor)
 
-	// Original Liu form (NOT the collapsed 1+u): avoids the huge S2², S2³ and their tiny inverses.
-	// Interleaving the huge S3 with 1/√S2 one factor at a time keeps every intermediate O(1) — no g³
-	// underflow, no S2³ overflow past mpc_data_bits. δ=0 ⇒ l=1/s1², k=l, arg = t/k = 1+u.
+	// Form the dimensionless ratios directly. The split skew path below and
+	// arg=1+((Q−S1)/√S2)*(S3/S2^1.5) avoid both the S2²/S2³ intermediates and a
+	// 1/s² -> 1/l inverse round trip (two extra secure inverse-square-root calls).
 	_, si := mpcObj.SqrtAndSqrtInverse(S2, false) // 1/√S2
-	s1 := mul(mul(mul(S3, si), si), si)           // S3/S2^1.5 (interleaved: huge→O(1))
-	invS1 := inv(s1)
-	l := mul(invS1, invS1) // 1/s1²
+	// Compute min(S3/S2^1.5,1) without allowing an inconsistent Hutchinson pair to wrap before
+	// the final clamp. For S2<1, cap after every increasing multiply by si; for S2>=1, si<=1 so
+	// the three products are monotonically non-increasing. The inactive branch receives safe inputs.
+	oneVec := mpc_core.InitRVec(rtype.Zero(), len(S2))
+	if hub {
+		one := rtype.FromFloat64(1.0, fb)
+		for i := range oneVec {
+			oneVec[i] = one
+		}
+	}
+	smallS2 := mpcObj.LessThanPublic(S2, rtype.FromFloat64(1.0, fb), bv)
+	lowSi := ast.secureSelectOrPublicVec(smallS2, si, 1.0)
+	lowSkew := ast.secureClampVec(S3, 0.0, 1.0)
+	for it := 0; it < 3; it++ {
+		lowSkew = mul(lowSkew, lowSi)
+		lowSkew = ast.secureClampVec(lowSkew, 0.0, 1.0)
+	}
+	highSi := ast.secureSelectVec(smallS2, oneVec, si)
+	highSkew := ast.secureSelectVec(smallS2, oneVec, S3)
+	for it := 0; it < 3; it++ {
+		highSkew = mul(highSkew, highSi)
+	}
+	skew := ast.secureSelectVec(smallS2, lowSkew, highSkew)
+	// A PSD spectrum has 0 < S3/S2^(3/2) <= 1. Enforce that feasible range after noisy estimation;
+	// the lower floor also keeps h and its inverse square root away from zero on invalid genes.
+	skew = ast.secureClampVec(skew, skatSkewFloor(fb), 1.0)
 	qmS1 := make(mpc_core.RVec, len(Q))
 	for i := range Q {
 		qmS1[i] = Q[i].Sub(S1[i])
 	}
-	t := mul(mul(qmS1, si), invS1) // (Q−S1)·(1/√S2)·(1/s1)
-	for i := range t {
-		t[i] = t[i].Add(l[i]) // + l
+	arg := mul(mul(qmS1, si), skew)
+	if hub {
+		one := rtype.FromFloat64(1.0, fb)
+		for i := range arg {
+			arg[i] = arg[i].Add(one) // 1 + u
+		}
 	}
-	invL := inv(l)
-	arg := mul(t, invL)                     // t/k = t/l = 1+u
-	arg = ast.secureClampVec(arg, 0.1, 9.0) // into secureCbrt's convergence window (no Newton divergence)
-	h := pmul(invL, 2.0/9.0)                // 2/(9l)
+	h := pmul(square(skew), 2.0/9.0) // 2s²/9
 	cr := ast.secureCbrtVec(arg)
 	_, invSqrtH := mpcObj.SqrtAndSqrtInverse(h, false)
 	num := make(mpc_core.RVec, len(cr))
@@ -734,32 +990,10 @@ func (ast *AssocTest) skatZSSVec(Q, S1, S2, S3 mpc_core.RVec) mpc_core.RVec {
 			num[i] = num[i].Sub(rtype.FromFloat64(1.0, fb)) // − 1
 		}
 	}
-	return mul(num, invSqrtH) // (∛(t/k) − 1 + h)/√h
+	z := mul(num, invSqrtH) // (∛(t/k) − 1 + h)/√h
+	return ast.secureSelectOrPublicVec(valid, z, -9.0)
 }
 
 func (ast *AssocTest) skatZSS(Q, S1, S2, S3 mpc_core.RElem) mpc_core.RElem {
 	return ast.skatZSSVec(mpc_core.RVec{Q}, mpc_core.RVec{S1}, mpc_core.RVec{S2}, mpc_core.RVec{S3})[0]
-}
-
-// skatPValueSS returns the SKAT WH pivot z (SS) for gene b's public list: Q (scaled SKAT statistic) +
-// Hutchinson moments + skatZSS.
-func (ast *AssocTest) skatPValueSS(b, nsnps, nProbes int, null skatNull, nullRSS crypto.CipherVector, X *mat.Dense, y0 []float64, privG *mat.Dense, privatePid int) mpc_core.RElem {
-	mpcObj := ast.general.mpcObj[0]
-	rtype := mpcObj.GetRType()
-	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
-	// full-gene SKAT statistic Q = Σw²s² over locally oriented public + private variants
-	gl := ast.computeGeneLocal(b, nsnps, X, y0)
-	qPub, _, wPub := ast.blockStat(b, nsnps, null, X, y0, gl)
-	qPriv, _ := ast.privateBlockStat(privG, null, X, y0, privatePid)
-	qRaw := mpc_core.RVec{qPub[0].Add(qPriv[0])}
-	scaleSS, ok := ast.general.rareVariantScaleShares(nullRSS)
-	if !ok {
-		panic("skatPValueSS: scale undefined (dof ≤ 0)")
-	}
-	Q := mpcObj.TruncVec(mpcObj.SSMultElemVec(qRaw, mpc_core.RVec{scaleSS[0]}), db, fb)[0] // Q/(2σ̂²)
-	// Normalize Q by N to match the N-normalized moments (kernel /N); WH ratios are scale-invariant.
-	invN := rtype.FromFloat64(1.0/float64(ast.skatTotalNumInds()), fb)
-	Q = mpcObj.TruncVec(mpc_core.RVec{Q.Mul(invN)}, db, fb)[0]
-	S1, S2, S3 := ast.skatMomentsSS(b, nsnps, nProbes, null, X, y0, privG, gl, wPub)
-	return ast.skatZSS(Q, S1, S2, S3)
 }

@@ -30,17 +30,12 @@ func vecToSlice(v *mat.VecDense) []float64 {
 	return out
 }
 
-// LocalContract contracts (G, X, y0) locally; y0 centered, X includes intercept.
-func LocalContract(G, X *mat.Dense, y0 []float64) LocalContraction {
+// localGenotypeContract computes only the gene-dependent fields. Per-gene SKAT callers use this
+// instead of recomputing the null-only XtX, Xty0, and y0ty0 for every public/private block.
+func localGenotypeContract(G, X *mat.Dense, y0 []float64) LocalContraction {
 	n, _ := X.Dims()
 	_, m := G.Dims()
 	y0v := mat.NewVecDense(n, y0)
-
-	var XtX mat.Dense
-	XtX.Mul(X.T(), X)
-
-	var Xty mat.VecDense
-	Xty.MulVec(X.T(), y0v)
 
 	var GtX mat.Dense
 	GtX.Mul(G.T(), X)
@@ -50,19 +45,30 @@ func LocalContract(G, X *mat.Dense, y0 []float64) LocalContraction {
 
 	dosage := make([]float64, m)
 	for j := 0; j < m; j++ {
-		for i := 0; i < n; i++ {
-			dosage[j] += G.At(i, j)
-		}
+		dosage[j] = GtX.At(j, 0) // X[:,0] is the intercept, so this is already Σ_i G[i,j]
 	}
 
 	return LocalContraction{
-		XtX:       &XtX,
-		Xty0:      vecToSlice(&Xty),
-		Y0ty0:     mat.Dot(y0v, y0v),
 		GtX:       &GtX,
 		Gty0:      vecToSlice(&Gty),
 		DosageSum: dosage,
 	}
+}
+
+// LocalContract contracts (G, X, y0) locally; y0 centered, X includes intercept.
+func LocalContract(G, X *mat.Dense, y0 []float64) LocalContraction {
+	lc := localGenotypeContract(G, X, y0)
+	n, _ := X.Dims()
+	y0v := mat.NewVecDense(n, y0)
+
+	var XtX mat.Dense
+	XtX.Mul(X.T(), X)
+	var Xty mat.VecDense
+	Xty.MulVec(X.T(), y0v)
+	lc.XtX = &XtX
+	lc.Xty0 = vecToSlice(&Xty)
+	lc.Y0ty0 = mat.Dot(y0v, y0v)
+	return lc
 }
 
 // Add sums two contractions party-wise (all fields additive) — the n-independence invariant
@@ -101,7 +107,7 @@ func (ast *AssocTest) computeGeneLocal(b, nsnps int, X *mat.Dense, y0 []float64)
 	Gloc := orientGenotypeLocal(ast.readGenoBlockLocal(b))
 	var gg mat.Dense
 	gg.Mul(Gloc.T(), Gloc)
-	return &geneLocal{LocalContraction: LocalContract(Gloc, X, y0), Gloc: Gloc, gg: &gg}
+	return &geneLocal{LocalContraction: localGenotypeContract(Gloc, X, y0), Gloc: Gloc, gg: &gg}
 }
 
 func (ast *AssocTest) localFor(b, nsnps int, X *mat.Dense, y0 []float64, gl *geneLocal) *geneLocal {
@@ -176,16 +182,11 @@ func (ln localNull) matrices(c int) (xtx [][]float64, xty []float64, y0ty0 float
 
 // skatNull holds the secure null-model results from the c-dim aggregates.
 type skatNull struct {
-	betaRep  crypto.CipherVector // betaRep[ℓ] = Enc(β̂_ℓ) in every slot (PART B CKKS score)
-	betaSS   mpc_core.RVec       // β̂ in secret shares (exact SS score)
-	xtxSS    mpc_core.RMat       // XᵀX in secret shares (reused by the Burden-variance solve)
-	xtxL     mpc_core.RMat       // cached Cholesky factor of xtxSS (factor once, choleskySolve per RHS)
-	xtxDinv  mpc_core.RVec       // 1/diag(xtxL); pairs with xtxL for every moment/burden solve
-	rssSS    mpc_core.RElem      // residual-norm RSS = y₀ᵀy₀ − 2Xᵀy₀·β̂ + β̂ᵀXᵀXβ̂ (robust σ̂²)
-	xtyEnc   crypto.CipherVector // global Xᵀy₀ (aggregated; xtySS derives from it in the null)
-	y0ty0Enc crypto.CipherVector // global y₀ᵀy₀ (for RSS)
-	c        int
-	center   float64 // public centering constant, reused by the score
+	betaRep crypto.CipherVector // betaRep[ℓ] = Enc(β̂_ℓ) in every slot (PART B CKKS score)
+	betaSS  mpc_core.RVec       // β̂ in secret shares (exact SS score)
+	omp     mpc_core.RMat       // Ω'=N(XᵀX)⁻¹, solved once and reused by every gene/action
+	rssSS   mpc_core.RElem      // residual-norm RSS = y₀ᵀy₀ − 2Xᵀy₀·β̂ + β̂ᵀXᵀXβ̂ (robust σ̂²)
+	c       int
 }
 
 // ridgeRel: relative Tikhonov ridge on the covariate diagonal, keeps XᵀX⁻¹ finite on a singular design.
@@ -218,34 +219,6 @@ func (ast *AssocTest) choleskyFactor(A mpc_core.RMat) (mpc_core.RMat, mpc_core.R
 		}
 	}
 	return L, dInv
-}
-
-// choleskySolve solves A·x=b given the precomputed factor (L,dInv) from choleskyFactor(A), via
-// forward (L·z=b) then back (Lᵀ·x=z) substitution.
-func (ast *AssocTest) choleskySolve(L mpc_core.RMat, dInv mpc_core.RVec, b mpc_core.RVec) mpc_core.RVec {
-	mpcObj := ast.general.mpcObj[0]
-	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
-	c := len(b)
-	mul := func(x, y mpc_core.RElem) mpc_core.RElem {
-		return mpcObj.TruncVec(mpcObj.SSMultElemVec(mpc_core.RVec{x}, mpc_core.RVec{y}), db, fb)[0]
-	}
-	z := make(mpc_core.RVec, c) // forward:  L·z = b
-	for i := 0; i < c; i++ {
-		v := b[i].Copy()
-		for k := 0; k < i; k++ {
-			v = v.Sub(mul(L[i][k], z[k]))
-		}
-		z[i] = mul(v, dInv[i])
-	}
-	x := make(mpc_core.RVec, c) // back:  Lᵀ·x = z
-	for i := c - 1; i >= 0; i-- {
-		v := z[i].Copy()
-		for k := i + 1; k < c; k++ {
-			v = v.Sub(mul(L[k][i], x[k]))
-		}
-		x[i] = mul(v, dInv[i])
-	}
-	return x
 }
 
 // choleskySolveMat solves A·X=B for a c×R RHS matrix B given the factor (L,dInv), with the
@@ -351,8 +324,26 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 		xtyCt = xtyEnc[0]
 	}
 	xtySS := mpcObj.CiphertextToSS(cps, rtype, xtyCt, mpcObj.GetHubPid(), c)
-	xtxL, xtxDinv := ast.choleskyFactor(xtxSS) // factor once; reused by every moment/burden solve
-	betaSS := ast.choleskySolve(xtxL, xtxDinv, xtySS)
+	xtxL, xtxDinv := ast.choleskyFactor(xtxSS)
+	// Solve [β̂ | Ω']=(XᵀX)⁻¹[Xᵀy₀ | N·I] as one c×(c+1) RHS. Batching removes a duplicate
+	// forward/back-substitution schedule, and cached Ω'=N(XᵀX)⁻¹ removes every per-gene solve.
+	rhs := mpc_core.InitRMat(rtype.Zero(), c, c+1)
+	for i := 0; i < c; i++ {
+		rhs[i][0] = xtySS[i]
+	}
+	if pid == mpcObj.GetHubPid() {
+		nE := rtype.FromFloat64(float64(ast.skatTotalNumInds()), mpcObj.GetFracBits())
+		for j := 0; j < c; j++ {
+			rhs[j][j+1] = nE
+		}
+	}
+	solvedNull := ast.choleskySolveMat(xtxL, xtxDinv, rhs)
+	betaSS := make(mpc_core.RVec, c)
+	omp := mpc_core.InitRMat(rtype.Zero(), c, c)
+	for i := 0; i < c; i++ {
+		betaSS[i] = solvedNull[i][0]
+		copy(omp[i], solvedNull[i][1:])
+	}
 	fedTimings.nullInv = time.Since(tNull)
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: XtX->SS + Cholesky solve %v", fedTimings.nullInv.Round(time.Millisecond)))
 	tNull = time.Now()
@@ -402,7 +393,7 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 
 	fedTimings.nullBeta = time.Since(tNull)
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: Xty->SS + beta=inv*Xty + betaRep %v", fedTimings.nullBeta.Round(time.Millisecond)))
-	return skatNull{betaRep: betaRep, betaSS: betaSS, xtxSS: xtxSS, xtxL: xtxL, xtxDinv: xtxDinv, rssSS: rssSS, xtyEnc: xtyEnc, y0ty0Enc: y0ty0Enc, c: c, center: center}
+	return skatNull{betaRep: betaRep, betaSS: betaSS, omp: omp, rssSS: rssSS, c: c}
 }
 
 // computeNullRSSEnc wraps the residual-norm RSS (formed in SS as null.rssSS) as a 1-element

@@ -1152,27 +1152,33 @@ func TestSKATFederatedPrivate(t *testing.T) {
 
 	prot.GetConfig().GenoNumBlocks = nGenes
 	prot.GetConfig().GenoFileFormat = "blocks"
+	installPublicStreams := func() {
+		switch pid {
+		case 1:
+			streams, sizes := writeGeneStreams(t, nPub, nGenes, pubPerGene, func(g, col int) []float64 {
+				return pubCols[g][col]
+			})
+			prot.genoBlocks, prot.genoBlockSizes = streams, sizes
+		case 2:
+			streams, sizes := writeGeneStreams(t, nPriv, nGenes, pubPerGene, func(g, col int) []float64 {
+				if col < nShared {
+					return privSharedCols[g][col]
+				}
+				return make([]float64, nPriv) // public_only aligned to 0
+			})
+			prot.genoBlocks, prot.genoBlockSizes = streams, sizes
+		default:
+			prot.genoBlockSizes = make([]int, nGenes)
+		}
+	}
 
 	// --- per-party injection ---
 	var privPrefix string // private-only block files (only the private party); "" elsewhere
 	switch pid {
 	case 1: // public-list party: public-list genotypes, no private variants
 		prot.SetPhenoAndCov(mat.NewDense(nPub, 1, append([]float64(nil), pubY...)), pubCov)
-		streams, sizes := writeGeneStreams(t, nPub, nGenes, pubPerGene, func(g, col int) []float64 {
-			return pubCols[g][col]
-		})
-		prot.genoBlocks = streams
-		prot.genoBlockSizes = sizes
 	case 2: // private party: public-list genotypes ALIGNED (public_only cols = 0) + private dense
 		prot.SetPhenoAndCov(mat.NewDense(nPriv, 1, append([]float64(nil), privY...)), privCov)
-		streams, sizes := writeGeneStreams(t, nPriv, nGenes, pubPerGene, func(g, col int) []float64 {
-			if col < nShared {
-				return privSharedCols[g][col]
-			}
-			return make([]float64, nPriv) // public_only aligned to 0
-		})
-		prot.genoBlocks = streams
-		prot.genoBlockSizes = sizes
 		// private-only blocks → per-gene int8 files (the skat_fed mode loads these).
 		privDir := t.TempDir()
 		for g := 0; g < nGenes; g++ {
@@ -1189,14 +1195,27 @@ func TestSKATFederatedPrivate(t *testing.T) {
 		privPrefix = fmt.Sprintf("%s/priv.%%d.bin", privDir)
 	default: // pid 0
 		prot.SetPhenoAndCov(nil, nil)
-		prot.genoBlockSizes = make([]int, nGenes)
 	}
+	installPublicStreams()
 
 	prot.GetConfig().PrivatePid = privatePid
-	prot.GetConfig().PrivateOnlyPrefix = privPrefix      // "" except on the private party
-	skatDec, burdenPDec, _ := prot.runFederatedPrivate() // SKAT p (3rd) disabled here (probes=0)
+	prot.GetConfig().PrivateOnlyPrefix = privPrefix // "" except on the private party
+	prot.GetConfig().SkatPValueProbes = 0
+	skatDec, burdenPDec, _ := prot.runFederatedPrivate()
+
+	// Reopen the consumed public streams and exercise the production p-value driver. Exact basis is
+	// selected because the public trace-column budget equals m_pub. In this mode raw Q must stay nil.
+	installPublicStreams()
+	prot.GetConfig().SkatPValueProbes = pubPerGene
+	skatPModeQ, burdenPModeDec, skatPDec := prot.runFederatedPrivate()
+	if len(skatPModeQ) != 0 {
+		t.Fatalf("SKAT p-value mode released %d raw Q values", len(skatPModeQ))
+	}
 	if pid != 1 {
 		return
+	}
+	if len(skatPDec) != nGenes {
+		t.Fatalf("SKAT p-value mode returned %d p-values, want %d", len(skatPDec), nGenes)
 	}
 
 	// --- oracle 1: SKATFederatedPrivate (the secure spec) ---
@@ -1284,11 +1303,13 @@ func TestSKATFederatedPrivate(t *testing.T) {
 		// Burden statistic and zᵀPz are never revealed; secure exposes only SKAT and the Burden p-value.
 		check("SKAT", skatDec[g], oracleSkat[geneName(g)], plain.Q)
 		check("BurdenP", burdenPDec[g], oracleBurdenP[geneName(g)], plain.BurdenP)
+		check("BurdenP(p-mode)", burdenPModeDec[g], oracleBurdenP[geneName(g)], plain.BurdenP)
+		check("SKATP", skatPDec[g], plain.SkatP, plain.SkatP)
 	}
 }
 
-// TestSecureCbrt checks the SS inverse-Newton cube root (WH pivot primitive) against math.Cbrt over
-// the P0-validated argument range [0.79, 5.6]. Secret x = additive share (hub holds it, others 0).
+// TestSecureCbrt checks the signed, range-reduced SS inverse-Newton cube root (WH pivot primitive)
+// against math.Cbrt across zero and both tails of the configured fixed-point range.
 func TestSecureCbrt(t *testing.T) {
 	prot := InitProtocolForTest(t)
 	if prot == nil {
@@ -1300,25 +1321,35 @@ func TestSecureCbrt(t *testing.T) {
 	rtype := mpcObj.GetRType()
 	fb := mpcObj.GetFracBits()
 	hub := mpcObj.GetPid() == mpcObj.GetHubPid()
-	for _, xv := range []float64{0.79, 1.0, 2.0, 3.0, 5.6} {
-		x := rtype.Zero()
-		if hub {
-			x = rtype.FromFloat64(xv, fb)
+	minMag := math.Ldexp(1.0, -fb)
+	maxMag := math.Ldexp(1.0, mpcObj.GetDataBits()-fb-2)
+	inputs := []float64{
+		-maxMag, -30000, -100, -8, -0.08, -0.0125, -1e-6, -minMag,
+		0,
+		minMag, 1e-6, 0.0125, 0.08, 0.1, 0.79, 1, 8, 9, 50, 1000, 30000, maxMag,
+	}
+	x := mpc_core.InitRVec(rtype.Zero(), len(inputs))
+	if hub {
+		for i, xv := range inputs {
+			x[i] = rtype.FromFloat64(xv, fb)
 		}
-		got := mpcObj.RevealSymVec(mpc_core.RVec{ast.secureCbrt(x)}).ToFloat(fb)[0]
-		if mpcObj.GetPid() == 1 {
+	}
+	got := mpcObj.RevealSymVec(ast.secureCbrtVec(x)).ToFloat(fb)
+	if mpcObj.GetPid() == 1 {
+		for i, xv := range inputs {
 			want := math.Cbrt(xv)
-			t.Logf("secureCbrt(%.3f) = %.6f (want %.6f, rel %.1e)", xv, got, want, math.Abs(got-want)/want)
-			if math.Abs(got-want)/want > 1e-3 {
-				t.Errorf("secureCbrt(%.3f): got %.6f want %.6f", xv, got, want)
+			err := math.Abs(got[i] - want)
+			rel := err / math.Max(math.Abs(want), 1e-9)
+			t.Logf("secureCbrt(%.3f) = %.6f (want %.6f, rel %.1e)", xv, got[i], want, rel)
+			if err > 2e-5 && rel > 2e-3 {
+				t.Errorf("secureCbrt(%.3f): got %.6f want %.6f", xv, got[i], want)
 			}
 		}
 	}
 }
 
-// TestSecureClamp checks the secure min/max clamp that guards secureCbrt's convergence window. The
-// critical case is a NEGATIVE arg (deep lower tail) → lo: unclamped it makes the cube-root Newton
-// diverge and ring-wrap to a spurious genome-wide hit.
+// TestSecureClamp checks the vectorized secure min/max primitive used by the moment guards and the
+// overflow-safe WH skew-ratio path. secureCbrt itself now uses signed range reduction, not a clamp.
 func TestSecureClamp(t *testing.T) {
 	prot := InitProtocolForTest(t)
 	if prot == nil {
@@ -1331,28 +1362,94 @@ func TestSecureClamp(t *testing.T) {
 	fb := mpcObj.GetFracBits()
 	hub := mpcObj.GetPid() == mpcObj.GetHubPid()
 	const lo, hi = 0.1, 9.0
-	for _, tc := range []struct{ in, want float64 }{
+	tests := []struct{ in, want float64 }{
 		{-0.5, lo}, // negative → lo (the false-positive channel)
 		{0.05, lo}, // below lo → lo
 		{3.0, 3.0}, // in range → identity
 		{50.0, hi}, // above hi → hi
-	} {
-		x := rtype.Zero()
-		if hub {
-			x = rtype.FromFloat64(tc.in, fb)
+	}
+	x := mpc_core.InitRVec(rtype.Zero(), len(tests))
+	if hub {
+		for i, tc := range tests {
+			x[i] = rtype.FromFloat64(tc.in, fb)
 		}
-		got := mpcObj.RevealSymVec(mpc_core.RVec{ast.secureClamp(x, lo, hi)}).ToFloat(fb)[0]
-		if mpcObj.GetPid() == 1 {
-			t.Logf("secureClamp(%.3f, %.1f, %.1f) = %.6f (want %.3f)", tc.in, lo, hi, got, tc.want)
-			if math.Abs(got-tc.want) > 1e-3 {
-				t.Errorf("secureClamp(%.3f): got %.6f want %.3f", tc.in, got, tc.want)
-			}
+	}
+	got := mpcObj.RevealSymVec(ast.secureClampVec(x, lo, hi)).ToFloat(fb)
+	if mpcObj.GetPid() != 1 {
+		return
+	}
+	for i, tc := range tests {
+		t.Logf("secureClamp(%.3f, %.1f, %.1f) = %.6f (want %.3f)", tc.in, lo, hi, got[i], tc.want)
+		if math.Abs(got[i]-tc.want) > 1e-3 {
+			t.Errorf("secureClamp(%.3f): got %.6f want %.3f", tc.in, got[i], tc.want)
 		}
 	}
 }
 
-// TestSKATMomentsSS checks the secure Hutchinson kernel moments S1,S2,S3 (public list, all-shared,
-// no private) against the exact pooled-kernel moments (skatMoments). Loose tol: Hutchinson noise.
+// TestSKATZSS checks the reduced WH circuit, including an arg beyond the former cube-root clamp and
+// branch-free handling of degenerate moments. Inputs are additive shares (hub owns the public fixture).
+func TestSKATZSS(t *testing.T) {
+	prot := InitProtocolForTest(t)
+	if prot == nil {
+		return
+	}
+	defer prot.SyncAndTerminate(true)
+	ast := prot.InitAssociationTests(nil)
+	mpcObj := ast.general.mpcObj[0]
+	rtype := mpcObj.GetRType()
+	fb := mpcObj.GetFracBits()
+	hub := mpcObj.GetPid() == mpcObj.GetHubPid()
+	momentCeil := math.Ldexp(1.0, mpcObj.GetDataBits()-fb-2)
+	tests := []struct {
+		q, s1, s2, s3 float64
+		valid         bool
+	}{
+		{q: 10, s1: 6, s2: 14, s3: 36, valid: true},
+		{q: 100, s1: 1, s2: 1, s3: 1, valid: true},  // arg=100: exercises secure range reduction
+		{q: 0, s1: 1, s2: 1, s3: 1, valid: true},    // arg=0: equal-eigenvalue low tail
+		{q: 0, s1: 3, s2: 5, s3: 9, valid: true},    // arg=-0.08: signed cube root
+		{q: 2, s1: 1, s2: 1e-6, s3: 1, valid: true}, // raw skew=1e9: must cap before ring overflow
+		{q: 0, s1: 0, s2: 0, s3: 0},
+		{q: 1, s1: 1, s2: 1, s3: 0},
+		{q: 1, s1: 1, s2: momentCeil, s3: 1},
+	}
+	q := mpc_core.InitRVec(rtype.Zero(), len(tests))
+	s1 := mpc_core.InitRVec(rtype.Zero(), len(tests))
+	s2 := mpc_core.InitRVec(rtype.Zero(), len(tests))
+	s3 := mpc_core.InitRVec(rtype.Zero(), len(tests))
+	if hub {
+		for i, tc := range tests {
+			q[i] = rtype.FromFloat64(tc.q, fb)
+			s1[i] = rtype.FromFloat64(tc.s1, fb)
+			s2[i] = rtype.FromFloat64(tc.s2, fb)
+			s3[i] = rtype.FromFloat64(tc.s3, fb)
+		}
+	}
+	got := mpcObj.RevealSymVec(ast.skatZSSVec(q, s1, s2, s3)).ToFloat(fb)
+	if mpcObj.GetPid() != 1 {
+		return
+	}
+	whClampedZ := func(q, s1, s2, s3 float64) float64 {
+		skew := s3 / math.Pow(s2, 1.5)
+		skew = math.Max(1e-4, math.Min(skew, 1.0))
+		h := 2 * skew * skew / 9
+		arg := 1 + (q-s1)*skew/math.Sqrt(s2)
+		return (math.Cbrt(arg) - 1 + h) / math.Sqrt(h)
+	}
+	for i, tc := range tests {
+		want := -9.0
+		if tc.valid {
+			want = whClampedZ(tc.q, tc.s1, tc.s2, tc.s3)
+		}
+		t.Logf("skatZSS[%d] = %.6f (want %.6f)", i, got[i], want)
+		if math.Abs(got[i]-want) > 5e-3 {
+			t.Errorf("skatZSS[%d]: got %.6f want %.6f", i, got[i], want)
+		}
+	}
+}
+
+// TestSKATMomentsSS checks exact-basis secure kernel moments S1,S2,S3 for a union of public and
+// private variants against the exact pooled-kernel moments. The tolerance covers fixed-point error.
 func TestSKATMomentsSS(t *testing.T) {
 	prot := InitProtocolForTest(t)
 	if prot == nil {
@@ -1437,10 +1534,34 @@ func TestSKATMomentsSS(t *testing.T) {
 	if pid == 2 {
 		privG = orientedGenotypeLocalCopy(privG)
 	}
-	s1ss, s2ss, s3ss := assocTest.skatMomentsSS(0, mPub, R, null, X, y0, privG, nil, nil)
-	zss := assocTest.skatPValueSS(0, mPub, R, null, nullRSS, X, y0, privG, 2)
 	mpcObj := prot.mpcObj[0]
-	rev := mpcObj.RevealSymVec(mpc_core.RVec{s1ss, s2ss, s3ss, zss}).ToFloat(mpcObj.GetFracBits())
+	rtype := mpcObj.GetRType()
+	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
+	gl := assocTest.computeGeneLocal(0, mPub, X, y0)
+	pl := assocTest.computePrivateGeneLocal(privG, X, y0, gl, true)
+	qPub, _, wPub := assocTest.blockStat(0, mPub, null, X, y0, gl)
+	qPriv, _ := assocTest.privateBlockStat(pl, null, 2)
+	qRaw := mpc_core.RVec{qPub[0].Add(qPriv[0])}
+	scaleSS, ok := assocTest.general.rareVariantScaleShares(nullRSS)
+	if !ok {
+		t.Fatal("rare-variant scale undefined")
+	}
+	qNorm := mpcObj.TruncVec(mpcObj.SSMultElemVec(qRaw, mpc_core.RVec{scaleSS[0]}), db, fb)
+	qNorm[0] = mpcObj.TruncVec(mpc_core.RVec{qNorm[0].Mul(rtype.FromFloat64(1.0/float64(assocTest.skatTotalNumInds()), fb))}, db, fb)[0]
+	s1ss, s2ss, s3ss := assocTest.skatMomentsSS(0, mPub, R, null, X, y0, pl, gl, wPub)
+	zss := assocTest.skatZSS(qNorm[0], s1ss, s2ss, s3ss)
+	// Exercise both contraction boundaries explicitly: no private variants and no public variants.
+	emptyPriv := assocTest.computePrivateGeneLocal(nil, X, y0, gl, true)
+	pubS1, pubS2, pubS3 := assocTest.skatMomentsSS(0, mPub, R, null, X, y0, emptyPriv, gl, wPub)
+	privS1, privS2, privS3 := assocTest.skatMomentsSS(0, 0, R, null, X, y0, pl, &geneLocal{}, mpc_core.RVec{})
+	const RHutch = 16 // strictly below mPub: force the secure Hutchinson branch
+	hutchS1, hutchS2, hutchS3 := assocTest.skatMomentsSS(0, mPub, RHutch, null, X, y0, pl, gl, wPub)
+	rev := mpcObj.RevealSymVec(mpc_core.RVec{
+		s1ss, s2ss, s3ss, zss,
+		pubS1, pubS2, pubS3,
+		privS1, privS2, privS3,
+		hutchS1, hutchS2, hutchS3,
+	}).ToFloat(fb)
 	if pid != 1 {
 		return
 	}
@@ -1476,36 +1597,49 @@ func TestSKATMomentsSS(t *testing.T) {
 			Gp.Set(n1+i, mPub+k, genoBpriv[k][i])
 		}
 	}
-	var GtG, GtX, XtX, corr, solved, GtPG mat.Dense
-	GtG.Mul(Gp.T(), Gp)
-	GtX.Mul(Gp.T(), Xp)
-	XtX.Mul(Xp.T(), Xp)
-	solved.Solve(&XtX, GtX.T())
-	corr.Mul(&GtX, &solved)
-	GtPG.Sub(&GtG, &corr)
-	w := make([]float64, mUnion)
-	for k := 0; k < mUnion; k++ {
-		p := (matColSum(Gp, k)) / (2 * float64(N))
-		w[k] = 25 * math.Pow(1-math.Min(p, 1-p), 24)
+	exactMoments := func(G *mat.Dense) (float64, float64, float64) {
+		_, m := G.Dims()
+		var GtG, GtX, XtX, corr, solved, GtPG mat.Dense
+		GtG.Mul(G.T(), G)
+		GtX.Mul(G.T(), Xp)
+		XtX.Mul(Xp.T(), Xp)
+		solved.Solve(&XtX, GtX.T())
+		corr.Mul(&GtX, &solved)
+		GtPG.Sub(&GtG, &corr)
+		w := make([]float64, m)
+		for k := 0; k < m; k++ {
+			p := matColSum(G, k) / (2 * float64(N))
+			w[k] = 25 * math.Pow(1-math.Min(p, 1-p), 24)
+		}
+		return skatMoments(&GtPG, w)
 	}
-	o1, o2, o3 := skatMoments(&GtPG, w)
+	o1, o2, o3 := exactMoments(Gp)
+	po1, po2, po3 := exactMoments(mat.DenseCopyOf(Gp.Slice(0, N, 0, mPub)))
+	vo1, vo2, vo3 := exactMoments(mat.DenseCopyOf(Gp.Slice(0, N, mPub, mUnion)))
 	// secure moments are N-normalized (S_k/N^k); de-normalize to compare with the exact oracle.
 	Nf := float64(N)
-	for i, o := range []float64{o1, o2, o3} {
-		sec := rev[i] * math.Pow(Nf, float64(i+1))
-		rel := math.Abs(sec-o) / math.Max(math.Abs(o), 1e-9)
-		t.Logf("S%d: secure=%.4g oracle=%.4g rel=%.2e", i+1, sec, o, rel)
-		if rel > 0.08 {
-			t.Errorf("S%d moment rel %.3e (secure %.4g oracle %.4g)", i+1, rel, sec, o)
+	checkMoments := func(label string, offset int, oracle, tolerances []float64) {
+		for i, o := range oracle {
+			sec := rev[offset+i] * math.Pow(Nf, float64(i+1))
+			rel := math.Abs(sec-o) / math.Max(math.Abs(o), 1e-9)
+			t.Logf("%s S%d: secure=%.4g oracle=%.4g rel=%.2e", label, i+1, sec, o, rel)
+			if rel > tolerances[i] {
+				t.Errorf("%s S%d moment rel %.3e (secure %.4g oracle %.4g)", label, i+1, rel, sec, o)
+			}
 		}
 	}
+	exactTol := []float64{5e-3, 5e-3, 5e-3}
+	checkMoments("union", 0, []float64{o1, o2, o3}, exactTol)
+	checkMoments("public-only", 4, []float64{po1, po2, po3}, exactTol)
+	checkMoments("private-only", 7, []float64{vo1, vo2, vo3}, exactTol)
+	checkMoments("hutchinson", 10, []float64{o1, o2, o3}, []float64{5e-3, 0.25, 0.25})
 	// z / p-value vs oracle (SKATPlain WH on the same pooled kernel)
 	oracle := SKATPlain(Gp, Xp, yp)
 	zSec := rev[3]
 	pSec := 0.5 * math.Erfc(zSec/math.Sqrt2)
 	relP := math.Abs(pSec-oracle.SkatP) / math.Max(oracle.SkatP, 1e-12)
 	t.Logf("z: secure=%.5f oracle=%.5f | p: secure=%.5e oracle=%.5e relP=%.2e", zSec, oracle.SkatZ, pSec, oracle.SkatP, relP)
-	if relP > 0.05 {
+	if relP > 5e-3 {
 		t.Errorf("SKAT p rel %.3e (secure %.5e oracle %.5e)", relP, pSec, oracle.SkatP)
 	}
 }

@@ -93,7 +93,9 @@ type Config struct {
 	PrivatePid        int    `toml:"private_pid"`
 	PrivateOnlyPrefix string `toml:"private_only_prefix"`
 
-	// skat_fed SKAT p-value (Wilson-Hilferty, screening): number of Hutchinson probes (0 = disabled).
+	// skat_fed SKAT p-value (Wilson-Hilferty, screening): public trace-column budget. When the public
+	// variant count is no larger, the standard basis gives exact traces; otherwise use Hutchinson.
+	// Zero disables the SKAT p-value path.
 	// The private-variant moment contribution is block-contracted (no padding, count hidden).
 	SkatPValueProbes int `toml:"skat_pvalue_probes"`
 
