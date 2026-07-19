@@ -34,7 +34,10 @@ func vecToSlice(v *mat.VecDense) []float64 {
 // instead of recomputing the null-only XtX, Xty0, and y0ty0 for every public/private block.
 func localGenotypeContract(G, X *mat.Dense, y0 []float64) LocalContraction {
 	n, _ := X.Dims()
-	_, m := G.Dims()
+	gn, m := G.Dims()
+	if gn != n || len(y0) != n {
+		panic(fmt.Sprintf("localGenotypeContract: G/X/y0 rows differ (%d/%d/%d)", gn, n, len(y0)))
+	}
 	y0v := mat.NewVecDense(n, y0)
 
 	var GtX mat.Dense
@@ -131,14 +134,17 @@ type localNull struct {
 // nil cov/pheno (pid-0) yields an empty result (zero aggregates).
 func localNullEquations(cov, pheno *mat.Dense, center float64) localNull {
 	if cov == nil || pheno == nil {
+		if cov != nil || pheno != nil {
+			panic("localNullEquations: covariates and phenotype must both be present")
+		}
 		return localNull{}
 	}
 	cn, ncov := cov.Dims()
-	pn, _ := pheno.Dims()
-	n := cn
-	if pn < n {
-		n = pn
+	pn, pc := pheno.Dims()
+	if cn != pn || pc == 0 {
+		panic(fmt.Sprintf("localNullEquations: covariate/phenotype dimensions differ (%dx%d/%dx%d)", cn, ncov, pn, pc))
 	}
+	n := cn
 	c := ncov + 1
 
 	X := mat.NewDense(n, c, nil)
@@ -266,9 +272,9 @@ func (ast *AssocTest) choleskySolveMat(L mpc_core.RMat, dInv mpc_core.RVec, B mp
 	return X
 }
 
-// computeBetaHatEnc computes β̂ = (XᵀX)⁻¹Xᵀy₀ as an encrypted c-vector from the cross-party
-// normal equations — only the c-dim aggregates cross the secure boundary, n never does.
-func (ast *AssocTest) computeBetaHatEnc() skatNull {
+// nullSetup solves the cross-party c-dimensional normal equations and returns the local X/y₀
+// alongside the secure result so per-gene work can reuse them without rebuilding XᵀX.
+func (ast *AssocTest) nullSetup() (null skatNull, X *mat.Dense, y0 []float64) {
 	cps := ast.general.cps
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
@@ -276,7 +282,7 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 
 	c := ast.general.gwasParams.NumCov() + 1
 	if c > cps.GetSlots() {
-		panic(fmt.Sprintf("computeBetaHatEnc: c=%d exceeds slots=%d", c, cps.GetSlots()))
+		panic(fmt.Sprintf("nullSetup: c=%d exceeds slots=%d", c, cps.GetSlots()))
 	}
 
 	center := 0.0
@@ -348,77 +354,59 @@ func (ast *AssocTest) computeBetaHatEnc() skatNull {
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: XtX->SS + Cholesky solve %v", fedTimings.nullInv.Round(time.Millisecond)))
 	tNull = time.Now()
 
+	// betaRep[ℓ] = β̂_ℓ replicated in every slot (for the score's CPMult). Convert all
+	// c rows in one masked SS→CKKS schedule instead of c separate collective conversions.
+	var betaRepSS mpc_core.RMat
+	if pid > 0 { // pid 0 sits out SSToCMat and needs no c×slots temporary
+		slots := cps.GetSlots()
+		betaRepSS = make(mpc_core.RMat, c)
+		for j := 0; j < c; j++ {
+			betaRepSS[j] = mpc_core.InitRVec(betaSS[j], slots)
+		}
+	}
+	betaRep := make(crypto.CipherVector, c)
+	if betaRepCM := mpcObj.SSToCMat(cps, betaRepSS); pid > 0 {
+		for j := 0; j < c; j++ {
+			betaRep[j] = betaRepCM[j][0]
+		}
+	}
+	fedTimings.nullBeta = time.Since(tNull)
+	log.LLvl1(fmt.Sprintf("[skat_fed]   null: betaRep SS->CKKS %v", fedTimings.nullBeta.Round(time.Millisecond)))
+	tNull = time.Now()
+
 	// Residual-norm RSS (robust σ̂²): RSS = y₀ᵀy₀ − 2·(Xᵀy₀·β̂) + β̂ᵀ(XᵀX)β̂, 2nd-order in the β̂ error
 	// (the plain identity y₀ᵀy₀ − Xᵀy₀·β̂ is 1st-order). All from the c-dim SS aggregates.
 	sumRVec := func(v mpc_core.RVec) mpc_core.RElem {
 		acc := rtype.Zero()
-		for k := 0; k < len(v); k++ {
-			acc = acc.Add(v[k])
+		for _, x := range v {
+			acc = acc.Add(x)
 		}
 		return acc
 	}
-	betaCol2 := make(mpc_core.RMat, c)
+	betaCol := make(mpc_core.RMat, c)
 	for k := 0; k < c; k++ {
-		betaCol2[k] = mpc_core.RVec{betaSS[k]}
+		betaCol[k] = mpc_core.RVec{betaSS[k]}
 	}
-	xtxBetaMat := mpcObj.SSMultMat(xtxSS, betaCol2) // (XᵀX)·β̂
+	xtxBetaMat := mpcObj.SSMultMat(xtxSS, betaCol) // (XᵀX)·β̂
 	xtxBeta := make(mpc_core.RVec, c)
 	for k := 0; k < c; k++ {
 		xtxBeta[k] = xtxBetaMat[k][0]
 	}
-	xtxBeta = mpcObj.TruncVec(xtxBeta, mpcObj.GetDataBits(), mpcObj.GetFracBits())
-	xtyBeta := sumRVec(mpcObj.TruncVec(mpcObj.SSMultElemVec(xtySS, betaSS), mpcObj.GetDataBits(), mpcObj.GetFracBits()))
-	betaXtxBeta := sumRVec(mpcObj.TruncVec(mpcObj.SSMultElemVec(betaSS, xtxBeta), mpcObj.GetDataBits(), mpcObj.GetFracBits()))
+	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
+	xtxBeta = mpcObj.TruncVec(xtxBeta, db, fb)
+	xtyBeta := sumRVec(mpcObj.TruncVec(mpcObj.SSMultElemVec(xtySS, betaSS), db, fb))
+	betaXtxBeta := sumRVec(mpcObj.TruncVec(mpcObj.SSMultElemVec(betaSS, xtxBeta), db, fb))
 	var y0Ct *rlwe.Ciphertext
 	if len(y0ty0Enc) > 0 {
 		y0Ct = y0ty0Enc[0]
 	}
 	y0ty0SS := mpcObj.CiphertextToSS(cps, rtype, y0Ct, mpcObj.GetHubPid(), 1)[0]
-	rssSS := y0ty0SS.Sub(xtyBeta).Sub(xtyBeta).Add(betaXtxBeta) // y₀ᵀy₀ − 2·Xᵀy₀·β̂ + β̂ᵀXᵀXβ̂
+	rssSS := y0ty0SS.Sub(xtyBeta).Sub(xtyBeta).Add(betaXtxBeta)
+	fedTimings.nullRSS = time.Since(tNull)
+	log.LLvl1(fmt.Sprintf("[skat_fed]   null: RSS %v", fedTimings.nullRSS.Round(time.Millisecond)))
 
-	// betaRep[ℓ] = β̂_ℓ replicated in every slot (for the score's CPMult). pid-0 → nil.
-	slots := cps.GetSlots()
-	betaRep := make(crypto.CipherVector, c)
-	for j := 0; j < c; j++ {
-		rep := mpc_core.InitRVec(rtype.Zero(), slots)
-		if j < len(betaSS) {
-			for k := 0; k < slots; k++ {
-				rep[k] = betaSS[j].Copy()
-			}
-		}
-		if cv := mpcObj.SSToCVec(cps, rep); len(cv) > 0 {
-			betaRep[j] = cv[0]
-		}
-	}
-
-	fedTimings.nullBeta = time.Since(tNull)
-	log.LLvl1(fmt.Sprintf("[skat_fed]   null: Xty->SS + beta=inv*Xty + betaRep %v", fedTimings.nullBeta.Round(time.Millisecond)))
-	return skatNull{betaRep: betaRep, betaSS: betaSS, omp: omp, rssSS: rssSS, c: c}
-}
-
-// computeNullRSSEnc wraps the residual-norm RSS (formed in SS as null.rssSS) as a 1-element
-// CipherVector for rareVariantScaleShares. SSToCVec is collective, so all parties call it.
-func (ast *AssocTest) computeNullRSSEnc(null skatNull) crypto.CipherVector {
-	if null.rssSS == nil {
-		return nil
-	}
-	return ast.general.mpcObj[0].SSToCVec(ast.general.cps, mpc_core.InitRVec(null.rssSS, 1))
-}
-
-// nullSetup runs the secure null model (β̂ + RSS) and builds the block-independent
-// per-party design X=[1|cov] and centered y₀ (empty on pid 0).
-func (ast *AssocTest) nullSetup() (null skatNull, nullRSS crypto.CipherVector, X *mat.Dense, y0 []float64) {
-	null = ast.computeBetaHatEnc()
-	tRSS := time.Now()
-	nullRSS = ast.computeNullRSSEnc(null)
-	fedTimings.nullRSS = time.Since(tRSS)
-	log.LLvl1(fmt.Sprintf("[skat_fed]   null: RSS = y0ty0 - Xty·beta %v", fedTimings.nullRSS.Round(time.Millisecond)))
-	if ast.general.mpcObj[0].GetPid() > 0 {
-		center := 0.0
-		if ast.general.config.BinaryPheno {
-			center = 0.5
-		}
-		ln := localNullEquations(ast.general.cov, ast.general.pheno, center)
+	null = skatNull{betaRep: betaRep, betaSS: betaSS, omp: omp, rssSS: rssSS, c: c}
+	if ln.X != nil {
 		X, y0 = ln.X, ln.Y0
 	}
 	return

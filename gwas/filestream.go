@@ -306,6 +306,7 @@ func NewGenoFileStream(filename string, numRow, numCol uint64, replaceMissing bo
 
 	return &GenoFileStream{
 		filename:       filename,
+		file:           file,
 		buf:            make([]byte, numCol),
 		numRows:        numRow,
 		numCols:        numCol,

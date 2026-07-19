@@ -485,7 +485,7 @@ func TestSKATLocalPartyAdditivity(t *testing.T) {
 	vecApprox(t, "dosageSum", sum.DosageSum, full.DosageSum, 1e-9)
 }
 
-// --- low-rank null model (skat.go localNullEquations / computeBetaHatEnc / RSS) ---
+// --- low-rank null model (skat.go localNullEquations / nullSetup / RSS) ---
 
 func TestLocalNullEquationsMatchesGonum(t *testing.T) {
 	cov := mat.NewDense(5, 2, []float64{
@@ -548,8 +548,30 @@ func TestLocalNullEquationsNilParty0(t *testing.T) {
 	}
 }
 
-// Secure low-rank null model: computeBetaHatEnc + computeNullRSSEnc, decrypted on the
-// hub and compared to the plaintext gonum β̂/RSS on the same full (X,y). No genotypes.
+func TestLocalNullEquationsRejectsMisalignedInput(t *testing.T) {
+	expectPanic := func(t *testing.T, f func()) {
+		t.Helper()
+		defer func() {
+			if recover() == nil {
+				t.Fatal("expected panic")
+			}
+		}()
+		f()
+	}
+	t.Run("row mismatch", func(t *testing.T) {
+		expectPanic(t, func() {
+			localNullEquations(mat.NewDense(2, 1, nil), mat.NewDense(3, 1, nil), 0)
+		})
+	})
+	t.Run("one input missing", func(t *testing.T) {
+		expectPanic(t, func() {
+			localNullEquations(mat.NewDense(2, 1, nil), nil, 0)
+		})
+	})
+}
+
+// Secure low-rank null model, decrypted on the hub and compared to the plaintext gonum β̂/RSS
+// on the same full (X,y). The RSS conversion below is test-only; production keeps it in SS.
 func TestSKATNullModel(t *testing.T) {
 	prot := InitProtocolForTest(t)
 	if prot == nil {
@@ -603,10 +625,10 @@ func TestSKATNullModel(t *testing.T) {
 		prot.SetPhenoAndCov(nil, nil)
 	}
 
-	assocTest := prot.InitAssociationTests(nil)
-	null := assocTest.computeBetaHatEnc()
+	assocTest := prot.initSKAT()
+	null, _, _ := assocTest.nullSetup()
 	betaHatCV := mpcObj.SSToCVec(cps, null.betaSS) // β̂ → CKKS for the oracle check (collective; test-only)
-	rssEnc := assocTest.computeNullRSSEnc(null)    // nil on pid 0
+	rssEnc := mpcObj.SSToCVec(cps, mpc_core.RVec{null.rssSS})
 
 	if pid == 1 {
 		betaDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, betaHatCV, 1))[:c]
@@ -725,8 +747,8 @@ func TestSKATScore(t *testing.T) {
 		prot.SetPhenoAndCov(nil, nil)
 	}
 
-	assocTest := prot.InitAssociationTests(nil)
-	null := assocTest.computeBetaHatEnc()
+	assocTest := prot.initSKAT()
+	null, _, _ := assocTest.nullSetup()
 
 	var SBlock crypto.CipherMatrix
 	if pid > 0 {
@@ -873,7 +895,7 @@ func TestSKATWeights(t *testing.T) {
 	const m = 12
 
 	dosage, fullG, nIndsTotal := weightFixtureDosage(t, prot, pid, m)
-	assocTest := prot.InitAssociationTests(nil)
+	assocTest := prot.initSKAT()
 
 	if pid > 0 {
 		nLocal := prot.GetConfig().NumInds[pid]
@@ -1037,7 +1059,7 @@ func TestSKATDriverE2E(t *testing.T) {
 		prot.genoBlockSizes = make([]int, nBlocks)
 	}
 
-	assocTest := prot.InitAssociationTests(nil)
+	assocTest := prot.initSKAT()
 	qOut, bOut := assocTest.ComputeSKATStatistics()
 
 	if pid == 1 {
@@ -1316,7 +1338,7 @@ func TestSecureCbrt(t *testing.T) {
 		return
 	}
 	defer prot.SyncAndTerminate(true)
-	ast := prot.InitAssociationTests(nil)
+	ast := prot.initSKAT()
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
 	fb := mpcObj.GetFracBits()
@@ -1356,7 +1378,7 @@ func TestSecureClamp(t *testing.T) {
 		return
 	}
 	defer prot.SyncAndTerminate(true)
-	ast := prot.InitAssociationTests(nil)
+	ast := prot.initSKAT()
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
 	fb := mpcObj.GetFracBits()
@@ -1394,7 +1416,7 @@ func TestSKATZSS(t *testing.T) {
 		return
 	}
 	defer prot.SyncAndTerminate(true)
-	ast := prot.InitAssociationTests(nil)
+	ast := prot.initSKAT()
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
 	fb := mpcObj.GetFracBits()
@@ -1528,8 +1550,8 @@ func TestSKATMomentsSS(t *testing.T) {
 		prot.genoBlockSizes = make([]int, 1)
 	}
 
-	assocTest := prot.InitAssociationTests(nil)
-	null, nullRSS, X, y0 := assocTest.nullSetup()
+	assocTest := prot.initSKAT()
+	null, X, y0 := assocTest.nullSetup()
 	const R = 1000
 	if pid == 2 {
 		privG = orientedGenotypeLocalCopy(privG)
@@ -1542,7 +1564,7 @@ func TestSKATMomentsSS(t *testing.T) {
 	qPub, _, wPub := assocTest.blockStat(0, mPub, null, X, y0, gl)
 	qPriv, _ := assocTest.privateBlockStat(pl, null, 2)
 	qRaw := mpc_core.RVec{qPub[0].Add(qPriv[0])}
-	scaleSS, ok := assocTest.general.rareVariantScaleShares(nullRSS)
+	scaleSS, ok := assocTest.general.rareVariantScaleShares(null.rssSS)
 	if !ok {
 		t.Fatal("rare-variant scale undefined")
 	}
@@ -1698,6 +1720,35 @@ func TestLoadDenseBlocks(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestDenseFromStream(t *testing.T) {
+	if denseFromStream(nil) != nil {
+		t.Fatal("nil stream should return nil")
+	}
+
+	path := filepath.Join(t.TempDir(), "geno.bin")
+	if err := os.WriteFile(path, []byte{0, 1, 255, 2, 0, 1}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	stream := NewGenoFileStream(path, 2, 3, false)
+	got := denseFromStream(stream)
+	want := mat.NewDense(2, 3, []float64{0, 1, 0, 2, 0, 1})
+	if !mat.Equal(got, want) {
+		t.Fatalf("dense genotype mismatch:\ngot  %v\nwant %v", mat.Formatted(got), mat.Formatted(want))
+	}
+	if stream.file != nil {
+		t.Fatal("fully consumed stream should close its file")
+	}
+
+	emptyRows := NewGenoFileStream(path, 2, 3, false)
+	emptyRows.UpdateRowFilt([]bool{false, false})
+	if denseFromStream(emptyRows) != nil {
+		t.Fatal("fully filtered stream should return nil")
+	}
+	if emptyRows.file != nil {
+		t.Fatal("fully filtered stream should close its file")
 	}
 }
 

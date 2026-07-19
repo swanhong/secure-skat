@@ -75,35 +75,35 @@ func (ast *AssocTest) openBlockGenoStream(b int) *GenoFileStream {
 }
 
 // denseFromStream reads a genotype stream into a dense matrix (samples × variants), missing
-// (negative) dosages → 0. nil/empty stream yields a 0×0 matrix.
+// (negative) dosages → 0. nil/empty streams yield nil.
 func denseFromStream(gfs *GenoFileStream) *mat.Dense {
 	if gfs == nil {
-		return mat.NewDense(0, 0, nil)
+		return nil
 	}
 	gfs.Reset()
-
-	var rows [][]float64
-	for {
-		row := gfs.NextRow()
-		if row == nil {
-			break
+	n, m := int(gfs.NumRowsToKeep()), int(gfs.NumColsToKeep())
+	if n == 0 || m == 0 {
+		for gfs.NextRow() != nil {
 		}
-		fr := make([]float64, len(row))
+		return nil
+	}
+
+	data := make([]float64, n*m)
+	for i := 0; i < n; i++ {
+		row := gfs.NextRow()
+		if len(row) != m {
+			panic(fmt.Sprintf("denseFromStream: row %d has %d columns, want %d", i, len(row), m))
+		}
 		for j, v := range row {
 			if v > 0 {
-				fr[j] = float64(v)
+				data[i*m+j] = float64(v)
 			}
 		}
-		rows = append(rows, fr)
 	}
-	if len(rows) == 0 || len(rows[0]) == 0 {
-		return nil // empty block (e.g. gene with no private variants); callers treat nil as empty
+	if row := gfs.NextRow(); row != nil {
+		panic(fmt.Sprintf("denseFromStream: got more than %d rows", n))
 	}
-	G := mat.NewDense(len(rows), len(rows[0]), nil)
-	for i := range rows {
-		G.SetRow(i, rows[i])
-	}
-	return G
+	return mat.NewDense(n, m, data)
 }
 
 // orientGenotypeLocal recodes each locally major-coded column in place so that dosage always counts
@@ -192,7 +192,7 @@ func (ast *AssocTest) blockStat(b, nsnps int, null skatNull, X *mat.Dense, y0 []
 
 	var qRaw, bLin crypto.CipherVector
 	if pid > 0 && len(sCVec) > 0 {
-		qRaw, bLin, _, _, _, _ = ast.ScoreCalculation(sCVec, weightEnc)
+		qRaw, bLin = ast.scoreCalculation(sCVec, weightEnc)
 	}
 	return ast.scalarCiphertextToShares(qRaw), ast.scalarCiphertextToShares(bLin), weightSS
 }

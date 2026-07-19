@@ -153,7 +153,7 @@ func (ast *AssocTest) privateRawStats(pl *privateGeneLocal, null skatNull) (skat
 	wEnc, _ := crypto.EncryptFloatVector(cps, pl.Weight)
 
 	s, wEnc = alignCipherVectorLevels(cps, s, wEnc)
-	skat, burdenLin, _, _, _, _ = ast.ScoreCalculation(s, wEnc)
+	skat, burdenLin = ast.scoreCalculation(s, wEnc)
 	return skat, burdenLin
 }
 
@@ -216,7 +216,7 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	rtype := mpcObj.GetRType()
 
 	tStart := time.Now()
-	null, nullRSS, X, y0 := ast.nullSetup()
+	null, X, y0 := ast.nullSetup()
 	fedTimings.nullTotal = time.Since(tStart)
 	log.LLvl1(fmt.Sprintf("[skat_fed] null model: %v", fedTimings.nullTotal.Round(time.Millisecond)))
 
@@ -313,24 +313,18 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	// Q_b/N to match zᵀPz/N: scale the score by 1/√N BEFORE squaring (b² hits the fixed-point wall at the square).
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
 	invSqrtN := rtype.FromFloat64(1.0/math.Sqrt(float64(ast.skatTotalNumInds())), fb)
-	bLinNorm := make(mpc_core.RVec, nB)
-	for b := 0; b < nB; b++ {
-		bLinNorm[b] = bLinBlockSS[b].Mul(invSqrtN)
-	}
+	bLinNorm := bLinBlockSS.Copy()
+	bLinNorm.MulScalar(invSqrtN)
 	bLinNorm = mpcObj.TruncVec(bLinNorm, db, fb)
 	burdenBlockSS := mpcObj.TruncVec(mpcObj.SSSquareElemVec(bLinNorm), db, fb)
 
 	// Common 1/(2σ̂²) applied once to both stats (linear, distributes over A+B).
-	scaleSS, ok := ast.general.rareVariantScaleShares(nullRSS)
+	scaleSS, ok := ast.general.rareVariantScaleShares(null.rssSS)
 	if !ok {
 		panic("ComputeSKATFederatedPrivate: div undefined (dof = n-c <= 0); need more samples than covariates")
 	}
-	scaleVec := mpc_core.InitRVec(rtype.Zero(), nB)
-	for b := 0; b < nB; b++ {
-		scaleVec[b] = scaleSS[0].Copy()
-	}
-	skatBlockSS = mpcObj.TruncVec(mpcObj.SSMultElemVec(skatBlockSS, scaleVec), db, fb)
-	burdenBlockSS = mpcObj.TruncVec(mpcObj.SSMultElemVec(burdenBlockSS, scaleVec), db, fb)
+	skatBlockSS = ast.general.scaleRareVariantShareStat(skatBlockSS, scaleSS)
+	burdenBlockSS = ast.general.scaleRareVariantShareStat(burdenBlockSS, scaleSS)
 
 	// Burden p-value: reveal ONLY √(T/2) = √(Burden/zᵀPz) = √Burden·(1/√zᵀPz). Both the Burden
 	// statistic and zᵀPz stay secret-shared (never decrypted), so neither leaves and zᵀPz=2·Burden/T
@@ -346,10 +340,8 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	// Reveal only z (Q_skat, moments stay secret); driver applies p = ½erfc(z/√2).
 	if nProbes > 0 {
 		invN := rtype.FromFloat64(1.0/float64(ast.skatTotalNumInds()), fb)
-		qNorm := make(mpc_core.RVec, nB)
-		for b := 0; b < nB; b++ {
-			qNorm[b] = skatBlockSS[b].Mul(invN)
-		}
+		qNorm := skatBlockSS.Copy()
+		qNorm.MulScalar(invN)
 		qNorm = mpcObj.TruncVec(qNorm, db, fb)
 		zB := ast.skatZSSVec(qNorm, s1B, s2B, s3B)
 		skatZStat = mpcObj.SSToCVec(cps, zB)

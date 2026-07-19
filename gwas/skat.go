@@ -9,6 +9,9 @@ import (
 	"go.dedis.ch/onet/v3/log"
 )
 
+// initSKAT skips the legacy association-test phenotype/covariate encodings, which SKAT never reads.
+func (g *ProtocolInfo) initSKAT() *AssocTest { return &AssocTest{general: g} }
+
 // ComputeSKATStatistics returns the whole-genome secure SKAT (Q) and Burden as
 // 1-elem CipherVectors (Σ over all blocks, scaled by 1/(2σ̂²)). Caller collectively decrypts.
 func (ast *AssocTest) ComputeSKATStatistics() (qStat, qBurden crypto.CipherVector) {
@@ -16,7 +19,7 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat, qBurden crypto.CipherVecto
 	cps := ast.general.cps
 	rtype := mpcObj.GetRType()
 
-	null, nullRSS, X, y0 := ast.nullSetup()
+	null, X, y0 := ast.nullSetup()
 
 	finalQSS := mpc_core.InitRVec(rtype.Zero(), 1)
 	finalBurdenSS := mpc_core.InitRVec(rtype.Zero(), 1)
@@ -32,7 +35,7 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat, qBurden crypto.CipherVecto
 
 	finalBurdenSS = mpcObj.SSSquareElemVec(finalBurdenSS)
 	finalBurdenSS = mpcObj.TruncVec(finalBurdenSS, mpcObj.GetDataBits(), mpcObj.GetFracBits())
-	if scaleSS, ok := ast.general.rareVariantScaleShares(nullRSS); ok {
+	if scaleSS, ok := ast.general.rareVariantScaleShares(null.rssSS); ok {
 		finalQSS = ast.general.scaleRareVariantShareStat(finalQSS, scaleSS)
 		finalBurdenSS = ast.general.scaleRareVariantShareStat(finalBurdenSS, scaleSS)
 	}
@@ -48,7 +51,7 @@ func (ast *AssocTest) ComputeSKATStatisticsPerBlock() (qPerBlock, burdenPerBlock
 	hub := mpcObj.GetPid() == mpcObj.GetHubPid()
 
 	t0 := time.Now()
-	null, nullRSS, X, y0 := ast.nullSetup()
+	null, X, y0 := ast.nullSetup()
 	if hub {
 		log.LLvl1(fmt.Sprintf(">>> [secure] null model (β̂, RSS) done (%.1fs)", time.Since(t0).Seconds()))
 	}
@@ -75,13 +78,9 @@ func (ast *AssocTest) ComputeSKATStatisticsPerBlock() (qPerBlock, burdenPerBlock
 
 	burdenSqSS := mpcObj.SSSquareElemVec(bLinBlockSS)
 	burdenSqSS = mpcObj.TruncVec(burdenSqSS, mpcObj.GetDataBits(), mpcObj.GetFracBits())
-	if scaleSS, ok := ast.general.rareVariantScaleShares(nullRSS); ok {
-		scaleVec := mpc_core.InitRVec(rtype.Zero(), nB)
-		for b := 0; b < nB; b++ {
-			scaleVec[b] = scaleSS[0].Copy()
-		}
-		qBlockSS = mpcObj.TruncVec(mpcObj.SSMultElemVec(qBlockSS, scaleVec), mpcObj.GetDataBits(), mpcObj.GetFracBits())
-		burdenSqSS = mpcObj.TruncVec(mpcObj.SSMultElemVec(burdenSqSS, scaleVec), mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	if scaleSS, ok := ast.general.rareVariantScaleShares(null.rssSS); ok {
+		qBlockSS = ast.general.scaleRareVariantShareStat(qBlockSS, scaleSS)
+		burdenSqSS = ast.general.scaleRareVariantShareStat(burdenSqSS, scaleSS)
 	}
 	return mpcObj.SSToCVec(cps, qBlockSS), mpcObj.SSToCVec(cps, burdenSqSS)
 }

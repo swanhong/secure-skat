@@ -137,7 +137,7 @@ func (ast *AssocTest) blindWeightCKKS(dosageSum []float64, nsnps int) (crypto.Ci
 	weightSS := base24SS.Copy()
 	weightSS.MulScalar(rtype.FromFloat64(25.0, 0))
 
-	// Re-encryption restores the full level chain before the two multiplications in ScoreCalculation.
+	// Re-encryption restores the full level chain before the two multiplications in scoreCalculation.
 	weightEnc := mpcObj.SSToCVec(cps, base24SS)
 	if pid > 0 {
 		weightEnc = crypto.CMultConst(cps, weightEnc, 25, false)
@@ -155,19 +155,11 @@ func (ast *AssocTest) scalarCiphertextToShares(stat crypto.CipherVector) mpc_cor
 	return mpcObj.CiphertextToSS(ast.general.cps, rtype, stat[0], -1, 1)
 }
 
-// ScoreCalculation returns Q=Σw²s² and Burden=Σw·s (1-elem CipherVectors); the
-// remaining returns (S2, w2, w2S2, wS) are intermediates for debugging.
-func (ast *AssocTest) ScoreCalculation(S_vec crypto.CipherVector, w_enc crypto.CipherVector) (
-	crypto.CipherVector, crypto.CipherVector, crypto.CipherVector, crypto.CipherVector, crypto.CipherVector, crypto.CipherVector) {
-	cryptoParams := ast.general.cps
-
-	S2 := crypto.CMult(cryptoParams, S_vec, S_vec)
-	w2 := crypto.CMult(cryptoParams, w_enc, w_enc)
-	w2S2 := crypto.CMult(cryptoParams, w2, S2)
-	qSkatBlock := crypto.InnerSumAll(cryptoParams, w2S2)
-
-	wS := crypto.CMult(cryptoParams, w_enc, S_vec)
-	qBurdenBlock := crypto.InnerSumAll(cryptoParams, wS)
-
-	return crypto.CipherVector{qSkatBlock}, crypto.CipherVector{qBurdenBlock}, S2, w2, w2S2, wS
+// scoreCalculation returns Q=Σ(ws)² and Burden=Σws as 1-elem CipherVectors.
+// Reusing ws cuts the equivalent w²s² path from four ciphertext multiplications to two.
+func (ast *AssocTest) scoreCalculation(score, weight crypto.CipherVector) (q, burden crypto.CipherVector) {
+	cps := ast.general.cps
+	weightedScore := crypto.CMult(cps, weight, score)
+	return crypto.CipherVector{crypto.SqSum(cps, weightedScore)},
+		crypto.CipherVector{crypto.InnerSumAll(cps, weightedScore)}
 }

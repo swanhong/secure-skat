@@ -14,7 +14,6 @@ import (
 
 	mpc_core "github.com/hhcho/mpc-core"
 
-	"github.com/tuneinsight/lattigo/v6/core/rlwe"
 	"github.com/tuneinsight/lattigo/v6/examples"
 	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 
@@ -483,7 +482,7 @@ func (g *ProtocolInfo) runFederatedPrivate() (skatOut, burdenPOut, skatPOut []fl
 
 	tRun := time.Now()
 	tA := time.Now()
-	assocTest := g.InitAssociationTests(nil)
+	assocTest := g.initSKAT()
 	fedTimings.assocInit = time.Since(tA)
 	skat, sqrtT2Enc, skatZEnc := assocTest.ComputeSKATFederatedPrivate(privateOnly, privatePid)
 	if pid == 0 {
@@ -608,19 +607,18 @@ func (g *ProtocolInfo) SetPhenoAndCov(pheno, cov *mat.Dense) {
 // ComputeSKATStatistics runs the low-rank per-block secure SKAT: returns per-block Q and
 // Burden (slot b = block b's per-gene statistic).
 func (g *ProtocolInfo) ComputeSKATStatistics() (crypto.CipherVector, crypto.CipherVector) {
-	assocTest := g.InitAssociationTests(nil) // SKAT does not use PCA
+	assocTest := g.initSKAT()
 	return assocTest.ComputeSKATStatisticsPerBlock()
 }
 
 // rareVariantScaleShares returns the shared 1/(2σ̂²) = (dof/2)/RSS scale factor (dof = N−c),
-// and false if RSS/dof is unavailable. RSS arrives encrypted from the null model.
-func (g *ProtocolInfo) rareVariantScaleShares(rssEnc crypto.CipherVector) (mpc_core.RVec, bool) {
+// and false if RSS/dof is unavailable. RSS stays secret-shared from the null solve through division.
+func (g *ProtocolInfo) rareVariantScaleShares(rssSS mpc_core.RElem) (mpc_core.RVec, bool) {
 	mpcObj := g.mpcObj[0]
 	pid := mpcObj.GetPid()
 	rtype := mpcObj.GetRType()
 	scaleSS := mpc_core.InitRVec(rtype.Zero(), 1)
-	sourcePid := mpcObj.GetHubPid()
-	if rssEnc == nil && pid > 0 && pid != sourcePid {
+	if rssSS == nil {
 		return scaleSS, false
 	}
 
@@ -637,17 +635,11 @@ func (g *ProtocolInfo) rareVariantScaleShares(rssEnc crypto.CipherVector) (mpc_c
 		return scaleSS, false
 	}
 
-	var rssCt *rlwe.Ciphertext
-	if pid == sourcePid && rssEnc != nil && len(rssEnc) > 0 {
-		rssCt = rssEnc[0]
-	}
-	rssSS := mpcObj.CiphertextToSS(g.cps, rtype, rssCt, sourcePid, 1)
-
 	numerSS := mpc_core.InitRVec(rtype.Zero(), 1)
-	if pid == sourcePid {
+	if pid == mpcObj.GetHubPid() {
 		numerSS[0] = rtype.FromFloat64(float64(dof)/2.0, mpcObj.GetFracBits())
 	}
-	return mpcObj.Divide(numerSS, rssSS, false), true
+	return mpcObj.Divide(numerSS, mpc_core.RVec{rssSS}, false), true
 }
 
 // scaleRareVariantShareStat multiplies a shared statistic by the shared scale and truncates.
@@ -656,7 +648,7 @@ func (g *ProtocolInfo) scaleRareVariantShareStat(stat, scale mpc_core.RVec) mpc_
 		return stat
 	}
 	mpcObj := g.mpcObj[0]
-	return mpcObj.TruncVec(mpcObj.SSMultElemVec(stat, scale), mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	return mpcObj.TruncVec(mpcObj.SSMultElemVecScalar(stat, scale[0]), mpcObj.GetDataBits(), mpcObj.GetFracBits())
 }
 
 func (g *ProtocolInfo) CZeroTest() {

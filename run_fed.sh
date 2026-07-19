@@ -79,6 +79,14 @@ echo "=== [4/4] fed_compare (secure vs plaintext) ==="
 s=$SECONDS; python3 "$PREP/fed_compare.py"; T_COMPARE=$((SECONDS-s))
 echo "  [4/4] compare done: ${T_COMPARE}s"
 
+echo "=== [plot] fed_plot (Manhattan + secure-vs-plain scatter) ==="
+if [ -f "$OUT/fed_results.csv" ]; then
+  python3 "$REPO/scripts/analysis/fed_plot.py" "$OUT/fed_results.csv" "$OUT" \
+    && echo "  [plot] PNGs -> $OUT" || echo "  [plot] fed_plot failed (skipped)"
+else
+  echo "  [plot] no fed_results.csv (run with FED_CSV=1) -> skipped"
+fi
+
 echo "=== TIMING (steps) ==="
 printf '  [1] prep    %5ds\n  [2] build   %5ds\n  [3] secure  %5ds\n  [4] compare %5ds\n  ---------------------\n  total     %7ds\n' \
   "$T_PREP" "$T_BUILD" "$T_SECURE" "$T_COMPARE" "$((T_PREP+T_BUILD+T_SECURE+T_COMPARE))"
