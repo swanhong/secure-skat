@@ -12,8 +12,8 @@
 # FED_DATABITS etc. only take effect when fed_prep runs; with SKIP_PREP=1 the existing config is reused as-is
 # (FED_PREP_SRC seeds it into the fresh dir). SKIP_BUILD=1 skips go build. FED_CSV=1 makes step [4/4] also dump
 # fed_results.csv (per-gene positions + secure/plain p-values) for scripts/analysis/fed_plot.py.
-# FED_PROBES=N (N>0) turns ON the SKAT p-value (exact traces when m_pub<=N, else Hutchinson → WH z;
-# 0 = Q+burden p only);
+# FED_PROBES=N sets the SKAT p-value trace budget (default 52: exact traces when m_pub<=N,
+# else Hutchinson → WH z). Set FED_PROBES=0 explicitly to disable the p-value path.
 set -eo pipefail
 
 REPO=$(cd "$(dirname "$0")" && pwd)
@@ -39,11 +39,11 @@ if [ -n "$SKIP_PREP" ] && [ -n "$FED_PREP_SRC" ] && [ ! -f "$CFG/configGlobal.to
 fi
 
 echo "=== run dir: $OUT ==="
-echo "=== run knobs (env; blank = fed_prep default) ==="
-printf '  PLINK2=%s\n  FED_CHR=%s FED_NSUB=%s FED_NGENES=%s FED_NPCS=%s\n  FED_CKKS=%s FED_DATABITS=%s FED_FRACBITS=%s FED_PHENO_COL=%s\n   FED_PROBES=%s\n  SKIP_PREP=%s SKIP_BUILD=%s FED_CSV=%s FED_PREP_SRC=%s\n' \
+echo "=== run knobs (env; FED_PROBES shows its default 52 when unset) ==="
+printf '  PLINK2=%s\n  FED_CHR=%s FED_NSUB=%s FED_NGENES=%s FED_NPCS=%s\n  FED_CKKS=%s FED_DATABITS=%s FED_FRACBITS=%s FED_PHENO_COL=%s\n  FED_PROBES=%s\n  SKIP_PREP=%s SKIP_BUILD=%s FED_CSV=%s FED_PREP_SRC=%s\n' \
   "${PLINK2:-plink2}" "${FED_CHR:-}" "${FED_NSUB:-}" "${FED_NGENES:-}" "${FED_NPCS:-}" \
   "${FED_CKKS:-}" "${FED_DATABITS:-}" "${FED_FRACBITS:-}" "${FED_PHENO_COL:-}" \
-  "${FED_PROBES:-}" \
+  "${FED_PROBES:-52}" \
   "${SKIP_PREP:-}" "${SKIP_BUILD:-}" "${FED_CSV:-}" "${FED_PREP_SRC:-}"
 
 if [ -z "$SKIP_PREP" ]; then
@@ -60,7 +60,7 @@ fi
 
 if [ -f "$CFG/configGlobal.toml" ]; then
   echo "=== resolved params (n=num_inds, m=num_snps, c=num_covs; from $CFG) ==="
-  grep -E '^(num_inds|num_snps|num_covs|geno_num_blocks|ckks_params|mpc_data_bits|mpc_frac_bits|rotkey_pow2only|private_pid)\b' "$CFG/configGlobal.toml" | sed 's/^/  /'
+  grep -E '^(num_inds|num_snps|num_covs|geno_num_blocks|ckks_params|mpc_data_bits|mpc_frac_bits|rotkey_pow2only|private_pid|skat_pvalue_probes)\b' "$CFG/configGlobal.toml" | sed 's/^/  /'
 fi
 
 echo "=== [3/4] secure skat_fed (3 parties) ==="
