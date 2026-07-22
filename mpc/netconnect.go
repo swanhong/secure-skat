@@ -1,8 +1,6 @@
 package mpc
 
 import (
-	// "bufio"
-
 	"fmt"
 	"net"
 	"os"

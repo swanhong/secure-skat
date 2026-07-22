@@ -107,23 +107,27 @@ func communicationAdd(a, b mpc.CommunicationStats) mpc.CommunicationStats {
 }
 
 func (m *fedRunMetrics) mark() fedMetricMark {
-	if m == nil {
-		return fedMetricMark{}
+	// Shared callers still use the returned wall time when metrics are disabled.
+	mark := fedMetricMark{at: time.Now()}
+	if m != nil {
+		mark.comm = m.networks.GetCommunicationStats()
 	}
-	return fedMetricMark{at: time.Now(), comm: m.networks.GetCommunicationStats()}
+	return mark
 }
 
-func (m *fedRunMetrics) end(stage string, mark fedMetricMark) {
+func (m *fedRunMetrics) end(stage string, mark fedMetricMark) time.Duration {
+	duration := time.Since(mark.at)
 	if m == nil {
-		return
+		return duration
 	}
 	v, ok := m.values[stage]
 	if !ok {
 		panic("unknown secure-SKAT metric stage: " + stage)
 	}
-	v.duration += time.Since(mark.at)
+	v.duration += duration
 	v.comm = communicationAdd(v.comm, m.networks.GetCommunicationStats().Sub(mark.comm))
 	v.count++
+	return duration
 }
 
 func (m *fedRunMetrics) addDuration(stage string, duration time.Duration) {
@@ -143,10 +147,22 @@ func (m *fedRunMetrics) addDurationCount(stage string, duration time.Duration, c
 }
 
 func (m *fedRunMetrics) stageDuration(stage string) time.Duration {
-	if m == nil || m.values[stage] == nil {
+	if m == nil {
 		return 0
 	}
-	return m.values[stage].duration
+	v, ok := m.values[stage]
+	if !ok {
+		panic("unknown secure-SKAT metric stage: " + stage)
+	}
+	return v.duration
+}
+
+func (m *fedRunMetrics) sumDuration(stages ...string) time.Duration {
+	var total time.Duration
+	for _, stage := range stages {
+		total += m.stageDuration(stage)
+	}
+	return total
 }
 
 func (m *fedRunMetrics) parentLeafDuration(parent, except string) time.Duration {
@@ -156,7 +172,7 @@ func (m *fedRunMetrics) parentLeafDuration(parent, except string) time.Duration 
 	var total time.Duration
 	for _, def := range fedStageDefs {
 		if def.parent == parent && def.name != except {
-			total += m.values[def.name].duration
+			total += m.stageDuration(def.name)
 		}
 	}
 	return total
@@ -227,10 +243,11 @@ func (ast *AssocTest) metricMark() fedMetricMark {
 	return ast.fedMetrics.mark()
 }
 
-func (ast *AssocTest) metricEnd(stage string, mark fedMetricMark) {
-	if ast != nil {
-		ast.fedMetrics.end(stage, mark)
+func (ast *AssocTest) metricEnd(stage string, mark fedMetricMark) time.Duration {
+	if ast == nil {
+		return 0
 	}
+	return ast.fedMetrics.end(stage, mark)
 }
 
 func nonNegativeDuration(d time.Duration) time.Duration {
@@ -256,14 +273,14 @@ func blockTimingDistribution(secs []float64) (count int, minMs, q1Ms, meanMs, q3
 		toMs(q(0.75)), toMs(sorted[len(sorted)-1])
 }
 
-// printFedTimingRecords emits the same timing tree as machine-readable records.
-// Inclusive rows must not be summed; leaf rows are the additive breakdown.
-func printFedTimingRecords(mode string, pid int, secureRun time.Duration) {
+// Inclusive rows describe envelopes; only leaf rows are additive.
+func printFedTimingRecords(metrics *fedRunMetrics, secureRun time.Duration) {
 	st := mpc.SetupTiming
 	cryptoSetup := st.PubKey + st.RelinKey + st.RotKey
 	initOther := nonNegativeDuration(fedTimings.initTotal - cryptoSetup)
-	postBlock := nonNegativeDuration(fedTimings.total - fedTimings.nullTotal - fedTimings.preBlock - fedTimings.blocks)
+	postBlock := metrics.parentLeafDuration("post_block_finalize", "")
 	protocolTotal := fedTimings.initTotal + secureRun
+	mode, pid := metrics.mode, metrics.pid
 
 	printTimingRecord(mode, pid, "protocol_init", "protocol_total", "inclusive", fedTimings.initTotal, 1, 0, 0, 0, 0, 0)
 	printTimingRecord(mode, pid, "collective_key_setup", "protocol_init", "inclusive", cryptoSetup, 1, 0, 0, 0, 0, 0)

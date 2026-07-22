@@ -184,17 +184,10 @@ func (ast *AssocTest) privateBlockStat(pl *privateGeneLocal, null skatNull, priv
 // public-list genotypes (the private party's aligned, public_only cols = 0); privateOnly[b] is the
 // private party's private-variant genotypes for gene b (only read on privatePid, must be nil or
 // length GenoNumBlocks). Caller collectively decrypts the result.
-//
-// fedTimings accumulates skat_fed phase durations for the end-of-run tree (runFederatedPrivate
-// prints it, combined with mpc.SetupTiming). One run per process; not concurrency-safe.
+// fedTimings keeps only inclusive spans and the block distribution for the end-of-run report.
 var fedTimings struct {
-	initTotal, loadPriv, assocInit                           time.Duration // pre-compute phases
-	nullAgg, nullInv, nullBeta, nullRSS, nullTotal, preBlock time.Duration
-	blocks, total                                            time.Duration
-	blockShape, blockLocal, blockPublic, blockPrivate        time.Duration
-	blockPrivateLocal, blockPrivateShare                     time.Duration
-	blockBurden, blockMoments, blockOther                    time.Duration
-	blockSecs                                                []float64
+	initTotal, nullTotal, blocks, total time.Duration
+	blockSecs                           []float64
 }
 
 // blockSecStats formats min/Q1/avg/Q3/max of per-block seconds (nearest-rank quantiles).
@@ -220,27 +213,10 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	rtype := mpcObj.GetRType()
 
 	tStart := time.Now()
-	// The same process can run this path more than once in tests. Reset aggregate
-	// per-gene breakdowns so each timing tree describes only the current run.
-	fedTimings.blockLocal = 0
-	fedTimings.blockShape = 0
-	fedTimings.blockPublic = 0
-	fedTimings.blockPrivate = 0
-	fedTimings.blockPrivateLocal = 0
-	fedTimings.blockPrivateShare = 0
-	fedTimings.blockBurden = 0
-	fedTimings.blockMoments = 0
-	fedTimings.blockOther = 0
 	null, X, y0 := ast.nullSetup()
 	fedTimings.nullTotal = time.Since(tStart)
-	tPreBlock := time.Now()
-	nullClassified := ast.fedMetrics.stageDuration("null_local_xtx_xty_yty") +
-		ast.fedMetrics.stageDuration("null_aggregate_xtx") +
-		ast.fedMetrics.stageDuration("null_aggregate_xty") +
-		ast.fedMetrics.stageDuration("null_aggregate_yty") +
-		ast.fedMetrics.stageDuration("null_solve") +
-		ast.fedMetrics.stageDuration("null_beta_pack") +
-		ast.fedMetrics.stageDuration("null_rss")
+	preBlockMark := ast.metricMark()
+	nullClassified := ast.fedMetrics.parentLeafDuration("null_model", "null_other")
 	ast.fedMetrics.addDuration("null_other", nonNegativeDuration(fedTimings.nullTotal-nullClassified))
 	log.LLvl1(fmt.Sprintf("[skat_fed] null model: %v", fedTimings.nullTotal.Round(time.Millisecond)))
 
@@ -262,18 +238,15 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		m := float64(ast.general.genoBlockSizes[b])
 		totalWork += m * m
 	}
-	fedTimings.preBlock = time.Since(tPreBlock)
-	ast.fedMetrics.addDuration("pre_block_setup", fedTimings.preBlock)
+	ast.metricEnd("pre_block_setup", preBlockMark)
 	tBlocks := time.Now()
 	for b := 0; b < nB; b++ {
 		tb := time.Now()
 		accSkat := mpc_core.InitRVec(rtype.Zero(), 1)
 		accBurden := mpc_core.InitRVec(rtype.Zero(), 1)
-		tShapeStart := time.Now()
 		shapeMark := ast.metricMark()
 		nsnps := ast.skatBlockNumSnps(b) // collective; public-list size for gene b
-		tShape := time.Since(tShapeStart)
-		ast.metricEnd("gene_shape_sync", shapeMark)
+		tShape := ast.metricEnd("gene_shape_sync", shapeMark)
 		// Not hub-gated: run_fed.sh tees party 2 (not the hub) to the terminal, so every party logs this.
 		if nProbes > 0 { // moments: exact basis or Hutchinson + block-contracted private corrections
 			log.LLvl1(fmt.Sprintf("[skat_fed] gene %d/%d start (m_pub=%d, probes=%d)", b+1, nB, nsnps, nProbes))
@@ -282,11 +255,9 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		}
 
 		// Read + contract + Gram the public block ONCE per gene; blockStat/burdenVarSS/skatMomentsSS reuse it.
-		tLocalStart := time.Now()
 		localMark := ast.metricMark()
 		gl := ast.computeGeneLocal(b, nsnps, X, y0)
-		tLocal := time.Since(tLocalStart)
-		ast.metricEnd("gene_local_public_gtg_gtx_gty", localMark)
+		tLocal := ast.metricEnd("gene_local_public_gtg_gtx_gty", localMark)
 
 		// PART A: secure SKAT over the public list (existing per-block path).
 		var wA mpc_core.RVec // unsigned weight from PART A, reused by burden/moment paths below
@@ -301,20 +272,16 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		}
 
 		// PART B: private variants for this gene (uniform across all genes).
-		tPrivateLocalStart := time.Now()
 		privateLocalMark := ast.metricMark()
 		var G *mat.Dense
 		if mpcObj.GetPid() == privatePid && b < len(privateOnly) {
 			G = orientedGenotypeLocalCopy(privateOnly[b])
 		}
 		pl := ast.computePrivateGeneLocal(G, X, y0, gl, nProbes > 0)
-		tPrivateLocal = time.Since(tPrivateLocalStart)
-		ast.metricEnd("gene_local_private_gtg_gtx_gty", privateLocalMark)
-		tPrivateShareStart := time.Now()
+		tPrivateLocal = ast.metricEnd("gene_local_private_gtg_gtx_gty", privateLocalMark)
 		privateShareMark := ast.metricMark()
 		skatB, burdenB := ast.privateBlockStat(pl, null, privatePid)
-		tPrivateShare = time.Since(tPrivateShareStart)
-		ast.metricEnd("gene_private_stat_share", privateShareMark)
+		tPrivateShare = ast.metricEnd("gene_private_stat_share", privateShareMark)
 		accSkat.Add(skatB)
 		accBurden.Add(burdenB)
 
@@ -330,19 +297,7 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		}
 		dt := time.Since(tb)
 		tPrivate := tPrivateLocal + tPrivateShare
-		tOther := dt - tShape - tLocal - tPublic - tPrivate - tBurden - tMoments
-		if tOther < 0 { // Guard against impossible-looking output from timer granularity.
-			tOther = 0
-		}
-		fedTimings.blockShape += tShape
-		fedTimings.blockLocal += tLocal
-		fedTimings.blockPublic += tPublic
-		fedTimings.blockPrivate += tPrivate
-		fedTimings.blockPrivateLocal += tPrivateLocal
-		fedTimings.blockPrivateShare += tPrivateShare
-		fedTimings.blockBurden += tBurden
-		fedTimings.blockMoments += tMoments
-		fedTimings.blockOther += tOther
+		tOther := nonNegativeDuration(dt - tShape - tLocal - tPublic - tPrivate - tBurden - tMoments)
 		blockSecs = append(blockSecs, dt.Seconds())
 		// ETA weights remaining genes by m² (the O(m_pub²·R) moment cost dominates).
 		doneWork += float64(nsnps) * float64(nsnps)
@@ -422,7 +377,8 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	burdenOut := mpcObj.SSToCVec(cps, sqrtT2)
 	ast.metricEnd("finalize_output_pack", packMark)
 	fedTimings.total = time.Since(tStart)
-	postBlock := nonNegativeDuration(fedTimings.total - fedTimings.nullTotal - fedTimings.preBlock - fedTimings.blocks)
+	postBlock := nonNegativeDuration(fedTimings.total - fedTimings.nullTotal -
+		ast.fedMetrics.stageDuration("pre_block_setup") - fedTimings.blocks)
 	finalizeClassified := ast.fedMetrics.parentLeafDuration("post_block_finalize", "finalize_other")
 	ast.fedMetrics.addDuration("finalize_other", nonNegativeDuration(postBlock-finalizeClassified))
 	log.LLvl1(fmt.Sprintf("[skat_fed] total compute: %v", fedTimings.total.Round(time.Millisecond)))

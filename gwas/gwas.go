@@ -485,9 +485,7 @@ func (g *ProtocolInfo) runFederatedPrivate() (skatOut, burdenPOut, skatPOut []fl
 	metrics := newFedRunMetrics(networks, mode, g.fedSetupComm)
 
 	var privateOnly []*mat.Dense
-	tl := time.Now()
 	loadMark := metrics.mark()
-	loadedPrivate := false
 	if pid == privatePid && g.config.PrivateOnlyPrefix != "" {
 		n, _ := g.pheno.Dims()
 		blocks, err := loadDenseBlocks(g.config.PrivateOnlyPrefix, g.config.GenoNumBlocks, n)
@@ -495,31 +493,23 @@ func (g *ProtocolInfo) runFederatedPrivate() (skatOut, burdenPOut, skatPOut []fl
 			panic(err)
 		}
 		privateOnly = blocks
-		loadedPrivate = true
+		metrics.end("load_private_only", loadMark)
 	} else if pid == privatePid {
 		log.LLvl1("[skat_fed] WARNING: private_pid set but private_only_prefix empty -> PART B (private variants) is EMPTY")
 	}
-	fedTimings.loadPriv = time.Since(tl)
-	if loadedPrivate {
-		metrics.end("load_private_only", loadMark)
-	}
 
-	tRun := time.Now()
-	tA := time.Now()
 	assocMark := metrics.mark()
 	assocTest := g.initSKAT()
 	assocTest.fedMetrics = metrics
-	fedTimings.assocInit = time.Since(tA)
 	metrics.end("assoc_init", assocMark)
 	skat, sqrtT2Enc, skatZEnc := assocTest.ComputeSKATFederatedPrivate(privateOnly, privatePid)
 	decryptMark := metrics.mark()
 	if pid == 0 {
 		secureRun := metrics.finishRun()
-		printFedTimingRecords(mode, pid, secureRun)
+		printFedTimingRecords(metrics, secureRun)
 		metrics.printRecords()
 		return nil, nil, nil
 	}
-	tDec := time.Now()
 	nB := g.config.GenoNumBlocks
 	// Q_skat is nil in SKAT-p mode (only the equivalent z is released) → skip its decrypt.
 	if len(skat) > 0 {
@@ -541,30 +531,30 @@ func (g *ProtocolInfo) runFederatedPrivate() (skatOut, burdenPOut, skatPOut []fl
 			skatPOut[b] = 0.5 * math.Erfc(z[b]/math.Sqrt2)
 		}
 	}
-	dec := time.Since(tDec)
 	metrics.end("decrypt_outputs", decryptMark)
 	secureRun := metrics.finishRun()
 	log.LLvl1(fmt.Sprintf("[skat_fed] decrypt: %v | total run: %v",
-		dec.Round(time.Millisecond), time.Since(tRun).Round(time.Millisecond)))
-	logFedTimingTree(dec, secureRun)
-	printFedTimingRecords(mode, pid, secureRun)
+		metrics.stageDuration("decrypt_outputs").Round(time.Millisecond), secureRun.Round(time.Millisecond)))
+	logFedTimingTree(metrics, secureRun)
+	printFedTimingRecords(metrics, secureRun)
 	metrics.printRecords()
 	return skatOut, burdenPOut, skatPOut
 }
 
-// logFedTimingTree prints the step/substep timing tree at the end of a skat_fed run, combining the
-// crypto-setup phase (mpc.SetupTiming) with the compute phases captured in fedTimings.
-func logFedTimingTree(dec, secureRun time.Duration) {
+func logFedTimingTree(metrics *fedRunMetrics, secureRun time.Duration) {
 	ms := func(d time.Duration) time.Duration { return d.Round(time.Millisecond) }
 	st := mpc.SetupTiming
 	setup := st.PubKey + st.RelinKey + st.RotKey
-	netload := fedTimings.initTotal - setup                                                       // network handshake + geno-stream open + pheno/cov load
-	finalize := fedTimings.total - fedTimings.nullTotal - fedTimings.preBlock - fedTimings.blocks // scale, p-value pivots, and SS-to-CKKS packing
-	if finalize < 0 {
-		finalize = 0
-	}
-	runAccounted := fedTimings.loadPriv + fedTimings.assocInit + fedTimings.total + dec
-	runOverhead := nonNegativeDuration(secureRun - runAccounted)
+	netload := nonNegativeDuration(fedTimings.initTotal - setup)
+	nullAgg := metrics.sumDuration("null_aggregate_xtx", "null_aggregate_xty", "null_aggregate_yty")
+	public := metrics.sumDuration("gene_public_score_gtx_gty", "gene_public_weight_dosage_maf", "gene_public_stat_share")
+	privateLocal := metrics.stageDuration("gene_local_private_gtg_gtx_gty")
+	privateShare := metrics.stageDuration("gene_private_stat_share")
+	burden := metrics.sumDuration("gene_burden_public_gtg", "gene_burden_public_gtx",
+		"gene_burden_private_cross", "gene_burden_projection")
+	moments := metrics.sumDuration("gene_moments_setup_gtx", "gene_moments_public_trace_gtg_gtx",
+		"gene_moments_private_cross")
+	finalize := metrics.parentLeafDuration("post_block_finalize", "")
 	grand := fedTimings.initTotal + secureRun
 	for _, ln := range []string{
 		"[skat_fed] timing tree:",
@@ -574,28 +564,28 @@ func logFedTimingTree(dec, secureRun time.Duration) {
 		fmt.Sprintf("  │    │    ├─ RelinKeyGen    %v", ms(st.RelinKey)),
 		fmt.Sprintf("  │    │    └─ RotKeyGen      %v", ms(st.RotKey)),
 		fmt.Sprintf("  │    └─ network+geno/cov   %v", ms(netload)),
-		fmt.Sprintf("  ├─ load privateOnly        %v", ms(fedTimings.loadPriv)),
-		fmt.Sprintf("  ├─ assoc init              %v", ms(fedTimings.assocInit)),
+		fmt.Sprintf("  ├─ load privateOnly        %v", ms(metrics.stageDuration("load_private_only"))),
+		fmt.Sprintf("  ├─ assoc init              %v", ms(metrics.stageDuration("assoc_init"))),
 		fmt.Sprintf("  ├─ compute                 %v", ms(fedTimings.total)),
 		fmt.Sprintf("  │    ├─ null model         %v", ms(fedTimings.nullTotal)),
-		fmt.Sprintf("  │    │    ├─ aggregate      %v", ms(fedTimings.nullAgg)),
-		fmt.Sprintf("  │    │    ├─ inverse        %v", ms(fedTimings.nullInv)),
-		fmt.Sprintf("  │    │    ├─ beta           %v", ms(fedTimings.nullBeta)),
-		fmt.Sprintf("  │    │    └─ RSS            %v", ms(fedTimings.nullRSS)),
-		fmt.Sprintf("  │    ├─ pre-block setup    %v", ms(fedTimings.preBlock)),
+		fmt.Sprintf("  │    │    ├─ aggregate      %v", ms(nullAgg)),
+		fmt.Sprintf("  │    │    ├─ inverse        %v", ms(metrics.stageDuration("null_solve"))),
+		fmt.Sprintf("  │    │    ├─ beta           %v", ms(metrics.stageDuration("null_beta_pack"))),
+		fmt.Sprintf("  │    │    └─ RSS            %v", ms(metrics.stageDuration("null_rss"))),
+		fmt.Sprintf("  │    ├─ pre-block setup    %v", ms(metrics.stageDuration("pre_block_setup"))),
 		fmt.Sprintf("  │    ├─ blocks (%d)         %v  [per-block %s]", len(fedTimings.blockSecs), ms(fedTimings.blocks), blockSecStats(fedTimings.blockSecs)),
-		fmt.Sprintf("  │    │    ├─ shape sync      %v", ms(fedTimings.blockShape)),
-		fmt.Sprintf("  │    │    ├─ local contract  %v", ms(fedTimings.blockLocal)),
-		fmt.Sprintf("  │    │    ├─ public stat     %v", ms(fedTimings.blockPublic)),
-		fmt.Sprintf("  │    │    ├─ private total   %v", ms(fedTimings.blockPrivate)),
-		fmt.Sprintf("  │    │    │    ├─ local       %v", ms(fedTimings.blockPrivateLocal)),
-		fmt.Sprintf("  │    │    │    └─ stat/share  %v", ms(fedTimings.blockPrivateShare)),
-		fmt.Sprintf("  │    │    ├─ burden variance %v", ms(fedTimings.blockBurden)),
-		fmt.Sprintf("  │    │    ├─ moments         %v", ms(fedTimings.blockMoments)),
-		fmt.Sprintf("  │    │    └─ loop overhead   %v", ms(fedTimings.blockOther)),
+		fmt.Sprintf("  │    │    ├─ shape sync      %v", ms(metrics.stageDuration("gene_shape_sync"))),
+		fmt.Sprintf("  │    │    ├─ local contract  %v", ms(metrics.stageDuration("gene_local_public_gtg_gtx_gty"))),
+		fmt.Sprintf("  │    │    ├─ public stat     %v", ms(public)),
+		fmt.Sprintf("  │    │    ├─ private total   %v", ms(privateLocal+privateShare)),
+		fmt.Sprintf("  │    │    │    ├─ local       %v", ms(privateLocal)),
+		fmt.Sprintf("  │    │    │    └─ stat/share  %v", ms(privateShare)),
+		fmt.Sprintf("  │    │    ├─ burden variance %v", ms(burden)),
+		fmt.Sprintf("  │    │    ├─ moments         %v", ms(moments)),
+		fmt.Sprintf("  │    │    └─ other overhead  %v", ms(metrics.stageDuration("gene_other"))),
 		fmt.Sprintf("  │    └─ post-block finalize %v", ms(finalize)),
-		fmt.Sprintf("  ├─ decrypt                 %v", ms(dec)),
-		fmt.Sprintf("  ├─ run overhead            %v", ms(runOverhead)),
+		fmt.Sprintf("  ├─ decrypt                 %v", ms(metrics.stageDuration("decrypt_outputs"))),
+		fmt.Sprintf("  ├─ run overhead            %v", ms(metrics.stageDuration("run_other"))),
 		fmt.Sprintf("  └─ TOTAL                   %v", ms(grand)),
 	} {
 		log.LLvl1(ln)

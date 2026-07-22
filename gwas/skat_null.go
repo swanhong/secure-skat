@@ -305,7 +305,6 @@ func (ast *AssocTest) nullSetup() (null skatNull, X *mat.Dense, y0 []float64) {
 	}
 	ast.metricEnd("null_local_xtx_xty_yty", localMark)
 
-	tNull := time.Now()
 	xtxMark := ast.metricMark()
 	xtxEnc, _, _, err := crypto.EncryptFloatMatrixRow(cps, xtxLocal)
 	if err != nil {
@@ -318,20 +317,19 @@ func (ast *AssocTest) nullSetup() (null skatNull, X *mat.Dense, y0 []float64) {
 		return nil
 	}
 	xtxEnc = mpcObj.Network.AggregateCMat(cps, xtxEnc)
-	ast.metricEnd("null_aggregate_xtx", xtxMark)
+	xtxDuration := ast.metricEnd("null_aggregate_xtx", xtxMark)
 
 	xtyMark := ast.metricMark()
 	xtyEnc, _ := crypto.EncryptFloatVector(cps, xtyLocal)
 	xtyEnc = aggVec(xtyEnc)
-	ast.metricEnd("null_aggregate_xty", xtyMark)
+	xtyDuration := ast.metricEnd("null_aggregate_xty", xtyMark)
 
 	ytyMark := ast.metricMark()
 	y0ty0Enc, _ := crypto.EncryptFloatVector(cps, []float64{y0ty0Local})
 	y0ty0Enc = aggVec(y0ty0Enc)
-	ast.metricEnd("null_aggregate_yty", ytyMark)
-	fedTimings.nullAgg = time.Since(tNull)
-	log.LLvl1(fmt.Sprintf("[skat_fed]   null: encrypt+AggregateCMat(XtX,Xty,y0ty0) %v", fedTimings.nullAgg.Round(time.Millisecond)))
-	tNull = time.Now()
+	ytyDuration := ast.metricEnd("null_aggregate_yty", ytyMark)
+	nullAgg := xtxDuration + xtyDuration + ytyDuration
+	log.LLvl1(fmt.Sprintf("[skat_fed]   null: encrypt+AggregateCMat(XtX,Xty,y0ty0) %v", nullAgg.Round(time.Millisecond)))
 	solveMark := ast.metricMark()
 
 	xtxSS := mpcObj.CMatToSS(cps, rtype, xtxEnc, -1, c, 1, c)
@@ -360,10 +358,8 @@ func (ast *AssocTest) nullSetup() (null skatNull, X *mat.Dense, y0 []float64) {
 		betaSS[i] = solvedNull[i][0]
 		copy(omp[i], solvedNull[i][1:])
 	}
-	fedTimings.nullInv = time.Since(tNull)
-	ast.metricEnd("null_solve", solveMark)
-	log.LLvl1(fmt.Sprintf("[skat_fed]   null: XtX->SS + Cholesky solve %v", fedTimings.nullInv.Round(time.Millisecond)))
-	tNull = time.Now()
+	solveDuration := ast.metricEnd("null_solve", solveMark)
+	log.LLvl1(fmt.Sprintf("[skat_fed]   null: XtX->SS + Cholesky solve %v", solveDuration.Round(time.Millisecond)))
 	betaMark := ast.metricMark()
 
 	// betaRep[ℓ] = β̂_ℓ replicated in every slot (for the score's CPMult). Convert all
@@ -382,10 +378,8 @@ func (ast *AssocTest) nullSetup() (null skatNull, X *mat.Dense, y0 []float64) {
 			betaRep[j] = betaRepCM[j][0]
 		}
 	}
-	fedTimings.nullBeta = time.Since(tNull)
-	ast.metricEnd("null_beta_pack", betaMark)
-	log.LLvl1(fmt.Sprintf("[skat_fed]   null: betaRep SS->CKKS %v", fedTimings.nullBeta.Round(time.Millisecond)))
-	tNull = time.Now()
+	betaDuration := ast.metricEnd("null_beta_pack", betaMark)
+	log.LLvl1(fmt.Sprintf("[skat_fed]   null: betaRep SS->CKKS %v", betaDuration.Round(time.Millisecond)))
 	rssMark := ast.metricMark()
 
 	// Residual-norm RSS (robust σ̂²): RSS = y₀ᵀy₀ − 2·(Xᵀy₀·β̂) + β̂ᵀ(XᵀX)β̂, 2nd-order in the β̂ error
@@ -416,9 +410,8 @@ func (ast *AssocTest) nullSetup() (null skatNull, X *mat.Dense, y0 []float64) {
 	}
 	y0ty0SS := mpcObj.CiphertextToSS(cps, rtype, y0Ct, mpcObj.GetHubPid(), 1)[0]
 	rssSS := y0ty0SS.Sub(xtyBeta).Sub(xtyBeta).Add(betaXtxBeta)
-	fedTimings.nullRSS = time.Since(tNull)
-	ast.metricEnd("null_rss", rssMark)
-	log.LLvl1(fmt.Sprintf("[skat_fed]   null: RSS %v", fedTimings.nullRSS.Round(time.Millisecond)))
+	rssDuration := ast.metricEnd("null_rss", rssMark)
+	log.LLvl1(fmt.Sprintf("[skat_fed]   null: RSS %v", rssDuration.Round(time.Millisecond)))
 
 	null = skatNull{betaRep: betaRep, betaSS: betaSS, omp: omp, rssSS: rssSS, c: c}
 	if ln.X != nil {
