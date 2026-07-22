@@ -367,6 +367,7 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 	hub := pid == mpcObj.GetHubPid()
 	c := null.c
 	m := nsnps // public block only; the private variants enter via the contracted corrections below
+	setupMark := ast.metricMark()
 
 	// Kernel normalized by N (public) so SS intermediates stay O(1) and the WH ratios are unchanged.
 	// Both Hutchinson and the private combine reuse Uₚ=GᵀX/N, Ω'=(XᵀX/N)⁻¹, and Θ=UₚΩ'.
@@ -574,6 +575,8 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 		return mpcObj.TruncMat(out, db, fb)
 	}
 
+	ast.metricEnd("gene_moments_setup_gtx", setupMark)
+	publicTraceMark := ast.metricMark()
 	tTau := time.Now()
 	tau1, tau2, tau3 := rtype.Zero(), rtype.Zero(), rtype.Zero()
 	var Kexact mpc_core.RMat
@@ -628,6 +631,8 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 		}
 	}
 	tauSecs := time.Since(tTau).Seconds() // public τ₂/τ₃ phase (explicit K or two-pass Hutchinson)
+	ast.metricEnd("gene_moments_public_trace_gtg_gtx", publicTraceMark)
+	privateCrossMark := ast.metricMark()
 	tRest := time.Now()
 
 	// ---- private/cross corrections Δₖ, added to τₖ. Party B builds the per-gene tables in plaintext and
@@ -875,6 +880,7 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 	S1 = tau1.Add(d1)
 	S2 = tau2.Add(d2)
 	S3 = tau3.Add(d3)
+	ast.metricEnd("gene_moments_private_cross", privateCrossMark)
 	if hub {
 		mode := fmt.Sprintf("hutch(%d cols, 2 M actions)", probeCount)
 		if exactPublic {

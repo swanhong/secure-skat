@@ -33,18 +33,51 @@ type Network struct {
 	commSent      map[int]int
 	commReceived  map[int]int
 
+	logMu         sync.RWMutex
 	loggingActive bool
 }
 
+// CommunicationStats is the application-layer traffic observed by the network
+// wrappers. Byte counts include serialized payloads and their framing headers,
+// but exclude TCP/IP headers, retransmissions, and socket setup.
+type CommunicationStats struct {
+	SentBytes        uint64
+	ReceivedBytes    uint64
+	SentMessages     uint64
+	ReceivedMessages uint64
+}
+
+// Sub returns the non-negative counter delta from start to s.
+func (s CommunicationStats) Sub(start CommunicationStats) CommunicationStats {
+	delta := func(end, begin uint64) uint64 {
+		if end < begin {
+			panic("communication counter decreased without a reset")
+		}
+		return end - begin
+	}
+	return CommunicationStats{
+		SentBytes:        delta(s.SentBytes, start.SentBytes),
+		ReceivedBytes:    delta(s.ReceivedBytes, start.ReceivedBytes),
+		SentMessages:     delta(s.SentMessages, start.SentMessages),
+		ReceivedMessages: delta(s.ReceivedMessages, start.ReceivedMessages),
+	}
+}
+
 func (netObj *Network) EnableLogging() {
+	netObj.logMu.Lock()
+	defer netObj.logMu.Unlock()
 	netObj.loggingActive = true
 }
 
 func (netObj *Network) DisableLogging() {
+	netObj.logMu.Lock()
+	defer netObj.logMu.Unlock()
 	netObj.loggingActive = false
 }
 
 func (netObj *Network) UpdateSenderLog(toPid int, nbytes int) {
+	netObj.logMu.Lock()
+	defer netObj.logMu.Unlock()
 	if netObj.loggingActive {
 		netObj.SentBytes[toPid] += uint64(nbytes)
 		netObj.commSent[toPid]++
@@ -52,6 +85,8 @@ func (netObj *Network) UpdateSenderLog(toPid int, nbytes int) {
 }
 
 func (netObj *Network) UpdateReceiverLog(fromPid int, nbytes int) {
+	netObj.logMu.Lock()
+	defer netObj.logMu.Unlock()
 	if netObj.loggingActive {
 		netObj.ReceivedBytes[fromPid] += uint64(nbytes)
 		netObj.commReceived[fromPid]++
@@ -59,11 +94,19 @@ func (netObj *Network) UpdateReceiverLog(fromPid int, nbytes int) {
 }
 
 func (netObj *Network) ResetNetworkLog() {
+	netObj.logMu.Lock()
+	defer netObj.logMu.Unlock()
 	for key := range netObj.SentBytes {
 		netObj.SentBytes[key] = 0
 	}
 	for key := range netObj.ReceivedBytes {
 		netObj.ReceivedBytes[key] = 0
+	}
+	for key := range netObj.commSent {
+		netObj.commSent[key] = 0
+	}
+	for key := range netObj.commReceived {
+		netObj.commReceived[key] = 0
 	}
 }
 
@@ -73,15 +116,77 @@ func (netObjs ParallelNetworks) ResetNetworkLog() {
 	}
 }
 
+// GetCommunicationStats aggregates counters over all MPC worker connections
+// owned by one process. Summing SentBytes over all parties gives the network-wide
+// communication volume; summing sent and received would count every transfer twice.
+func (netObjs ParallelNetworks) GetCommunicationStats() CommunicationStats {
+	var out CommunicationStats
+	for i := range netObjs {
+		stats := netObjs[i].getCommunicationStats()
+		out.SentBytes += stats.SentBytes
+		out.ReceivedBytes += stats.ReceivedBytes
+		out.SentMessages += stats.SentMessages
+		out.ReceivedMessages += stats.ReceivedMessages
+	}
+	return out
+}
+
+func (netObj *Network) getCommunicationStats() CommunicationStats {
+	netObj.logMu.RLock()
+	defer netObj.logMu.RUnlock()
+
+	var out CommunicationStats
+	for _, value := range netObj.SentBytes {
+		out.SentBytes += value
+	}
+	for _, value := range netObj.ReceivedBytes {
+		out.ReceivedBytes += value
+	}
+	for _, value := range netObj.commSent {
+		out.SentMessages += uint64(value)
+	}
+	for _, value := range netObj.commReceived {
+		out.ReceivedMessages += uint64(value)
+	}
+	return out
+}
+
+// PrintCommunicationSummaryWithMode adds a run-mode tag so parsers can match
+// totals to the correct detailed stage set when a log contains multiple runs.
+func (netObjs ParallelNetworks) PrintCommunicationSummaryWithMode(scope, mode string) {
+	stats := netObjs.GetCommunicationStats()
+	pid := -1
+	if len(netObjs) > 0 {
+		pid = netObjs[0].pid
+	}
+	fmt.Printf("[communication] scope=%s mode=%s party=%d sent_bytes=%d received_bytes=%d sent_messages=%d received_messages=%d\n",
+		scope, mode, pid, stats.SentBytes, stats.ReceivedBytes, stats.SentMessages, stats.ReceivedMessages)
+}
+
+// PrintCommunicationDelta emits the traffic accumulated since start.
+func (netObjs ParallelNetworks) PrintCommunicationDelta(scope string, start CommunicationStats) {
+	netObjs.printCommunicationStats(scope, netObjs.GetCommunicationStats().Sub(start))
+}
+
+func (netObjs ParallelNetworks) printCommunicationStats(scope string, stats CommunicationStats) {
+	pid := -1
+	if len(netObjs) > 0 {
+		pid = netObjs[0].pid
+	}
+	fmt.Printf("[communication] scope=%s party=%d sent_bytes=%d received_bytes=%d sent_messages=%d received_messages=%d\n",
+		scope, pid, stats.SentBytes, stats.ReceivedBytes, stats.SentMessages, stats.ReceivedMessages)
+}
+
 func (netObjs ParallelNetworks) PrintNetworkLog() {
 	sentBytes := make(map[int]uint64)
 	receivedBytes := make(map[int]uint64)
 
 	for i := range netObjs {
-		for key, value := range netObjs[i].SentBytes {
+		sent, received := netObjs[i].communicationByteBreakdown()
+		for key, value := range sent {
 			sentBytes[key] += value
 		}
-		for key, value := range netObjs[i].ReceivedBytes {
+		for key, value := range received {
 			receivedBytes[key] += value
 		}
 	}
@@ -97,13 +202,30 @@ func (netObjs ParallelNetworks) PrintNetworkLog() {
 }
 
 func (netObj *Network) PrintNetworkLog() {
+	sentBytes, receivedBytes := netObj.communicationByteBreakdown()
+
 	fmt.Println("Network log for party", netObj.pid)
-	for key, value := range netObj.SentBytes {
+	for key, value := range sentBytes {
 		fmt.Println(value, "bytes to party", key)
 	}
-	for key, value := range netObj.ReceivedBytes {
+	for key, value := range receivedBytes {
 		fmt.Println(value, "bytes from party", key)
 	}
+}
+
+func (netObj *Network) communicationByteBreakdown() (map[int]uint64, map[int]uint64) {
+	netObj.logMu.RLock()
+	defer netObj.logMu.RUnlock()
+
+	sentBytes := make(map[int]uint64, len(netObj.SentBytes))
+	receivedBytes := make(map[int]uint64, len(netObj.ReceivedBytes))
+	for key, value := range netObj.SentBytes {
+		sentBytes[key] = value
+	}
+	for key, value := range netObj.ReceivedBytes {
+		receivedBytes[key] = value
+	}
+	return sentBytes, receivedBytes
 }
 
 type Server struct {

@@ -24,6 +24,12 @@ RIDGE_REL = 1e-6  # match secure computeBetaHatEnc Tikhonov ridge (gwas/skat.go 
 THRES = 0.01  # per-gene relative-gap threshold for the 'within' (O/X) column
 
 
+def emit_timing(scope, milliseconds, kind="phase", status="done", count=1):
+    """Emit one machine-readable timing record for timing_summary.py."""
+    print(f"[timing] scope={scope} parent=compare party=driver kind={kind} "
+          f"status={status} milliseconds={milliseconds:.3f} count={count}", flush=True)
+
+
 def load_blocks(sub, kind, n, ng):
     blocks = []
     for b in range(ng):
@@ -62,23 +68,30 @@ def compare(name, secure, plain, ng, thres=THRES, atol=1.0):
     return n_within
 
 
+compare_started = time.perf_counter()
+phase_started = time.perf_counter()
 ng = json.load(open(f"{OUT}/manifest.json"))["n_genes"]
 nA = len(np.loadtxt(f"{OUT}/A/pheno.txt"))
 nB = len(np.loadtxt(f"{OUT}/B/pheno.txt"))
 XA, yA = load_xy("A", nA)
 XB, yB = load_xy("B", nB)
+emit_timing("compare.load_inputs", 1000.0 * (time.perf_counter() - phase_started))
 t0 = time.perf_counter()
 Splain, _, Pplain = federated_skat_burden_from_blocks(
     load_blocks("A", "geno", nA, ng), load_blocks("B", "geno", nB, ng),
     load_blocks("B", "priv", nB, ng), XA, yA, XB, yB, ridge_rel=RIDGE_REL)
-print(f"  plaintext federated SKAT+Burden-p: {time.perf_counter() - t0:.2f}s")
+plain_skat_burden_ms = 1000.0 * (time.perf_counter() - t0)
+print(f"  plaintext federated SKAT+Burden-p: {plain_skat_burden_ms / 1000.0:.2f}s")
+emit_timing("compare.plain_skat_burden", plain_skat_burden_ms)
 # Reveal set depends on the mode: with skat_pvalue_probes=0 the run reveals the SKAT statistic Q
 # (skat_fed_out.txt) + Burden p; with skat_pvalue_probes>0 Q is withheld (only the WH pivot z leaves,
 # so skat_fed_out.txt is absent) and the SKAT p-value section below runs instead. Burden always
 # reveals only √(T/2) (→ p); the Burden statistic and zᵀPz stay secret-shared.
 skat_q_file = f"{OUT}/out/party2/skat_fed_out.txt"
-Ssec = np.loadtxt(skat_q_file) if os.path.exists(skat_q_file) else None
-Psec = np.loadtxt(f"{OUT}/out/party2/skat_fed_burden_p_out.txt")
+phase_started = time.perf_counter()
+Ssec = np.atleast_1d(np.loadtxt(skat_q_file)) if os.path.exists(skat_q_file) else None
+Psec = np.atleast_1d(np.loadtxt(f"{OUT}/out/party2/skat_fed_burden_p_out.txt"))
+emit_timing("compare.load_secure_outputs", 1000.0 * (time.perf_counter() - phase_started))
 
 def _erfcinv(y):
     """Inverse complementary error function via bisection (erfc is monotone-decreasing on [0,40],
@@ -118,11 +131,13 @@ summary += f"Burden p {burdenp_within}/{ng},  Burden T {burdenT_within}/{ng}"
 SkatPsec = SkatPplain = None
 skat_p_file = f"{OUT}/out/party2/skat_fed_skat_p_out.txt"
 if os.path.exists(skat_p_file):
+    skat_p_started = time.perf_counter()
     aB = load_blocks("A", "geno", nA, ng)
     bB = load_blocks("B", "geno", nB, ng)
     pB = load_blocks("B", "priv", nB, ng)
     WHplain, LiuPlain, DaviesPlain = (np.asarray(x, float)
                                       for x in federated_skat_p_from_blocks(aB, bB, pB, XA, yA, XB, yB, ridge_rel=RIDGE_REL))
+    emit_timing("compare.plain_skat_p_refs", 1000.0 * (time.perf_counter() - skat_p_started))
     SkatPsec = np.atleast_1d(np.loadtxt(skat_p_file))  # secure Wilson-Hilferty p
     SkatPplain = WHplain  # plain WH — the CSV/scatter reference for the secure output
 
@@ -145,6 +160,8 @@ if os.path.exists(skat_p_file):
     for name, ref in [("secure-WH vs plain-WH", WHplain), ("WH vs Liu", LiuPlain), ("WH vs Davies", DaviesPlain)]:
         print(f"  {name:<24} {_r2(SkatPsec, ref):>10.6f} {_maxrel(SkatPsec, ref):>10.2e} {_mae(SkatPsec, ref):>13.2e}")
     summary += f",  SKAT p (WH vs Liu R^2={_r2(SkatPsec, LiuPlain):.4f}, vs Davies R^2={_r2(SkatPsec, DaviesPlain):.4f})"
+else:
+    emit_timing("compare.plain_skat_p_refs", 0.0, status="skipped", count=0)
 print(summary)
 
 
@@ -165,6 +182,7 @@ def gene_positions(ng):
 # FED_CSV=1: dump per-gene aggregate results (positions + p-values only) for fed_plot.py. The SKAT
 # p-value columns appear only when the secure run computed it (skat_pvalue_probes > 0).
 if os.environ.get("FED_CSV"):
+    csv_started = time.perf_counter()
     chrom, pos = gene_positions(ng)
     has_skatp = SkatPsec is not None
     csv_path = f"{OUT}/fed_results.csv"
@@ -179,3 +197,8 @@ if os.environ.get("FED_CSV"):
                 row += f",{SkatPsec[b]:.6e},{SkatPplain[b]:.6e}"
             f.write(row + "\n")
     print(f"  FED_CSV: wrote {csv_path}  ({'burden+skat p' if has_skatp else 'burden p'})")
+    emit_timing("compare.result_csv_write", 1000.0 * (time.perf_counter() - csv_started))
+else:
+    emit_timing("compare.result_csv_write", 0.0, status="skipped", count=0)
+
+emit_timing("compare.total", 1000.0 * (time.perf_counter() - compare_started), kind="total")

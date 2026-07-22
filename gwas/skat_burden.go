@@ -64,8 +64,10 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 	// pubZZ = w_pubᵀ(GᵀG)w_pub ; pubXtz = (XᵀG_pub)w_pub (c-vector)
 	pubZZ := rtype.Zero()
 	pubXtz := mpc_core.InitRVec(rtype.Zero(), c)
+	gtgMark := ast.metricMark()
+	var wCol mpc_core.RMat
 	if nsnps > 0 {
-		wCol := make(mpc_core.RMat, nsnps)
+		wCol = make(mpc_core.RMat, nsnps)
 		for j := 0; j < nsnps; j++ {
 			wCol[j] = mpc_core.RVec{wPub[j]}
 		}
@@ -93,6 +95,11 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 		}
 		gw = mpcObj.TruncVec(gw, db, fb)
 		pubZZ = vdot(wPub, gw)
+	}
+	ast.metricEnd("gene_burden_public_gtg", gtgMark)
+
+	gtxMark := ast.metricMark()
+	if nsnps > 0 {
 		// pubXtz = (GᵀX)ᵀ·w_pub (c-vector) as one SSMultMat over the c×nsnps transpose.
 		pxM := mpcObj.SSMultMat(gtxT, wCol) // c×1 (untruncated 2·fb)
 		for l := 0; l < c; l++ {
@@ -100,8 +107,10 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 		}
 		pubXtz = mpcObj.TruncVec(pubXtz, db, fb)
 	}
+	ast.metricEnd("gene_burden_public_gtx", gtxMark)
 
 	// --- private (privatePid only): z_priv = G_priv·w_priv, contracted locally (count hidden) ---
+	privateCrossMark := ast.metricMark()
 	privZZ := rtype.Zero()
 	crossD := mpc_core.InitRVec(rtype.Zero(), nsnps) // d = G_pubᵀ z_priv (m_pub)
 	privXtz := mpc_core.InitRVec(rtype.Zero(), c)    // Xᵀ z_priv (c)
@@ -135,8 +144,10 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 	for l := 0; l < c; l++ {
 		xtz[l] = pubXtz[l].Add(privXtz[l])
 	}
+	ast.metricEnd("gene_burden_private_cross", privateCrossMark)
 
 	// zᵀPz/N = zz − (1/N)·xtzᵀΩ'xtz, Ω'=N(XtX)⁻¹ cached once by the null model.
+	projectionMark := ast.metricMark()
 	xtzCol := make(mpc_core.RMat, c)
 	for l := 0; l < c; l++ {
 		xtzCol[l] = mpc_core.RVec{xtz[l]}
@@ -148,5 +159,6 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 	}
 	corr := vdot(xtz, a)
 	corr = mpcObj.TruncVec(mpc_core.RVec{corr.Mul(rtype.FromFloat64(1.0/N, fb))}, db, fb)[0]
+	ast.metricEnd("gene_burden_projection", projectionMark)
 	return zz.Sub(corr)
 }

@@ -187,12 +187,20 @@ func (ast *AssocTest) blockStat(b, nsnps int, null skatNull, X *mat.Dense, y0 []
 
 	// Score in secret shares — the Gᵀy₀ − GᵀX·β̂ cancellation is exact in fixed-point (β̂ from the
 	// Cholesky null solve is accurate). All parties (incl. pid 0, with zero shares) take part.
+	scoreMark := ast.metricMark()
 	sCVec := mpcObj.SSToCVec(cps, ast.scoreSS(GtX, Gty0, null.betaSS, nsnps))
+	ast.metricEnd("gene_public_score_gtx_gty", scoreMark)
+	weightMark := ast.metricMark()
 	weightEnc, weightSS := ast.blindWeightCKKS(dosage, nsnps)
+	ast.metricEnd("gene_public_weight_dosage_maf", weightMark)
 
+	statMark := ast.metricMark()
 	var qRaw, bLin crypto.CipherVector
 	if pid > 0 && len(sCVec) > 0 {
 		qRaw, bLin = ast.scoreCalculation(sCVec, weightEnc)
 	}
-	return ast.scalarCiphertextToShares(qRaw), ast.scalarCiphertextToShares(bLin), weightSS
+	qRawSS = ast.scalarCiphertextToShares(qRaw)
+	bLinSS = ast.scalarCiphertextToShares(bLin)
+	ast.metricEnd("gene_public_stat_share", statMark)
+	return qRawSS, bLinSS, weightSS
 }

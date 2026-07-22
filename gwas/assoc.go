@@ -22,6 +22,8 @@ import (
 
 type AssocTest struct {
 	general *ProtocolInfo
+	// fedMetrics is non-nil only for the instrumented skat_fed entry point.
+	fedMetrics *fedRunMetrics
 
 	pheno crypto.PlainVector
 

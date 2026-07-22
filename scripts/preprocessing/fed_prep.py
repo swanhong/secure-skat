@@ -55,6 +55,12 @@ PLINK2 = os.environ.get("PLINK2", "plink2")   # override: PLINK2=/path/to/plink2
 MAX_ALLELE_LEN = 1000   # --set-all-var-ids cap; long indels keep full chr:pos:ref:alt key (chr22 max=193). Bump if a chrom exceeds this.
 
 
+def emit_timing(scope, milliseconds, kind="phase", status="done", count=1):
+    """Emit one machine-readable timing record alongside the human timing tree."""
+    print(f"[timing] scope={scope} parent=prep party=driver kind={kind} "
+          f"status={status} milliseconds={milliseconds:.3f} count={count}", flush=True)
+
+
 def sh(cmd):
     print("  $", cmd)
     subprocess.run(cmd, shell=True, check=True)
@@ -227,6 +233,7 @@ def plink_extract_to_int8(pgen, keep_file, keys_file, n, out_prefix):
 
 def run():
     """Real prep on the workbench. Reads AoU pgen, splits into 2 cohorts, writes genotype blocks."""
+    run_started = time.perf_counter()
     rng = np.random.default_rng(SEED)
     os.makedirs(OUT_DIR, exist_ok=True)
     tmr = {}
@@ -302,10 +309,15 @@ def run():
             "extract_A": "plink2 extract cohort A -> int8",
             "extract_B": "plink2 extract cohort B -> int8",
             "write": "blocks + cov + pheno + config"}
+    phases = ["keying", "setup", "extract_A", "extract_B", "write"]
+    total = time.perf_counter() - run_started
     print("[prep] timing tree (plaintext):")
-    for k in ["keying", "setup", "extract_A", "extract_B", "write"]:
+    for k in phases:
         print(f"  ├─ {k:<12} {tmr[k]:7.1f}s   ({desc[k]})")
-    print(f"  └─ {'TOTAL':<12} {sum(tmr.values()):7.1f}s")
+    print(f"  └─ {'TOTAL':<12} {total:7.1f}s")
+    for k in phases:
+        emit_timing(f"prep.{k}", 1000.0 * tmr[k])
+    emit_timing("prep.total", 1000.0 * total, kind="total")
 
 
 # ---- helpers ----

@@ -26,8 +26,120 @@ export FED_OUT # fed_prep.py reads it too
 OUT=$FED_OUT
 CFG=$OUT/config
 PREP=$REPO/scripts/preprocessing
-T_PREP=0 T_BUILD=0 T_SECURE=0 T_COMPARE=0
+T_PREP_MS=0 T_BUILD_MS=0 T_SECURE_MS=0 T_COMPARE_MS=0
+S_PREP=not_run S_BUILD=not_run S_SECURE=not_run S_COMPARE=not_run
+CURRENT_STEP="" STEP_START_MS=0 TIMING_WRITTEN=0
+PARTY_PIDS=()
+PARTY_LOG_TAIL_PID=""
 mkdir -p "$OUT"
+rm -f "$OUT/prep.log" "$OUT/compare.log" \
+  "$OUT/party0.log" "$OUT/party1.log" "$OUT/party2.log" \
+  "$OUT/communication_summary.csv"
+
+now_ms() {
+  python3 -c 'import time; print(time.monotonic_ns() // 1000000)' 2>/dev/null \
+    || echo "$(($(date +%s) * 1000))"
+}
+
+start_step() {
+  CURRENT_STEP=$1
+  STEP_START_MS=$(now_ms)
+  case "$CURRENT_STEP" in
+    prep) S_PREP=running ;;
+    build) S_BUILD=running ;;
+    secure) S_SECURE=running ;;
+    compare) S_COMPARE=running ;;
+  esac
+}
+
+finish_step() {
+  local status=${2:-done}
+  local elapsed=$(( $(now_ms) - STEP_START_MS ))
+  case "$1" in
+    prep) T_PREP_MS=$elapsed; S_PREP=$status ;;
+    build) T_BUILD_MS=$elapsed; S_BUILD=$status ;;
+    secure) T_SECURE_MS=$elapsed; S_SECURE=$status ;;
+    compare) T_COMPARE_MS=$elapsed; S_COMPARE=$status ;;
+  esac
+  CURRENT_STEP=""
+  STEP_START_MS=0
+}
+
+duration_s() {
+  awk -v ms="$1" 'BEGIN { printf "%.3fs", ms / 1000 }'
+}
+
+write_timing_summary() {
+  local exit_code=${1:-0}
+  local total_ms=$((T_PREP_MS + T_BUILD_MS + T_SECURE_MS + T_COMPARE_MS))
+  echo "=== TIMING (steps; status is explicit for skipped/failed phases) ==="
+  printf '  [1] prep     %-8s %10s\n' "$S_PREP" "$(duration_s "$T_PREP_MS")"
+  printf '  [2] build    %-8s %10s\n' "$S_BUILD" "$(duration_s "$T_BUILD_MS")"
+  printf '  [3] secure   %-8s %10s\n' "$S_SECURE" "$(duration_s "$T_SECURE_MS")"
+  printf '  [4] compare  %-8s %10s\n' "$S_COMPARE" "$(duration_s "$T_COMPARE_MS")"
+  printf '  --------------------------------\n  total               %10s\n' "$(duration_s "$total_ms")"
+  {
+    echo "step,status,milliseconds"
+    printf 'prep,%s,%d\n' "$S_PREP" "$T_PREP_MS"
+    printf 'build,%s,%d\n' "$S_BUILD" "$T_BUILD_MS"
+    printf 'secure,%s,%d\n' "$S_SECURE" "$T_SECURE_MS"
+    printf 'compare,%s,%d\n' "$S_COMPARE" "$T_COMPARE_MS"
+    printf 'total,exit_%d,%d\n' "$exit_code" "$total_ms"
+  } > "$OUT/timing_steps.csv"
+
+  # Merge machine-readable substeps emitted by prep, each secure party, and
+  # comparison.  A parser failure must not hide the original run status.
+  local timing_args=("$OUT/timing_steps.csv" --output "$OUT/timing_steps.csv")
+  [ -f "$OUT/prep.log" ] && timing_args+=(--prep-log "$OUT/prep.log")
+  [ -f "$OUT/party0.log" ] && timing_args+=(--party-log "$OUT/party0.log")
+  [ -f "$OUT/party1.log" ] && timing_args+=(--party-log "$OUT/party1.log")
+  [ -f "$OUT/party2.log" ] && timing_args+=(--party-log "$OUT/party2.log")
+  [ -f "$OUT/compare.log" ] && timing_args+=(--compare-log "$OUT/compare.log")
+  python3 "$REPO/scripts/analysis/timing_summary.py" "${timing_args[@]}" \
+    || echo "warning: failed to append detailed timing rows" >&2
+  echo "  timing CSV -> $OUT/timing_steps.csv"
+  TIMING_WRITTEN=1
+}
+
+cleanup_party_processes() {
+  local child_pid
+  if [ -n "$PARTY_LOG_TAIL_PID" ]; then
+    kill "$PARTY_LOG_TAIL_PID" 2>/dev/null || true
+    kill -9 "$PARTY_LOG_TAIL_PID" 2>/dev/null || true
+    wait "$PARTY_LOG_TAIL_PID" 2>/dev/null || true
+    PARTY_LOG_TAIL_PID=""
+  fi
+  if [ "${#PARTY_PIDS[@]}" -eq 0 ]; then
+    return
+  fi
+
+  # A failed/interrupting party can leave its peers blocked in network I/O.
+  # Do not wait in an EXIT/signal path: a stuck child must not prevent the
+  # timing summary or shell exit. SIGKILL makes the cleanup bounded.
+  for child_pid in "${PARTY_PIDS[@]}"; do
+    kill "$child_pid" 2>/dev/null || true
+  done
+  for child_pid in "${PARTY_PIDS[@]}"; do
+    kill -9 "$child_pid" 2>/dev/null || true
+  done
+  PARTY_PIDS=()
+}
+
+on_exit() {
+  local exit_code=$1
+  trap - EXIT INT TERM
+  cleanup_party_processes
+  if [ "$TIMING_WRITTEN" -eq 0 ]; then
+    if [ -n "$CURRENT_STEP" ]; then
+      finish_step "$CURRENT_STEP" failed
+    fi
+    write_timing_summary "$exit_code"
+  fi
+  exit "$exit_code"
+}
+trap 'on_exit $?' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [ -n "$SKIP_PREP" ] && [ -n "$FED_PREP_SRC" ] && [ ! -f "$CFG/configGlobal.toml" ]; then
   echo "=== seeding fed_in from $FED_PREP_SRC -> $OUT (symlink blocks, repath config) ==="
@@ -48,14 +160,24 @@ printf '  PLINK2=%s\n  FED_CHR=%s FED_NSUB=%s FED_NGENES=%s FED_NPCS=%s\n  FED_C
 
 if [ -z "$SKIP_PREP" ]; then
   echo "=== [1/4] fed_prep (blocks + cov + pheno + config) ==="
-  s=$SECONDS; python3 "$PREP/fed_prep.py"; T_PREP=$((SECONDS-s))
-  echo "  [1/4] fed_prep done: ${T_PREP}s"
+  start_step prep
+  python3 "$PREP/fed_prep.py" 2>&1 | tee "$OUT/prep.log"
+  finish_step prep
+  echo "  [1/4] fed_prep done: $(duration_s "$T_PREP_MS")"
+else
+  S_PREP=skipped
+  echo "=== [1/4] fed_prep skipped (SKIP_PREP is set) ==="
 fi
 
 if [ -z "$SKIP_BUILD" ]; then
   echo "=== [2/4] build sfgwas ==="
-  s=$SECONDS; ( cd "$REPO" && { go build -mod=vendor -o sfgwas || go build -mod=mod -o sfgwas; } ); T_BUILD=$((SECONDS-s))
-  echo "  [2/4] build done: ${T_BUILD}s"
+  start_step build
+  ( cd "$REPO" && { go build -mod=vendor -o sfgwas || go build -mod=mod -o sfgwas; } )
+  finish_step build
+  echo "  [2/4] build done: $(duration_s "$T_BUILD_MS")"
+else
+  S_BUILD=skipped
+  echo "=== [2/4] build skipped (SKIP_BUILD is set) ==="
 fi
 
 if [ -f "$CFG/configGlobal.toml" ]; then
@@ -64,20 +186,85 @@ if [ -f "$CFG/configGlobal.toml" ]; then
 fi
 
 echo "=== [3/4] secure skat_fed (3 parties) ==="
-s=$SECONDS
 pkill -9 -f "$REPO/sfgwas" 2>/dev/null || true
 sleep 1
-for i in 0 1; do
-  PID=$i SFGWAS_MODE=skat_fed SFGWAS_CONFIG_PATH="$CFG" "$REPO/sfgwas" > "$OUT/party$i.log" 2>&1 &
+# A reused FED_OUT can contain mode-exclusive files from an older raw-Q or
+# SKAT-p run. Clear generated results before launching so comparison/plotting
+# can only consume outputs from this run.
+for party_dir in "$OUT"/out/party*; do
+  [ -d "$party_dir" ] || continue
+  rm -f "$party_dir/skat_fed_out.txt" \
+    "$party_dir/skat_fed_burden_p_out.txt" \
+    "$party_dir/skat_fed_skat_p_out.txt"
 done
-PID=2 SFGWAS_MODE=skat_fed SFGWAS_CONFIG_PATH="$CFG" "$REPO/sfgwas" 2>&1 | tee "$OUT/party2.log"
-wait   # let party0/1 finish writing their logs
-T_SECURE=$((SECONDS-s))
-echo "  [3/4] secure done: ${T_SECURE}s"
+rm -f "$OUT/communication_summary.csv" "$OUT/fed_results.csv" \
+  "$OUT/manhattan_burden.png" "$OUT/scatter_burden.png" \
+  "$OUT/manhattan_skat.png" "$OUT/scatter_skat.png"
+start_step secure
+party_ids=(0 1 2)
+for i in "${party_ids[@]}"; do
+  PID=$i SFGWAS_MODE=skat_fed SFGWAS_CONFIG_PATH="$CFG" "$REPO/sfgwas" > "$OUT/party$i.log" 2>&1 &
+  PARTY_PIDS+=("$!")
+done
+# Keep the long-running gene progress/ETA visible while retaining a complete
+# party-2 log. This portable follower is tracked and terminated on every exit.
+tail -n +1 -f "$OUT/party2.log" &
+PARTY_LOG_TAIL_PID=$!
+
+# macOS ships Bash 3.2 without `wait -n`. Poll all three children so a failure
+# from any party is noticed promptly instead of waiting forever on a peer that
+# is blocked in network I/O.
+party_done=(0 0 0)
+remaining=${#PARTY_PIDS[@]}
+while [ "$remaining" -gt 0 ]; do
+  observed_exit=0
+  for idx in 0 1 2; do
+    if [ "${party_done[$idx]}" -eq 1 ]; then
+      continue
+    fi
+    child_pid=${PARTY_PIDS[$idx]}
+    if kill -0 "$child_pid" 2>/dev/null; then
+      continue
+    fi
+    set +e
+    wait "$child_pid"
+    child_status=$?
+    set -e
+    party_done[$idx]=1
+    remaining=$((remaining - 1))
+    observed_exit=1
+    if [ "$child_status" -ne 0 ]; then
+      cat "$OUT/party2.log"
+      echo "secure party ${party_ids[$idx]} failed: status=$child_status" >&2
+      exit "$child_status"
+    fi
+  done
+  if [ "$remaining" -gt 0 ] && [ "$observed_exit" -eq 0 ]; then
+    sleep 0.1
+  fi
+done
+PARTY_PIDS=()
+# Stop at protocol completion; log rendering and communication validation are
+# post-processing and intentionally excluded from the secure runtime.
+finish_step secure
+sleep 0.1 # allow tail to print the final buffered lines; excluded from secure time
+kill "$PARTY_LOG_TAIL_PID" 2>/dev/null || true
+set +e
+wait "$PARTY_LOG_TAIL_PID" 2>/dev/null
+set -e
+PARTY_LOG_TAIL_PID=""
+echo "  [3/4] secure done: $(duration_s "$T_SECURE_MS")"
+
+python3 "$REPO/scripts/analysis/communication_summary.py" \
+  "$OUT/party0.log" "$OUT/party1.log" "$OUT/party2.log" \
+  --scope skat_fed_total --expected-parties 0 1 2 \
+  --output "$OUT/communication_summary.csv"
 
 echo "=== [4/4] fed_compare (secure vs plaintext) ==="
-s=$SECONDS; python3 "$PREP/fed_compare.py"; T_COMPARE=$((SECONDS-s))
-echo "  [4/4] compare done: ${T_COMPARE}s"
+start_step compare
+python3 "$PREP/fed_compare.py" 2>&1 | tee "$OUT/compare.log"
+finish_step compare
+echo "  [4/4] compare done: $(duration_s "$T_COMPARE_MS")"
 
 echo "=== [plot] fed_plot (Manhattan + secure-vs-plain scatter) ==="
 if [ -f "$OUT/fed_results.csv" ]; then
@@ -87,6 +274,4 @@ else
   echo "  [plot] no fed_results.csv (run with FED_CSV=1) -> skipped"
 fi
 
-echo "=== TIMING (steps) ==="
-printf '  [1] prep    %5ds\n  [2] build   %5ds\n  [3] secure  %5ds\n  [4] compare %5ds\n  ---------------------\n  total     %7ds\n' \
-  "$T_PREP" "$T_BUILD" "$T_SECURE" "$T_COMPARE" "$((T_PREP+T_BUILD+T_SECURE+T_COMPARE))"
+write_timing_summary 0

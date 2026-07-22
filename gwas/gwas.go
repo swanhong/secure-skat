@@ -27,6 +27,10 @@ type ProtocolInfo struct {
 	cps    *crypto.CryptoParams
 	cpsPar []*crypto.CryptoParams // One per thread
 
+	// Application-layer traffic used by collective HE key setup. The remaining
+	// pre-run communication is derived when skat_fed starts.
+	fedSetupComm mpc.CommunicationStats
+
 	// Input files
 	genoBlocks     []*GenoFileStream
 	genoBlockSizes []int
@@ -207,6 +211,9 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 
 	prec := uint(config.MpcFieldSize)
 	networks := mpc.ParallelNetworks(mpc.InitCommunication(config.BindingIP, config.Servers, pid, config.NumMainParties+1, config.MpcNumThreads, config.SharedKeysPath))
+	// Start the reported protocol traffic after TCP channels/PRG initialization,
+	// but before collective HE key setup. This yields setup+compute+decrypt bytes.
+	networks.ResetNetworkLog()
 
 	var rtype mpc_core.RElem
 	switch config.MpcFieldSize {
@@ -228,9 +235,11 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 	}
 
 	var cps *crypto.CryptoParams
+	setupCommStart := networks.GetCommunicationStats()
 	if !mpcOnly {
 		cps = networks.CollectiveInit(&params, prec, config.RotKeyPow2Only)
 	}
+	fedSetupComm := networks.GetCommunicationStats().Sub(setupCommStart)
 
 	var pheno, cov *mat.Dense
 	var pos []uint64
@@ -296,8 +305,9 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 	gwasParams := InitGWASParams(config.NumInds, config.NumSnps, config.NumCovs, config.NumPCs, config.SnpDistThres)
 
 	return &ProtocolInfo{
-		mpcObj: mpcEnv, // One MPC object for each thread
-		cps:    cps,
+		mpcObj:       mpcEnv, // One MPC object for each thread
+		cps:          cps,
+		fedSetupComm: fedSetupComm,
 
 		genoBlocks:     genofs,
 		genoBlockSizes: genoBlockSizes,
@@ -465,27 +475,48 @@ func (g *ProtocolInfo) runFederatedPrivate() (skatOut, burdenPOut, skatPOut []fl
 	mpcObj := g.mpcObj[0]
 	pid := mpcObj.GetPid()
 	privatePid := g.config.PrivatePid
+	networks := g.mpcObj.GetNetworks()
+	commStart := networks.GetCommunicationStats()
+	defer networks.PrintCommunicationDelta("skat_fed_run", commStart)
+	mode := "raw_q"
+	if g.config.SkatPValueProbes > 0 {
+		mode = "skat_p"
+	}
+	metrics := newFedRunMetrics(networks, mode, g.fedSetupComm)
 
 	var privateOnly []*mat.Dense
+	tl := time.Now()
+	loadMark := metrics.mark()
+	loadedPrivate := false
 	if pid == privatePid && g.config.PrivateOnlyPrefix != "" {
 		n, _ := g.pheno.Dims()
-		tl := time.Now()
 		blocks, err := loadDenseBlocks(g.config.PrivateOnlyPrefix, g.config.GenoNumBlocks, n)
 		if err != nil {
 			panic(err)
 		}
 		privateOnly = blocks
-		fedTimings.loadPriv = time.Since(tl)
+		loadedPrivate = true
 	} else if pid == privatePid {
 		log.LLvl1("[skat_fed] WARNING: private_pid set but private_only_prefix empty -> PART B (private variants) is EMPTY")
+	}
+	fedTimings.loadPriv = time.Since(tl)
+	if loadedPrivate {
+		metrics.end("load_private_only", loadMark)
 	}
 
 	tRun := time.Now()
 	tA := time.Now()
+	assocMark := metrics.mark()
 	assocTest := g.initSKAT()
+	assocTest.fedMetrics = metrics
 	fedTimings.assocInit = time.Since(tA)
+	metrics.end("assoc_init", assocMark)
 	skat, sqrtT2Enc, skatZEnc := assocTest.ComputeSKATFederatedPrivate(privateOnly, privatePid)
+	decryptMark := metrics.mark()
 	if pid == 0 {
+		secureRun := metrics.finishRun()
+		printFedTimingRecords(mode, pid, secureRun)
+		metrics.printRecords()
 		return nil, nil, nil
 	}
 	tDec := time.Now()
@@ -511,21 +542,30 @@ func (g *ProtocolInfo) runFederatedPrivate() (skatOut, burdenPOut, skatPOut []fl
 		}
 	}
 	dec := time.Since(tDec)
+	metrics.end("decrypt_outputs", decryptMark)
+	secureRun := metrics.finishRun()
 	log.LLvl1(fmt.Sprintf("[skat_fed] decrypt: %v | total run: %v",
 		dec.Round(time.Millisecond), time.Since(tRun).Round(time.Millisecond)))
-	logFedTimingTree(dec)
+	logFedTimingTree(dec, secureRun)
+	printFedTimingRecords(mode, pid, secureRun)
+	metrics.printRecords()
 	return skatOut, burdenPOut, skatPOut
 }
 
 // logFedTimingTree prints the step/substep timing tree at the end of a skat_fed run, combining the
 // crypto-setup phase (mpc.SetupTiming) with the compute phases captured in fedTimings.
-func logFedTimingTree(dec time.Duration) {
+func logFedTimingTree(dec, secureRun time.Duration) {
 	ms := func(d time.Duration) time.Duration { return d.Round(time.Millisecond) }
 	st := mpc.SetupTiming
 	setup := st.PubKey + st.RelinKey + st.RotKey
-	netload := fedTimings.initTotal - setup                              // network handshake + geno-stream open + pheno/cov load
-	scale := fedTimings.total - fedTimings.nullTotal - fedTimings.blocks // Σw²s² scale + SSToCVec
-	grand := fedTimings.initTotal + fedTimings.loadPriv + fedTimings.assocInit + fedTimings.total + dec
+	netload := fedTimings.initTotal - setup                                                       // network handshake + geno-stream open + pheno/cov load
+	finalize := fedTimings.total - fedTimings.nullTotal - fedTimings.preBlock - fedTimings.blocks // scale, p-value pivots, and SS-to-CKKS packing
+	if finalize < 0 {
+		finalize = 0
+	}
+	runAccounted := fedTimings.loadPriv + fedTimings.assocInit + fedTimings.total + dec
+	runOverhead := nonNegativeDuration(secureRun - runAccounted)
+	grand := fedTimings.initTotal + secureRun
 	for _, ln := range []string{
 		"[skat_fed] timing tree:",
 		fmt.Sprintf("  ├─ init                    %v", ms(fedTimings.initTotal)),
@@ -542,9 +582,20 @@ func logFedTimingTree(dec time.Duration) {
 		fmt.Sprintf("  │    │    ├─ inverse        %v", ms(fedTimings.nullInv)),
 		fmt.Sprintf("  │    │    ├─ beta           %v", ms(fedTimings.nullBeta)),
 		fmt.Sprintf("  │    │    └─ RSS            %v", ms(fedTimings.nullRSS)),
+		fmt.Sprintf("  │    ├─ pre-block setup    %v", ms(fedTimings.preBlock)),
 		fmt.Sprintf("  │    ├─ blocks (%d)         %v  [per-block %s]", len(fedTimings.blockSecs), ms(fedTimings.blocks), blockSecStats(fedTimings.blockSecs)),
-		fmt.Sprintf("  │    └─ scale+pack         %v", ms(scale)),
+		fmt.Sprintf("  │    │    ├─ shape sync      %v", ms(fedTimings.blockShape)),
+		fmt.Sprintf("  │    │    ├─ local contract  %v", ms(fedTimings.blockLocal)),
+		fmt.Sprintf("  │    │    ├─ public stat     %v", ms(fedTimings.blockPublic)),
+		fmt.Sprintf("  │    │    ├─ private total   %v", ms(fedTimings.blockPrivate)),
+		fmt.Sprintf("  │    │    │    ├─ local       %v", ms(fedTimings.blockPrivateLocal)),
+		fmt.Sprintf("  │    │    │    └─ stat/share  %v", ms(fedTimings.blockPrivateShare)),
+		fmt.Sprintf("  │    │    ├─ burden variance %v", ms(fedTimings.blockBurden)),
+		fmt.Sprintf("  │    │    ├─ moments         %v", ms(fedTimings.blockMoments)),
+		fmt.Sprintf("  │    │    └─ loop overhead   %v", ms(fedTimings.blockOther)),
+		fmt.Sprintf("  │    └─ post-block finalize %v", ms(finalize)),
 		fmt.Sprintf("  ├─ decrypt                 %v", ms(dec)),
+		fmt.Sprintf("  ├─ run overhead            %v", ms(runOverhead)),
 		fmt.Sprintf("  └─ TOTAL                   %v", ms(grand)),
 	} {
 		log.LLvl1(ln)
@@ -555,6 +606,13 @@ func logFedTimingTree(dec time.Duration) {
 // details the reveal set; Burden statistic and zᵀPz are never released).
 func (g *ProtocolInfo) SKATFederatedPrivate() {
 	skat, burdenP, skatP := g.runFederatedPrivate()
+	// Cumulative application-layer traffic from collective key setup through
+	// secure computation and output decryption. The final shutdown barrier is excluded.
+	mode := "raw_q"
+	if g.config.SkatPValueProbes > 0 {
+		mode = "skat_p"
+	}
+	g.mpcObj.GetNetworks().PrintCommunicationSummaryWithMode("skat_fed_total", mode)
 	if g.mpcObj[0].GetPid() > 0 {
 		if len(skat) > 0 { // nil/empty in SKAT-p mode (Q_skat withheld; only the z-derived p is released)
 			SaveFloatVectorToFile(g.OutPath("skat_fed_out.txt"), skat)

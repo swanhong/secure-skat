@@ -120,7 +120,7 @@ func (netObj *Network) SendCipherVector(v crypto.CipherVector, to int) {
 	WriteFull(&conn, cvbuf)
 	WriteFull(&conn, cvbytes)
 
-	netObj.UpdateSenderLog(to, len(sbytes)+len(cvbytes))
+	netObj.UpdateSenderLog(to, len(sbuf)+len(sbytes)+len(cvbuf)+len(cvbytes))
 
 }
 
@@ -140,7 +140,7 @@ func (netObj *Network) SendCipherMatrix(m crypto.CipherMatrix, to int) {
 	WriteFull(&conn, cmbuf)
 	WriteFull(&conn, cmbytes)
 
-	netObj.UpdateSenderLog(to, len(sbytes)+len(cmbytes))
+	netObj.UpdateSenderLog(to, len(sbuf)+len(sbytes)+len(cmbuf)+len(cmbytes))
 }
 
 // SendAllCryptoParams sends cryptoParams to all parties (receives nothing)
