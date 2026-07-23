@@ -128,7 +128,7 @@ summary += f"Burden p {burdenp_within}/{ng},  Burden T {burdenT_within}/{ng}"
 # SKAT p-value (only if the secure run was configured with skat_pvalue_probes > 0). The secure output
 # is the Wilson-Hilferty screening p; the plaintext oracle also computes the Liu and Davies references
 # so the WH approximation can be judged against them (WH vs Liu, WH vs Davies).
-SkatPsec = SkatPplain = None
+SkatPsec = SkatPplain = LiuPlain = DaviesPlain = None
 skat_p_file = f"{OUT}/out/party2/skat_fed_skat_p_out.txt"
 if os.path.exists(skat_p_file):
     skat_p_started = time.perf_counter()
@@ -189,12 +189,16 @@ if os.environ.get("FED_CSV"):
     with open(csv_path, "w") as f:
         header = "gene,chrom,pos,burden_p_secure,burden_p_plain"
         if has_skatp:
-            header += ",skat_p_secure,skat_p_plain"
+            # Keep skat_p_plain as the historical plaintext-WH column, and preserve the
+            # additional plaintext references so plots can distinguish implementation
+            # agreement (secure WH vs plain WH) from approximation error (secure WH vs Davies).
+            header += ",skat_p_secure,skat_p_plain,skat_p_liu,skat_p_davies"
         f.write(header + "\n")
         for b in range(ng):
             row = f"{b},{chrom[b]},{pos[b]},{Psec[b]:.6e},{Pplain[b]:.6e}"
             if has_skatp:
-                row += f",{SkatPsec[b]:.6e},{SkatPplain[b]:.6e}"
+                row += (f",{SkatPsec[b]:.6e},{SkatPplain[b]:.6e}"
+                        f",{LiuPlain[b]:.6e},{DaviesPlain[b]:.6e}")
             f.write(row + "\n")
     print(f"  FED_CSV: wrote {csv_path}  ({'burden+skat p' if has_skatp else 'burden p'})")
     emit_timing("compare.result_csv_write", 1000.0 * (time.perf_counter() - csv_started))

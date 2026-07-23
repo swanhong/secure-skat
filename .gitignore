@@ -20,3 +20,4 @@ skills-lock.json
 test_data/*
 *.pyc
 out_*
+tmp/

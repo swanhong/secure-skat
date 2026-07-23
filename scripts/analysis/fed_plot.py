@@ -41,8 +41,8 @@ def manhattan(psec, label, out):
     plt.close(fig)
 
 
-def scatter(psec, pplain, label, out):
-    xs, ys = mlog(pplain), mlog(psec)
+def scatter(psec, pref, label, out, reference_label="plaintext"):
+    xs, ys = mlog(pref), mlog(psec)
     ss_tot = np.sum((xs - xs.mean()) ** 2)
     r2 = 1 - np.sum((ys - xs) ** 2) / ss_tot if ss_tot > 0 else float("nan")  # agreement vs y=x
     fig, ax = plt.subplots(figsize=(5, 5))
@@ -53,9 +53,9 @@ def scatter(psec, pplain, label, out):
             bbox=dict(boxstyle="round", fc="white", ec="0.7"))
     ax.set_xlim(0, hi)
     ax.set_ylim(0, hi)
-    ax.set_xlabel(f"-log10(plaintext {label} p)")
+    ax.set_xlabel(f"-log10({reference_label} {label} p)")
     ax.set_ylabel(f"-log10(secure {label} p)")
-    ax.set_title(f"{label} p-value: secure vs plaintext")
+    ax.set_title(f"{label} p-value: secure vs {reference_label}")
     ax.legend()
     fig.tight_layout()
     fig.savefig(out, dpi=150)
@@ -64,16 +64,25 @@ def scatter(psec, pplain, label, out):
 
 # One (manhattan, scatter) pair per p-value the CSV carries. Burden is always present; SKAT p appears
 # only when the secure run computed it (fed_compare adds the columns when skat_fed_skat_p_out.txt exists).
-stats = [("Burden", "burden_p_secure", "burden_p_plain", "burden")]
+stats = [("Burden", "burden_p_secure", "burden_p_plain", "burden", "plaintext")]
 if "skat_p_secure" in d.dtype.names:
-    stats.append(("SKAT", "skat_p_secure", "skat_p_plain", "skat"))
+    stats.append(("SKAT", "skat_p_secure", "skat_p_plain", "skat", "plaintext WH"))
 
 written = []
-for label, sec_col, plain_col, tag in stats:
+for label, sec_col, plain_col, tag, reference_label in stats:
     psec = np.atleast_1d(d[sec_col]).astype(float)
     pplain = np.atleast_1d(d[plain_col]).astype(float)
     manhattan(psec, label, f"{outdir}/manhattan_{tag}.png")
-    scatter(psec, pplain, label, f"{outdir}/scatter_{tag}.png")
+    scatter(psec, pplain, label, f"{outdir}/scatter_{tag}.png", reference_label)
     written += [f"manhattan_{tag}.png", f"scatter_{tag}.png"]
+
+# The secure SKAT output is Wilson-Hilferty. This additional plot measures the
+# approximation against the same-kernel plaintext Davies/Imhof reference rather
+# than merely checking secure-WH implementation agreement with plaintext WH.
+if "skat_p_secure" in d.dtype.names and "skat_p_davies" in d.dtype.names:
+    psec = np.atleast_1d(d["skat_p_secure"]).astype(float)
+    pdavies = np.atleast_1d(d["skat_p_davies"]).astype(float)
+    scatter(psec, pdavies, "SKAT", f"{outdir}/scatter_skat_davies.png", "Davies")
+    written.append("scatter_skat_davies.png")
 
 print(f"wrote {', '.join(written)} in {outdir}  ({ng} genes)")
