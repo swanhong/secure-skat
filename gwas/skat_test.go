@@ -1045,7 +1045,7 @@ func TestSKATDriverE2E(t *testing.T) {
 					buf[i*mPerBlock+j] = byte(int8(fullG.At(offset+i, b*mPerBlock+j)))
 				}
 			}
-			path := filepath.Join(dir, "geno.") + string(rune('0'+b)) + ".bin"
+			path := filepath.Join(dir, "geno."+strconv.Itoa(b)+".bin")
 			if err := os.WriteFile(path, buf, 0644); err != nil {
 				t.Fatalf("write geno fixture: %v", err)
 			}
@@ -1059,12 +1059,11 @@ func TestSKATDriverE2E(t *testing.T) {
 		prot.genoBlockSizes = make([]int, nBlocks)
 	}
 
-	assocTest := prot.initSKAT()
-	qOut, bOut := assocTest.ComputeSKATStatistics()
+	qOut, bOut := prot.ComputeSKATStatistics()
 
 	if pid == 1 {
-		qDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, qOut, 1))[0]
-		bDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, bOut, 1))[0]
+		qDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, qOut, 1))[:nBlocks]
+		bDec := crypto.DecodeFloatVector(cps, mpcObj.Network.CollectiveDecryptVec(cps, bOut, 1))[:nBlocks]
 
 		fullX := mat.NewDense(nIndsTotal, c, nil)
 		for i := 0; i < nIndsTotal; i++ {
@@ -1073,15 +1072,18 @@ func TestSKATDriverE2E(t *testing.T) {
 				fullX.Set(i, j+1, fullCov.At(i, j))
 			}
 		}
-		oracle := SKATPlain(fullG, fullX, fullY)
-
-		qRel := math.Abs(qDec-oracle.Q) / math.Abs(oracle.Q)
-		bRel := math.Abs(bDec-oracle.Burden) / math.Abs(oracle.Burden)
-		t.Logf("Q: secure=%.6f oracle=%.6f rel=%.2e | Burden: secure=%.6f oracle=%.6f rel=%.2e",
-			qDec, oracle.Q, qRel, bDec, oracle.Burden, bRel)
 		const tol = 5e-3
-		if qRel > tol || bRel > tol {
-			t.Errorf("driver E2E vs oracle: Q rel=%.3e, Burden rel=%.3e (tol %.0e)", qRel, bRel, tol)
+		for b := 0; b < nBlocks; b++ {
+			G := mat.DenseCopyOf(fullG.Slice(0, nIndsTotal, b*mPerBlock, (b+1)*mPerBlock))
+			oracle := SKATPlain(G, fullX, fullY)
+			qRel := math.Abs(qDec[b]-oracle.Q) / math.Max(math.Abs(oracle.Q), 1e-12)
+			bRel := math.Abs(bDec[b]-oracle.Burden) / math.Max(math.Abs(oracle.Burden), 1e-12)
+			t.Logf("block %d Q: secure=%.6f oracle=%.6f rel=%.2e | Burden: secure=%.6f oracle=%.6f rel=%.2e",
+				b, qDec[b], oracle.Q, qRel, bDec[b], oracle.Burden, bRel)
+			if qRel > tol || bRel > tol {
+				t.Errorf("block %d driver E2E vs oracle: Q rel=%.3e, Burden rel=%.3e (tol %.0e)",
+					b, qRel, bRel, tol)
+			}
 		}
 	} else {
 		mpcObj.Network.CollectiveDecryptVec(cps, qOut, 1)
@@ -1561,7 +1563,7 @@ func TestSKATMomentsSS(t *testing.T) {
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
 	gl := assocTest.computeGeneLocal(0, mPub, X, y0)
 	pl := assocTest.computePrivateGeneLocal(privG, X, y0, gl, true)
-	qPub, _, wPub := assocTest.blockStat(0, mPub, null, X, y0, gl)
+	qPub, _, wPub := assocTest.blockStat(mPub, null, gl)
 	qPriv, _ := assocTest.privateBlockStat(pl, null, 2)
 	qRaw := mpc_core.RVec{qPub[0].Add(qPriv[0])}
 	scaleSS, ok := assocTest.general.rareVariantScaleShares(null.rssSS)
@@ -1570,14 +1572,14 @@ func TestSKATMomentsSS(t *testing.T) {
 	}
 	qNorm := mpcObj.TruncVec(mpcObj.SSMultElemVec(qRaw, mpc_core.RVec{scaleSS[0]}), db, fb)
 	qNorm[0] = mpcObj.TruncVec(mpc_core.RVec{qNorm[0].Mul(rtype.FromFloat64(1.0/float64(assocTest.skatTotalNumInds()), fb))}, db, fb)[0]
-	s1ss, s2ss, s3ss := assocTest.skatMomentsSS(0, mPub, R, null, X, y0, pl, gl, wPub)
-	zss := assocTest.skatZSS(qNorm[0], s1ss, s2ss, s3ss)
+	s1ss, s2ss, s3ss := assocTest.skatMomentsSS(0, mPub, R, null, pl, gl, wPub)
+	zss := assocTest.skatZSSVec(qNorm, mpc_core.RVec{s1ss}, mpc_core.RVec{s2ss}, mpc_core.RVec{s3ss})[0]
 	// Exercise both contraction boundaries explicitly: no private variants and no public variants.
 	emptyPriv := assocTest.computePrivateGeneLocal(nil, X, y0, gl, true)
-	pubS1, pubS2, pubS3 := assocTest.skatMomentsSS(0, mPub, R, null, X, y0, emptyPriv, gl, wPub)
-	privS1, privS2, privS3 := assocTest.skatMomentsSS(0, 0, R, null, X, y0, pl, &geneLocal{}, mpc_core.RVec{})
+	pubS1, pubS2, pubS3 := assocTest.skatMomentsSS(0, mPub, R, null, emptyPriv, gl, wPub)
+	privS1, privS2, privS3 := assocTest.skatMomentsSS(0, 0, R, null, pl, &geneLocal{}, mpc_core.RVec{})
 	const RHutch = 16 // strictly below mPub: force the secure Hutchinson branch
-	hutchS1, hutchS2, hutchS3 := assocTest.skatMomentsSS(0, mPub, RHutch, null, X, y0, pl, gl, wPub)
+	hutchS1, hutchS2, hutchS3 := assocTest.skatMomentsSS(0, mPub, RHutch, null, pl, gl, wPub)
 	rev := mpcObj.RevealSymVec(mpc_core.RVec{
 		s1ss, s2ss, s3ss, zss,
 		pubS1, pubS2, pubS3,

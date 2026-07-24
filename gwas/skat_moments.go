@@ -356,7 +356,7 @@ func subMat(a, b mpc_core.RMat) mpc_core.RMat {
 // Hutchinson probes. Private/cross terms come from per-gene tables (Ψ,Ξ,Π,s) party B builds in
 // plaintext and shares. Moments
 // are N-normalized (Sₖ/Nᵏ); w is the unsigned SKAT weight; S₄ is unneeded since K is PSD.
-func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat.Dense, y0 []float64, priv *privateGeneLocal, gl *geneLocal, wPubIn mpc_core.RVec) (S1, S2, S3 mpc_core.RElem) {
+func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, priv *privateGeneLocal, gl *geneLocal, wPubIn mpc_core.RVec) (S1, S2, S3 mpc_core.RElem) {
 	if nProbes <= 0 {
 		panic("skatMomentsSS: nProbes must be positive")
 	}
@@ -478,7 +478,7 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, X *mat
 	Up := mpc_core.InitRMat(rtype.Zero(), m, c)
 	sppDiag := mpc_core.InitRVec(rtype.Zero(), m)
 	if pid > 0 && nsnps > 0 {
-		g := ast.localFor(b, nsnps, X, y0, gl)
+		g := gl
 		gg, dosage = g.gg, g.DosageSum
 		for j := 0; j < m; j++ {
 			sppDiag[j] = rtype.FromFloat64(gg.At(j, j)/N, fb)
@@ -998,8 +998,4 @@ func (ast *AssocTest) skatZSSVec(Q, S1, S2, S3 mpc_core.RVec) mpc_core.RVec {
 	}
 	z := mul(num, invSqrtH) // (∛(t/k) − 1 + h)/√h
 	return ast.secureSelectOrPublicVec(valid, z, -9.0)
-}
-
-func (ast *AssocTest) skatZSS(Q, S1, S2, S3 mpc_core.RElem) mpc_core.RElem {
-	return ast.skatZSSVec(mpc_core.RVec{Q}, mpc_core.RVec{S1}, mpc_core.RVec{S2}, mpc_core.RVec{S3})[0]
 }

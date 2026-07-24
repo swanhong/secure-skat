@@ -20,15 +20,12 @@ func (ast *AssocTest) skatBlockNumSnps(block int) int {
 
 	var nsnpsBlock int
 	blockSize := ast.general.genoBlockSizes[block]
-	shift := uint64(0)
-	for i := 0; i < block; i++ {
-		shift += uint64(ast.general.genoBlockSizes[i])
-	}
+	shift := Sum(ast.general.genoBlockSizes[:block])
 	if ast.general.IsPgen() {
 		if ast.general.gwasParams.snpFilt == nil {
 			nsnpsBlock = blockSize
 		} else {
-			nsnpsBlock = SumBool(ast.general.gwasParams.snpFilt[shift : shift+uint64(blockSize)])
+			nsnpsBlock = SumBool(ast.general.gwasParams.snpFilt[shift : shift+blockSize])
 		}
 	} else {
 		nsnpsBlock = int(ast.general.genoBlocks[block].NumColsToKeep())
@@ -52,10 +49,7 @@ func (ast *AssocTest) openBlockGenoStream(b int) *GenoFileStream {
 
 	gp := ast.general.gwasParams
 	blockSize := ast.general.genoBlockSizes[b]
-	shift := 0
-	for i := 0; i < b; i++ {
-		shift += ast.general.genoBlockSizes[i]
-	}
+	shift := Sum(ast.general.genoBlockSizes[:b])
 	var snpFilt []bool
 	if gp.snpFilt == nil {
 		snpFilt = OnesBool(blockSize)
@@ -172,7 +166,7 @@ func (ast *AssocTest) readGenoBlockLocal(b int) *mat.Dense {
 
 // blockStat computes one block's raw statistics as 1-elem RVecs: qRawSS = Σw²s² and
 // bLinSS = Σw·s (burden linear term, squared by the caller).
-func (ast *AssocTest) blockStat(b, nsnps int, null skatNull, X *mat.Dense, y0 []float64, gl *geneLocal) (qRawSS, bLinSS, weightSS mpc_core.RVec) {
+func (ast *AssocTest) blockStat(nsnps int, null skatNull, gl *geneLocal) (qRawSS, bLinSS, weightSS mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	cps := ast.general.cps
 	pid := mpcObj.GetPid()
@@ -181,7 +175,7 @@ func (ast *AssocTest) blockStat(b, nsnps int, null skatNull, X *mat.Dense, y0 []
 	var Gty0 []float64
 	dosage := make([]float64, nsnps)
 	if pid > 0 {
-		lc := ast.localFor(b, nsnps, X, y0, gl).LocalContraction
+		lc := gl.LocalContraction
 		GtX, Gty0, dosage = lc.GtX, lc.Gty0, lc.DosageSum
 	}
 

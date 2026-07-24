@@ -28,7 +28,8 @@ func (ast *AssocTest) ComputeSKATStatistics() (qStat, qBurden crypto.CipherVecto
 		if nsnps == 0 {
 			continue
 		}
-		qRawSS, bLinSS, _ := ast.blockStat(b, nsnps, null, X, y0, nil)
+		gl := ast.computeGeneLocal(b, nsnps, X, y0)
+		qRawSS, bLinSS, _ := ast.blockStat(nsnps, null, gl)
 		finalQSS.Add(qRawSS)
 		finalBurdenSS.Add(bLinSS)
 	}
@@ -66,7 +67,8 @@ func (ast *AssocTest) ComputeSKATStatisticsPerBlock() (qPerBlock, burdenPerBlock
 			continue
 		}
 		tb := time.Now()
-		q, bl, _ := ast.blockStat(b, nsnps, null, X, y0, nil)
+		gl := ast.computeGeneLocal(b, nsnps, X, y0)
+		q, bl, _ := ast.blockStat(nsnps, null, gl)
 		qBlockSS[b] = q[0]
 		bLinBlockSS[b] = bl[0]
 		done++
@@ -96,9 +98,5 @@ func (ast *AssocTest) skatNumInds() []int {
 
 func (ast *AssocTest) skatTotalNumInds() int {
 	nrows := ast.skatNumInds()
-	total := 0
-	for p := 1; p <= ast.general.config.NumMainParties; p++ {
-		total += nrows[p]
-	}
-	return total
+	return Sum(nrows[1 : ast.general.config.NumMainParties+1])
 }

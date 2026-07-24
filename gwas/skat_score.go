@@ -21,22 +21,16 @@ func minCipherVectorLevel(v crypto.CipherVector) int {
 	return min
 }
 
-func dropCipherVectorToLevel(cps *crypto.CryptoParams, v crypto.CipherVector, level int) crypto.CipherVector {
-	return crypto.DropLevel(cps, crypto.CipherMatrix{v}, level)[0]
-}
-
 // alignCipherVectorLevels drops whichever of left/right is higher to the common
 // minimum level, so CMult/CSub can combine them.
 func alignCipherVectorLevels(cps *crypto.CryptoParams, left, right crypto.CipherVector) (crypto.CipherVector, crypto.CipherVector) {
-	target := minCipherVectorLevel(left)
-	if r := minCipherVectorLevel(right); r < target {
-		target = r
+	leftLevel, rightLevel := minCipherVectorLevel(left), minCipherVectorLevel(right)
+	target := min(leftLevel, rightLevel)
+	if leftLevel != target {
+		left = crypto.DropLevel(cps, crypto.CipherMatrix{left}, target)[0]
 	}
-	if minCipherVectorLevel(left) != target {
-		left = dropCipherVectorToLevel(cps, left, target)
-	}
-	if minCipherVectorLevel(right) != target {
-		right = dropCipherVectorToLevel(cps, right, target)
+	if rightLevel != target {
+		right = crypto.DropLevel(cps, crypto.CipherMatrix{right}, target)[0]
 	}
 	return left, right
 }

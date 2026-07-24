@@ -60,8 +60,9 @@ func (ast *AssocTest) computePrivateGeneLocal(G, X *mat.Dense, y0 []float64, gl 
 		return pl
 	}
 	pl.LocalContraction = localGenotypeContract(G, X, y0)
-	pl.Weight = skatBetaWeight(pl.DosageSum, ast.skatTotalNumInds())
-	N := float64(ast.skatTotalNumInds())
+	totalInds := ast.skatTotalNumInds()
+	pl.Weight = skatBetaWeight(pl.DosageSum, totalInds)
+	N := float64(totalInds)
 	invN := 1.0 / N
 	invSqrtN := 1.0 / math.Sqrt(N)
 	_, c := X.Dims()
@@ -264,7 +265,7 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		var tPublic, tPrivateLocal, tPrivateShare, tBurden, tMoments time.Duration
 		if nsnps > 0 {
 			t := time.Now()
-			skatA, burdenA, wPub := ast.blockStat(b, nsnps, null, X, y0, gl)
+			skatA, burdenA, wPub := ast.blockStat(nsnps, null, gl)
 			tPublic = time.Since(t)
 			accSkat.Add(skatA)
 			accBurden.Add(burdenA)
@@ -288,11 +289,11 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		skatBlockSS[b] = accSkat[0]
 		bLinBlockSS[b] = accBurden[0]
 		tBurStart := time.Now()
-		zpzBlockSS[b] = ast.burdenVarSS(b, nsnps, null, X, y0, pl, privatePid, wA, gl) // Burden variance zᵀPz
+		zpzBlockSS[b] = ast.burdenVarSS(nsnps, null, pl, privatePid, wA, gl) // Burden variance zᵀPz
 		tBurden = time.Since(tBurStart)
 		if nProbes > 0 { // SKAT p-value kernel moments (N-normalized)
 			t := time.Now()
-			s1B[b], s2B[b], s3B[b] = ast.skatMomentsSS(b, nsnps, nProbes, null, X, y0, pl, gl, wA)
+			s1B[b], s2B[b], s3B[b] = ast.skatMomentsSS(b, nsnps, nProbes, null, pl, gl, wA)
 			tMoments = time.Since(t)
 		}
 		dt := time.Since(tb)

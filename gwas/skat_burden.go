@@ -20,7 +20,7 @@ const gtgChunkRows = 256
 // where the public GᵀG/GᵀX are federated by the "local contraction = SS share → global sum" trick
 // (same as scoreSS), and the private party contributes d = G_pubᵀz_priv (m_pub), z_privᵀz_priv, and
 // Xᵀz_priv (all n-contracted locally, so the private variant count m_priv stays hidden).
-func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 []float64, priv *privateGeneLocal, privatePid int, wPubIn mpc_core.RVec, gl *geneLocal) mpc_core.RElem {
+func (ast *AssocTest) burdenVarSS(nsnps int, null skatNull, priv *privateGeneLocal, privatePid int, wPubIn mpc_core.RVec, gl *geneLocal) mpc_core.RElem {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
@@ -48,7 +48,7 @@ func (ast *AssocTest) burdenVarSS(b, nsnps int, null skatNull, X *mat.Dense, y0 
 	var gg *mat.Dense
 	gtxT := mpc_core.InitRMat(rtype.Zero(), c, nsnps)
 	if pid > 0 && nsnps > 0 {
-		g := ast.localFor(b, nsnps, X, y0, gl)
+		g := gl
 		gg, dosage = g.gg, g.DosageSum
 		for j := 0; j < nsnps; j++ {
 			for l := 0; l < c; l++ {

@@ -113,13 +113,6 @@ func (ast *AssocTest) computeGeneLocal(b, nsnps int, X *mat.Dense, y0 []float64)
 	return &geneLocal{LocalContraction: localGenotypeContract(Gloc, X, y0), Gloc: Gloc, gg: &gg}
 }
 
-func (ast *AssocTest) localFor(b, nsnps int, X *mat.Dense, y0 []float64, gl *geneLocal) *geneLocal {
-	if gl != nil {
-		return gl
-	}
-	return ast.computeGeneLocal(b, nsnps, X, y0)
-}
-
 // --- secure low-rank null model (β̂, RSS from c-dim aggregates only; n never enters) ---
 
 type localNull struct {
