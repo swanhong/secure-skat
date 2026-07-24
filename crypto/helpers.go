@@ -29,55 +29,6 @@ func Mod(n int, modulus int) int {
 	return n
 }
 
-func ConvertVectorComplexToFloat64(v []complex128) []float64 {
-	res := make([]float64, len(v))
-	for i, el := range v {
-		res[i] = real(el)
-	}
-	return res
-}
-
-func PadVector(v []float64, slots int) []float64 {
-	if len(v) >= slots {
-		return append([]float64(nil), v[:slots]...)
-	}
-	out := make([]float64, slots)
-	copy(out, v)
-	return out
-}
-
-func FindClosestPow2(n int) int {
-	bigPower2 := 1
-	for bigPower2 < n {
-		bigPower2 *= 2
-	}
-	return bigPower2
-}
-
-func intCeilLog2(n int) int {
-	if n <= 1 {
-		return 0
-	}
-	x := 0
-	v := 1
-	for v < n {
-		v <<= 1
-		x++
-	}
-	return x
-}
-
-func intCeilSqrt(n int) int {
-	if n <= 0 {
-		return 0
-	}
-	x := 1
-	for x*x < n {
-		x++
-	}
-	return x
-}
-
 func binaryCipherVectorOp(cryptoParams *CryptoParams, X CipherVector, Y CipherVector, op func(eval *ckks.Evaluator, a *rlwe.Ciphertext, b rlwe.Operand) (*rlwe.Ciphertext, error)) CipherVector {
 	if len(X) == 0 || len(Y) == 0 {
 		return nil

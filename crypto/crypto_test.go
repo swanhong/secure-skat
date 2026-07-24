@@ -73,6 +73,8 @@ func requirePanicContains(t *testing.T, want string, fn func()) {
 	fn()
 }
 
+// Crypto basics.
+
 func TestEncryptDecryptFloatVector(t *testing.T) {
 	cp := newTestCryptoParams(t)
 	values := []float64{1.25, -2.5, 3.75, 4.5, -5.25}
@@ -86,48 +88,18 @@ func TestEncryptDecryptFloatVector(t *testing.T) {
 	requireApproxSlice(t, values, got, 1e-6)
 }
 
-func TestDenseRoundTrip(t *testing.T) {
-	cp := newTestCryptoParams(t)
-	input := mat.NewDense(3, 2, []float64{
-		1, 2,
-		3, 4,
-		5, 6,
-	})
-
-	encoded := EncodeDense(cp, input)
-	decoded := PlaintextToDense(cp, encoded, 3)
-
-	rows, cols := input.Dims()
-	for r := 0; r < rows; r++ {
-		for c := 0; c < cols; c++ {
-			if math.Abs(input.At(r, c)-decoded.At(r, c)) > 1e-6 {
-				t.Fatalf("dense mismatch at (%d,%d): want=%f got=%f", r, c, input.At(r, c), decoded.At(r, c))
-			}
-		}
-	}
-}
-
 func TestBasicOps(t *testing.T) {
 	cp := newTestCryptoParams(t)
 
 	x, _ := EncryptFloatVector(cp, []float64{1, 2, 3, 4})
 	y, _ := EncryptFloatVector(cp, []float64{5, 6, 7, 8})
 
-	added := CAdd(cp, x, y)
-	gotAdd := DecryptFloatVector(cp, added, 4)
-	requireApproxSlice(t, []float64{6, 8, 10, 12}, gotAdd, 1e-6)
+	requireApproxSlice(t, []float64{6, 8, 10, 12}, DecryptFloatVector(cp, CAdd(cp, x, y), 4), 1e-6)
+	requireApproxSlice(t, []float64{5, 12, 21, 32}, DecryptFloatVector(cp, CMult(cp, x, y), 4), 1e-4)
+	requireApproxSlice(t, []float64{0.5, 1, 1.5, 2}, DecryptFloatVector(cp, CMultConst(cp, x, 0.5, false), 4), 1e-5)
 
-	multiplied := CMult(cp, x, y)
-	gotMul := DecryptFloatVector(cp, multiplied, 4)
-	requireApproxSlice(t, []float64{5, 12, 21, 32}, gotMul, 1e-4)
-
-	scaled := CMultConst(cp, x, 0.5, false)
-	gotScaled := DecryptFloatVector(cp, scaled, 4)
-	requireApproxSlice(t, []float64{0.5, 1, 1.5, 2}, gotScaled, 1e-5)
-
-	doubled := CMultConstRescale(cp, x, 2.0, false)
-	gotDoubled := DecryptFloatVector(cp, doubled, 4)
-	requireApproxSlice(t, []float64{2, 4, 6, 8}, gotDoubled, 1e-6)
+	doubled := CMultConst(cp, x, 2.0, false)
+	requireApproxSlice(t, []float64{2, 4, 6, 8}, DecryptFloatVector(cp, doubled, 4), 1e-6)
 	if doubled[0].Level() != x[0].Level() {
 		t.Fatalf("integer constant rescale consumed a level: got %d want %d", doubled[0].Level(), x[0].Level())
 	}
@@ -139,10 +111,10 @@ func TestBasicOps(t *testing.T) {
 	rotInput[cp.GetSlots()-1] = 4
 	rotCt, _ := EncryptFloatVector(cp, rotInput)
 
-	rotated := RotateRight(cp, rotCt[0], 1)
-	gotRot := DecryptMultipleFloat(cp, rotated, 4)
-	requireApproxSlice(t, []float64{4, 1, 2, 3}, gotRot, 1e-6)
+	requireApproxSlice(t, []float64{4, 1, 2, 3}, DecryptMultipleFloat(cp, RotateRight(cp, rotCt[0], 1), 4), 1e-6)
 }
+
+// Small functions and invariants.
 
 func TestCiphertextNegationPreservesScaleForPlainSub(t *testing.T) {
 	cp := newTestCryptoParams(t)
@@ -163,7 +135,7 @@ func TestPlainSubCiphertextAtLowerLevel(t *testing.T) {
 	plain, _ := EncodeFloatVector(cp, []float64{10, 20, 30, 40})
 	plainCt := EncryptPlaintextMatrix(cp, PlainMatrix{plain})[0]
 	y, _ := EncryptFloatVector(cp, []float64{1.5, -2, 3.25, -4.5})
-	lower := CMultConstRescale(cp, y, 0.5, false)
+	lower := CMultConst(cp, y, 0.5, false)
 	requireApproxSlice(t, []float64{0.75, -1, 1.625, -2.25}, DecryptFloatVector(cp, lower, 4), 1e-5)
 
 	got := CPSubOther(cp, plain, lower)
@@ -270,6 +242,21 @@ func TestFlattenLevelsAndDropLevel(t *testing.T) {
 	})
 }
 
+// Round trips.
+
+func TestDenseRoundTrip(t *testing.T) {
+	cp := newTestCryptoParams(t)
+	input := mat.NewDense(3, 2, []float64{
+		1, 2,
+		3, 4,
+		5, 6,
+	})
+	decoded := PlaintextToDense(cp, EncodeDense(cp, input), 3)
+	if !mat.EqualApprox(input, decoded, 1e-6) {
+		t.Fatalf("dense mismatch:\nwant:\n%v\ngot:\n%v", mat.Formatted(input), mat.Formatted(decoded))
+	}
+}
+
 func TestCipherMatrixMarshalRoundTrip(t *testing.T) {
 	cp := newTestCryptoParams(t)
 	input := [][]float64{
@@ -304,7 +291,7 @@ func TestCipherMatrixFileRoundTrip(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cm.bin")
-	SaveCipherMatrixToFile(cp, cm, path)
+	SaveCipherMatrixToFile(cm, path)
 
 	got := LoadCipherMatrixFromFile(cp, path)
 	gotMatrix := DecryptFloatMatrix(cp, got, 2)

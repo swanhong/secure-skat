@@ -170,7 +170,7 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 
 			// fmt.Println("Finished matrix multiplication")
 			for c := range A {
-				scaled := crypto.CMultConstRescale(cryptoParams, vvTA[c], -2*invN, false)
+				scaled := crypto.CMultConst(cryptoParams, vvTA[c], -2*invN, false)
 				A[c] = crypto.CAdd(cryptoParams, A[c], scaled)
 			}
 
@@ -267,7 +267,7 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 					} else {
 						scalar = invN
 					}
-					scaled := crypto.CMultConstRescale(cryptoParams, vvTQ[c], -2*scalar, false)
+					scaled := crypto.CMultConst(cryptoParams, vvTQ[c], -2*scalar, false)
 					Q[j+c] = crypto.CAdd(cryptoParams, Q[j+c], scaled)
 				}
 			}

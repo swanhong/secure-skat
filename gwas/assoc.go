@@ -220,7 +220,7 @@ func (ast *AssocTest) computeCombinedQ(C crypto.PlainMatrix, Qpc crypto.CipherMa
 		}
 
 		for c := range Qpcmi {
-			Qpcmi[c] = crypto.CMultConstRescale(cryptoParams, Qpcmi[c], nrowsTotalInv, true)
+			Qpcmi[c] = crypto.CMultConst(cryptoParams, Qpcmi[c], nrowsTotalInv, true)
 			Qpcmi[c] = crypto.CSub(cryptoParams, Qpc[c], Qpcmi[c])
 		}
 
@@ -448,7 +448,7 @@ func (ast *AssocTest) genoBlockMult(b int, mat crypto.CipherMatrix, square bool,
 		log.LLvl1(time.Now().Format(time.RFC3339), "MatMult: block", b+1, "/", numBlocks, "elapsed time", time.Since(start))
 
 		// Save cache
-		crypto.SaveCipherMatrixToFile(cryptoParams, matOut, cacheFiles.mult)
+		crypto.SaveCipherMatrixToFile(matOut, cacheFiles.mult)
 		SaveFloatVectorToFile(cacheFiles.dos, dosageSum)
 		SaveFloatVectorToFile(cacheFiles.dos2, dosageSqSum)
 		writeFilterToFile(cacheFiles.filt, filtOut, true)
@@ -529,7 +529,7 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherVector, []bool) {
 	} else {
 		Q = ast.computeCombinedQV2(C, Qpc) // nil for pid = 0
 		if pid > 0 {
-			crypto.SaveCipherMatrixToFile(cryptoParams, Q, cacheFileQ)
+			crypto.SaveCipherMatrixToFile(Q, cacheFileQ)
 			log.LLvl1(time.Now().Format(time.RFC3339), "Qcomb saved to", cacheFileQ)
 		}
 	}
@@ -653,7 +653,7 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherVector, []bool) {
 			}
 
 			ynew := DCMatMulAAtBPlain(cryptoParams, mpcObj, Q, ymat, nrowsAll, 1, mmplainfn) // Level -2
-			ynew[0] = crypto.CMultConstRescale(cryptoParams, ynew[0], nrowsTotalInv, true)
+			ynew[0] = crypto.CMultConst(cryptoParams, ynew[0], nrowsTotalInv, true)
 
 			if debug {
 				for party := 1; party <= ast.general.config.NumMainParties; party++ {
@@ -680,7 +680,7 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherVector, []bool) {
 			}
 
 			u := DCMatMulAAtBPlain(cryptoParams, mpcObj, Q, dummyMat, nrowsAll, 1, mm1fn) // Level -2
-			u[0] = crypto.CMultConstRescale(cryptoParams, u[0], nrowsTotalInv, true)
+			u[0] = crypto.CMultConst(cryptoParams, u[0], nrowsTotalInv, true)
 			log.LLvl1(time.Now().Format(time.RFC3339), "u computed")
 
 			if debug {
@@ -747,7 +747,7 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherVector, []bool) {
 
 					B := make(crypto.CipherMatrix, len(Q)-1) // Skip the one correponding to all ones
 					for i := range B {
-						B[i] = crypto.CMultConstRescale(cryptoParams, concatOut[i+1], math.Sqrt(nrowsTotalInv), true)
+						B[i] = crypto.CMultConst(cryptoParams, concatOut[i+1], math.Sqrt(nrowsTotalInv), true)
 					}
 
 					if covAllOnes {
@@ -769,7 +769,7 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherVector, []bool) {
 					}
 
 					sx2 = mpcObj.Network.AggregateCVec(cryptoParams, sx2)
-					sx2 = crypto.CMultConstRescale(cryptoParams, sx2, math.Sqrt(nrowsTotalInv), true)
+					sx2 = crypto.CMultConst(cryptoParams, sx2, math.Sqrt(nrowsTotalInv), true)
 
 					if pid == mpcObj.GetHubPid() {
 						cryptoParams.WithEvaluator(func(evaluator *ckks.Evaluator) error {

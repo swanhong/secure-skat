@@ -145,17 +145,16 @@ func (cp *CryptoParams) SetRotKeys(nbrRot []RotationType) []int {
 
 func GenerateRotKeys(slots int, smallDim int, babyFlag bool) []RotationType {
 	rotations := make([]RotationType, 0)
-	l := FindClosestPow2(slots)
-
-	rot := 1
-	for i := 0; i < intCeilLog2(l); i++ {
+	for rot := 1; rot < slots; rot *= 2 {
 		rotations = append(rotations, RotationType{Value: rot, Side: false})
 		rotations = append(rotations, RotationType{Value: rot, Side: true})
-		rot *= 2
 	}
 
 	if babyFlag {
-		rootl := intCeilSqrt(slots)
+		rootl := 0
+		for rootl*rootl < slots {
+			rootl++
+		}
 		for i := 1; i < rootl; i++ {
 			rotations = append(rotations, RotationType{Value: i, Side: false})
 			rotations = append(rotations, RotationType{Value: i * rootl, Side: false})
@@ -263,7 +262,7 @@ func EncodeFloatVectorWithScale(cryptoParams *CryptoParams, f []float64, scale f
 		pt := ckks.NewPlaintext(cryptoParams.Params, cryptoParams.Params.MaxLevel())
 		pt.Scale = rlwe.NewScale(scale)
 		if err := cryptoParams.WithEncoder(func(encoder *ckks.Encoder) error {
-			return encoder.Encode(PadVector(f[start:end], nbrMaxCoef), pt)
+			return encoder.Encode(f[start:end], pt)
 		}); err != nil {
 			panic(err)
 		}
@@ -312,13 +311,13 @@ func DecryptFloatMatrix(cryptoParams *CryptoParams, matrixEnc []CipherVector, d 
 func DecodeFloatVector(cryptoParams *CryptoParams, fEncoded PlainVector) []float64 {
 	dataDecoded := make([]float64, 0, len(fEncoded)*cryptoParams.GetSlots())
 	for _, plaintext := range fEncoded {
-		values := make([]complex128, cryptoParams.GetSlots())
+		values := make([]float64, cryptoParams.GetSlots())
 		if err := cryptoParams.WithEncoder(func(encoder *ckks.Encoder) error {
 			return encoder.Decode(plaintext, values)
 		}); err != nil {
 			panic(err)
 		}
-		dataDecoded = append(dataDecoded, ConvertVectorComplexToFloat64(values)...)
+		dataDecoded = append(dataDecoded, values...)
 	}
 	return dataDecoded
 }
