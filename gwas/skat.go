@@ -12,37 +12,6 @@ import (
 // initSKAT skips the legacy association-test phenotype/covariate encodings, which SKAT never reads.
 func (g *ProtocolInfo) initSKAT() *AssocTest { return &AssocTest{general: g} }
 
-// ComputeSKATStatistics returns the whole-genome secure SKAT (Q) and Burden as
-// 1-elem CipherVectors (Σ over all blocks, scaled by 1/(2σ̂²)). Caller collectively decrypts.
-func (ast *AssocTest) ComputeSKATStatistics() (qStat, qBurden crypto.CipherVector) {
-	mpcObj := ast.general.mpcObj[0]
-	cps := ast.general.cps
-	rtype := mpcObj.GetRType()
-
-	null, X, y0 := ast.nullSetup()
-
-	finalQSS := mpc_core.InitRVec(rtype.Zero(), 1)
-	finalBurdenSS := mpc_core.InitRVec(rtype.Zero(), 1)
-	for b := 0; b < ast.general.config.GenoNumBlocks; b++ {
-		nsnps := ast.skatBlockNumSnps(b)
-		if nsnps == 0 {
-			continue
-		}
-		gl := ast.computeGeneLocal(b, nsnps, X, y0)
-		qRawSS, bLinSS, _ := ast.blockStat(nsnps, null, gl)
-		finalQSS.Add(qRawSS)
-		finalBurdenSS.Add(bLinSS)
-	}
-
-	finalBurdenSS = mpcObj.SSSquareElemVec(finalBurdenSS)
-	finalBurdenSS = mpcObj.TruncVec(finalBurdenSS, mpcObj.GetDataBits(), mpcObj.GetFracBits())
-	if scaleSS, ok := ast.general.rareVariantScaleShares(null.rssSS); ok {
-		finalQSS = ast.general.scaleRareVariantShareStat(finalQSS, scaleSS)
-		finalBurdenSS = ast.general.scaleRareVariantShareStat(finalBurdenSS, scaleSS)
-	}
-	return mpcObj.SSToCVec(cps, finalQSS), mpcObj.SSToCVec(cps, finalBurdenSS)
-}
-
 // ComputeSKATStatisticsPerBlock returns per-block Q and Burden (slot b = block b's
 // statistic, scaled by the common 1/(2σ̂²)) — the per-gene secure SKAT statistics.
 func (ast *AssocTest) ComputeSKATStatisticsPerBlock() (qPerBlock, burdenPerBlock crypto.CipherVector) {
