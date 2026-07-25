@@ -237,16 +237,10 @@ func (m *fedRunMetrics) printRecords() {
 }
 
 func (ast *AssocTest) metricMark() fedMetricMark {
-	if ast == nil {
-		return fedMetricMark{}
-	}
 	return ast.fedMetrics.mark()
 }
 
 func (ast *AssocTest) metricEnd(stage string, mark fedMetricMark) time.Duration {
-	if ast == nil {
-		return 0
-	}
 	return ast.fedMetrics.end(stage, mark)
 }
 

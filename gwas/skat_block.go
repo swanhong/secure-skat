@@ -190,7 +190,7 @@ func (ast *AssocTest) blockStat(nsnps int, null skatNull, gl *geneLocal) (qRawSS
 
 	statMark := ast.metricMark()
 	var qRaw, bLin crypto.CipherVector
-	if pid > 0 && len(sCVec) > 0 {
+	if pid > 0 {
 		qRaw, bLin = ast.scoreCalculation(sCVec, weightEnc)
 	}
 	qRawSS = ast.scalarCiphertextToShares(qRaw)

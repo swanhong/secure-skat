@@ -3,7 +3,6 @@ package gwas
 import (
 	"fmt"
 	"math"
-	"sort"
 	"time"
 
 	mpc_core "github.com/hhcho/mpc-core"
@@ -84,7 +83,7 @@ func (ast *AssocTest) computePrivateGeneLocal(G, X *mat.Dense, y0 []float64, gl 
 			}
 			pl.BurdenZZ += z[i] * z[i] * invN
 		}
-		if gl != nil && gl.Gloc != nil {
+		if gl.Gloc != nil {
 			ng, mp := gl.Gloc.Dims()
 			if ng != n {
 				panic("computePrivateGeneLocal: public/private row mismatch")
@@ -113,7 +112,7 @@ func (ast *AssocTest) computePrivateGeneLocal(G, X *mat.Dense, y0 []float64, gl 
 	var svv mat.Dense
 	svv.Mul(G.T(), G)
 	pl.Svv = toRows(&svv)
-	if gl != nil && gl.Gloc != nil {
+	if gl.Gloc != nil {
 		var a1 mat.Dense
 		a1.Mul(gl.Gloc.T(), G)
 		pl.A1 = toRows(&a1)
@@ -140,11 +139,7 @@ func (ast *AssocTest) computePrivateGeneLocal(G, X *mat.Dense, y0 []float64, gl 
 func (ast *AssocTest) privateRawStats(pl *privateGeneLocal, null skatNull) (skat, burdenLin crypto.CipherVector) {
 	cps := ast.general.cps
 
-	m := 0
-	if pl != nil {
-		m = len(pl.Weight)
-	}
-	if m == 0 {
+	if len(pl.Weight) == 0 {
 		z, _ := crypto.EncryptFloatVector(cps, []float64{0})
 		zb, _ := crypto.EncryptFloatVector(cps, []float64{0})
 		return z, zb
@@ -169,12 +164,7 @@ func (ast *AssocTest) privateBlockStat(pl *privateGeneLocal, null skatNull, priv
 	var skatCt, burdenCt *rlwe.Ciphertext
 	if mpcObj.GetPid() == privatePid {
 		skat, burdenLin := ast.privateRawStats(pl, null)
-		if len(skat) > 0 {
-			skatCt = skat[0]
-		}
-		if len(burdenLin) > 0 {
-			burdenCt = burdenLin[0]
-		}
+		skatCt, burdenCt = skat[0], burdenLin[0]
 	}
 	skatSS = mpcObj.CiphertextToSS(ast.general.cps, rtype, skatCt, privatePid, 1)
 	burdenSS = mpcObj.CiphertextToSS(ast.general.cps, rtype, burdenCt, privatePid, 1)
@@ -193,19 +183,13 @@ var fedTimings struct {
 
 // blockSecStats formats min/Q1/avg/Q3/max of per-block seconds (nearest-rank quantiles).
 func blockSecStats(secs []float64) string {
-	n := len(secs)
-	if n == 0 {
+	count, minMs, q1Ms, meanMs, q3Ms, maxMs := blockTimingDistribution(secs)
+	if count == 0 {
 		return "(none)"
 	}
-	sorted := append([]float64(nil), secs...)
-	sort.Float64s(sorted)
-	sum := 0.0
-	for _, v := range secs {
-		sum += v
-	}
-	q := func(p float64) float64 { return sorted[int(p*float64(n-1)+0.5)] }
 	return fmt.Sprintf("min %.1fs Q1 %.1fs avg %.1fs Q3 %.1fs max %.1fs",
-		sorted[0], q(0.25), sum/float64(n), q(0.75), sorted[n-1])
+		float64(minMs)/1000, float64(q1Ms)/1000, float64(meanMs)/1000,
+		float64(q3Ms)/1000, float64(maxMs)/1000)
 }
 
 func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, privatePid int) (skatStat, burdenSqrtT2Stat, skatZStat crypto.CipherVector) {
@@ -329,7 +313,8 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	// Q_b/N to match zᵀPz/N: scale the score by 1/√N BEFORE squaring (b² hits the fixed-point wall at the square).
 	scaleMark := ast.metricMark()
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
-	invSqrtN := rtype.FromFloat64(1.0/math.Sqrt(float64(ast.skatTotalNumInds())), fb)
+	totalInds := ast.skatTotalNumInds()
+	invSqrtN := rtype.FromFloat64(1.0/math.Sqrt(float64(totalInds)), fb)
 	bLinNorm := bLinBlockSS.Copy()
 	bLinNorm.MulScalar(invSqrtN)
 	bLinNorm = mpcObj.TruncVec(bLinNorm, db, fb)
@@ -360,7 +345,7 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	// Reveal only z (Q_skat, moments stay secret); driver applies p = ½erfc(z/√2).
 	if nProbes > 0 {
 		skatPMark := ast.metricMark()
-		invN := rtype.FromFloat64(1.0/float64(ast.skatTotalNumInds()), fb)
+		invN := rtype.FromFloat64(1.0/float64(totalInds), fb)
 		qNorm := skatBlockSS.Copy()
 		qNorm.MulScalar(invN)
 		qNorm = mpcObj.TruncVec(qNorm, db, fb)

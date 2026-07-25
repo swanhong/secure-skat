@@ -20,7 +20,7 @@ const gtgChunkRows = 256
 // where the public GᵀG/GᵀX are federated by the "local contraction = SS share → global sum" trick
 // (same as scoreSS), and the private party contributes d = G_pubᵀz_priv (m_pub), z_privᵀz_priv, and
 // Xᵀz_priv (all n-contracted locally, so the private variant count m_priv stays hidden).
-func (ast *AssocTest) burdenVarSS(nsnps int, null skatNull, priv *privateGeneLocal, privatePid int, wPubIn mpc_core.RVec, gl *geneLocal) mpc_core.RElem {
+func (ast *AssocTest) burdenVarSS(nsnps int, null skatNull, priv *privateGeneLocal, privatePid int, wPub mpc_core.RVec, gl *geneLocal) mpc_core.RElem {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
@@ -44,21 +44,16 @@ func (ast *AssocTest) burdenVarSS(nsnps int, null skatNull, priv *privateGeneLoc
 
 	// --- public list: GᵀX (m×c, small) as SS shares; the m×m GᵀG is kept as a local plaintext gram
 	// (gg) and streamed in row-chunks below, so a full m×m *secret* matrix never materializes. ---
-	var dosage []float64
 	var gg *mat.Dense
 	gtxT := mpc_core.InitRMat(rtype.Zero(), c, nsnps)
 	if pid > 0 && nsnps > 0 {
 		g := gl
-		gg, dosage = g.gg, g.DosageSum
+		gg = g.gg
 		for j := 0; j < nsnps; j++ {
 			for l := 0; l < c; l++ {
 				gtxT[l][j] = rtype.FromFloat64(g.GtX.At(j, l)/sqrtN, fb) // XᵀG/√N
 			}
 		}
-	}
-	wPub := wPubIn // unsigned weight reused from PART A's blockStat (same oriented dosage → same value)
-	if wPub == nil {
-		_, wPub = ast.blindWeightCKKS(dosage, nsnps) // collective fallback for standalone callers
 	}
 
 	// pubZZ = w_pubᵀ(GᵀG)w_pub ; pubXtz = (XᵀG_pub)w_pub (c-vector)

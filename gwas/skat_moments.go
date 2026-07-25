@@ -356,7 +356,7 @@ func subMat(a, b mpc_core.RMat) mpc_core.RMat {
 // Hutchinson probes. Private/cross terms come from per-gene tables (Ψ,Ξ,Π,s) party B builds in
 // plaintext and shares. Moments
 // are N-normalized (Sₖ/Nᵏ); w is the unsigned SKAT weight; S₄ is unneeded since K is PSD.
-func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, priv *privateGeneLocal, gl *geneLocal, wPubIn mpc_core.RVec) (S1, S2, S3 mpc_core.RElem) {
+func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, priv *privateGeneLocal, gl *geneLocal, w mpc_core.RVec) (S1, S2, S3 mpc_core.RElem) {
 	if nProbes <= 0 {
 		panic("skatMomentsSS: nProbes must be positive")
 	}
@@ -474,22 +474,17 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, priv *
 	// ---- public-block gram/coupling. gg=GᵀpubGpub stays local plaintext, while Up=GᵀpubX/N is
 	// entered once as an additive share; the private cache already holds the local A₁ contraction. ----
 	var gg *mat.Dense
-	var dosage []float64
 	Up := mpc_core.InitRMat(rtype.Zero(), m, c)
 	sppDiag := mpc_core.InitRVec(rtype.Zero(), m)
 	if pid > 0 && nsnps > 0 {
 		g := gl
-		gg, dosage = g.gg, g.DosageSum
+		gg = g.gg
 		for j := 0; j < m; j++ {
 			sppDiag[j] = rtype.FromFloat64(gg.At(j, j)/N, fb)
 			for l := 0; l < c; l++ {
 				Up[j][l] = rtype.FromFloat64(g.GtX.At(j, l)/N, fb)
 			}
 		}
-	}
-	w := wPubIn
-	if w == nil {
-		_, w = ast.blindWeightCKKS(dosage, nsnps) // collective fallback for standalone callers
 	}
 	tauProbe, tauMultiplier, exactPublic := skatTraceProbes(m, nProbes, int64(b)*1000003+1)
 	psiProbe, psiMultiplier := tauProbe, tauMultiplier

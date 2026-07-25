@@ -670,15 +670,11 @@ func (g *ProtocolInfo) rareVariantScaleShares(rssSS mpc_core.RElem) (mpc_core.RV
 		return scaleSS, false
 	}
 
-	nrowsAll := g.gwasParams.FiltNumInds()
-	if len(nrowsAll) != g.config.NumMainParties+1 {
-		nrowsAll = g.config.NumInds
+	nrows := g.gwasParams.FiltNumInds()
+	if len(nrows) != g.config.NumMainParties+1 {
+		nrows = g.config.NumInds
 	}
-	totalInds := 0
-	for p := 1; p <= g.config.NumMainParties; p++ {
-		totalInds += nrowsAll[p]
-	}
-	dof := totalInds - (g.gwasParams.NumCov() + 1)
+	dof := Sum(nrows[1:g.config.NumMainParties+1]) - (g.gwasParams.NumCov() + 1)
 	if dof <= 0 {
 		return scaleSS, false
 	}
