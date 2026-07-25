@@ -130,10 +130,6 @@ func (m *fedRunMetrics) end(stage string, mark fedMetricMark) time.Duration {
 	return duration
 }
 
-func (m *fedRunMetrics) addDuration(stage string, duration time.Duration) {
-	m.addDurationCount(stage, duration, 1)
-}
-
 func (m *fedRunMetrics) addDurationCount(stage string, duration time.Duration, count int) {
 	if m == nil {
 		return

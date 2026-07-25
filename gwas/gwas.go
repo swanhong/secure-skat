@@ -462,8 +462,8 @@ func (g *ProtocolInfo) runRareVariant() (skat, burden []float64) {
 
 	if pid > 0 {
 		nB := g.config.GenoNumBlocks
-		skat = crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, assoc, -1))[:nB]
-		burden = crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, burdenEnc, -1))[:nB]
+		skat = g.decryptBlocks(assoc, nB)
+		burden = g.decryptBlocks(burdenEnc, nB)
 	}
 	return
 }
@@ -478,11 +478,7 @@ func (g *ProtocolInfo) runFederatedPrivate() (skatOut, burdenPOut, skatPOut []fl
 	networks := g.mpcObj.GetNetworks()
 	commStart := networks.GetCommunicationStats()
 	defer networks.PrintCommunicationDelta("skat_fed_run", commStart)
-	mode := "raw_q"
-	if g.config.SkatPValueProbes > 0 {
-		mode = "skat_p"
-	}
-	metrics := newFedRunMetrics(networks, mode, g.fedSetupComm)
+	metrics := newFedRunMetrics(networks, g.fedMode(), g.fedSetupComm)
 
 	var privateOnly []*mat.Dense
 	loadMark := metrics.mark()
@@ -513,9 +509,9 @@ func (g *ProtocolInfo) runFederatedPrivate() (skatOut, burdenPOut, skatPOut []fl
 	nB := g.config.GenoNumBlocks
 	// Q_skat is nil in SKAT-p mode (only the equivalent z is released) → skip its decrypt.
 	if len(skat) > 0 {
-		skatOut = crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, skat, -1))[:nB]
+		skatOut = g.decryptBlocks(skat, nB)
 	}
-	sqrtT2 := crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, sqrtT2Enc, -1))[:nB]
+	sqrtT2 := g.decryptBlocks(sqrtT2Enc, nB)
 	burdenPOut = make([]float64, nB)
 	for b := 0; b < nB; b++ {
 		burdenPOut[b] = 1.0 // p=1 at √(T/2)≤0 (CKKS noise on a ~0 statistic); erfc(0)=1
@@ -525,7 +521,7 @@ func (g *ProtocolInfo) runFederatedPrivate() (skatOut, burdenPOut, skatPOut []fl
 	}
 	// SKAT p-value (screening): only z is revealed; p = ½erfc(z/√2). nil if SKAT p disabled (no probes).
 	if len(skatZEnc) > 0 {
-		z := crypto.DecodeFloatVector(g.cps, mpcObj.Network.CollectiveDecryptVec(g.cps, skatZEnc, -1))[:nB]
+		z := g.decryptBlocks(skatZEnc, nB)
 		skatPOut = make([]float64, nB)
 		for b := 0; b < nB; b++ {
 			skatPOut[b] = 0.5 * math.Erfc(z[b]/math.Sqrt2)
@@ -598,11 +594,7 @@ func (g *ProtocolInfo) SKATFederatedPrivate() {
 	skat, burdenP, skatP := g.runFederatedPrivate()
 	// Cumulative application-layer traffic from collective key setup through
 	// secure computation and output decryption. The final shutdown barrier is excluded.
-	mode := "raw_q"
-	if g.config.SkatPValueProbes > 0 {
-		mode = "skat_p"
-	}
-	g.mpcObj.GetNetworks().PrintCommunicationSummaryWithMode("skat_fed_total", mode)
+	g.mpcObj.GetNetworks().PrintCommunicationSummaryWithMode("skat_fed_total", g.fedMode())
 	if g.mpcObj[0].GetPid() > 0 {
 		if len(skat) > 0 { // nil/empty in SKAT-p mode (Q_skat withheld; only the z-derived p is released)
 			SaveFloatVectorToFile(g.OutPath("skat_fed_out.txt"), skat)
@@ -657,6 +649,19 @@ func (g *ProtocolInfo) SetPhenoAndCov(pheno, cov *mat.Dense) {
 func (g *ProtocolInfo) ComputeSKATStatistics() (crypto.CipherVector, crypto.CipherVector) {
 	assocTest := g.initSKAT()
 	return assocTest.ComputeSKATStatisticsPerBlock()
+}
+
+// fedMode reports the skat_fed run-mode string used for metrics/summary labeling.
+func (g *ProtocolInfo) fedMode() string {
+	if g.config.SkatPValueProbes > 0 {
+		return "skat_p"
+	}
+	return "raw_q"
+}
+
+// decryptBlocks collectively decrypts a per-block cipher vector to the first nB block statistics.
+func (g *ProtocolInfo) decryptBlocks(enc crypto.CipherVector, nB int) []float64 {
+	return crypto.DecodeFloatVector(g.cps, g.mpcObj[0].Network.CollectiveDecryptVec(g.cps, enc, -1))[:nB]
 }
 
 // rareVariantScaleShares returns the shared 1/(2σ̂²) = (dof/2)/RSS scale factor (dof = N−c),

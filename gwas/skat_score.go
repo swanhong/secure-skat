@@ -80,16 +80,7 @@ func (ast *AssocTest) scoreSS(GtX *mat.Dense, Gty0 []float64, betaSS mpc_core.RV
 		}
 	}
 
-	betaCol := make(mpc_core.RMat, c)
-	for k := 0; k < c; k++ {
-		betaCol[k] = mpc_core.RVec{betaSS[k]}
-	}
-	gtxBeta := mpcObj.SSMultMat(gtxSS, betaCol) // (m×c)·(c×1) = global GᵀX·β̂ (frac 2×)
-	prod := make(mpc_core.RVec, m)
-	for j := 0; j < m; j++ {
-		prod[j] = gtxBeta[j][0]
-	}
-	prod = mpcObj.TruncVec(prod, mpcObj.GetDataBits(), fracBits)
+	prod := mpcObj.TruncVec(ast.ssMatVec(gtxSS, betaSS), mpcObj.GetDataBits(), fracBits) // GᵀX·β̂
 
 	s := gty0SS.Copy()
 	s.Sub(prod) // exact SS subtraction — cancellation is lossless here

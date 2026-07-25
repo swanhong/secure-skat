@@ -32,15 +32,7 @@ func (ast *AssocTest) burdenVarSS(nsnps int, null skatNull, priv *privateGeneLoc
 	N := float64(ast.skatTotalNumInds())
 	sqrtN := math.Sqrt(N)
 
-	// vdot = Σ aᵢbᵢ in SS (one mult+truncate, then local ring sum).
-	vdot := func(a, bb mpc_core.RVec) mpc_core.RElem {
-		p := mpcObj.TruncVec(mpcObj.SSMultElemVec(a, bb), db, fb)
-		acc := rtype.Zero()
-		for i := range p {
-			acc = acc.Add(p[i])
-		}
-		return acc
-	}
+	vdot := ast.ssDot // Σ aᵢbᵢ in SS (mult+truncate, then local ring sum)
 
 	// --- public list: GᵀX (m×c, small) as SS shares; the m×m GᵀG is kept as a local plaintext gram
 	// (gg) and streamed in row-chunks below, so a full m×m *secret* matrix never materializes. ---
@@ -60,12 +52,9 @@ func (ast *AssocTest) burdenVarSS(nsnps int, null skatNull, priv *privateGeneLoc
 	pubZZ := rtype.Zero()
 	pubXtz := mpc_core.InitRVec(rtype.Zero(), c)
 	gtgMark := ast.metricMark()
-	var wCol mpc_core.RMat
+	var wCol mpc_core.RMat // asCol(wPub) built once, reused by the chunk loop and pubXtz below
 	if nsnps > 0 {
-		wCol = make(mpc_core.RMat, nsnps)
-		for j := 0; j < nsnps; j++ {
-			wCol[j] = mpc_core.RVec{wPub[j]}
-		}
+		wCol = asCol(wPub)
 		// (GᵀG)·w in row-chunks: forming the whole m×m secret gram (and its single Beaver reveal)
 		// costs O(m²) memory and OOMs for m~thousands; chunking caps peak memory at O(gtgChunkRows·m)
 		// while the Beaver comm total stays the same.
@@ -83,10 +72,7 @@ func (ast *AssocTest) burdenVarSS(nsnps int, null skatNull, priv *privateGeneLoc
 					}
 				}
 			}
-			res := mpcObj.SSMultMat(gtgChunk, wCol)
-			for j := start; j < end; j++ {
-				gw[j] = res[j-start][0]
-			}
+			copy(gw[start:end], col0(mpcObj.SSMultMat(gtgChunk, wCol)))
 		}
 		gw = mpcObj.TruncVec(gw, db, fb)
 		pubZZ = vdot(wPub, gw)
@@ -96,11 +82,7 @@ func (ast *AssocTest) burdenVarSS(nsnps int, null skatNull, priv *privateGeneLoc
 	gtxMark := ast.metricMark()
 	if nsnps > 0 {
 		// pubXtz = (GᵀX)ᵀ·w_pub (c-vector) as one SSMultMat over the c×nsnps transpose.
-		pxM := mpcObj.SSMultMat(gtxT, wCol) // c×1 (untruncated 2·fb)
-		for l := 0; l < c; l++ {
-			pubXtz[l] = pxM[l][0]
-		}
-		pubXtz = mpcObj.TruncVec(pubXtz, db, fb)
+		pubXtz = mpcObj.TruncVec(col0(mpcObj.SSMultMat(gtxT, wCol)), db, fb)
 	}
 	ast.metricEnd("gene_burden_public_gtx", gtxMark)
 
@@ -143,15 +125,7 @@ func (ast *AssocTest) burdenVarSS(nsnps int, null skatNull, priv *privateGeneLoc
 
 	// zᵀPz/N = zz − (1/N)·xtzᵀΩ'xtz, Ω'=N(XtX)⁻¹ cached once by the null model.
 	projectionMark := ast.metricMark()
-	xtzCol := make(mpc_core.RMat, c)
-	for l := 0; l < c; l++ {
-		xtzCol[l] = mpc_core.RVec{xtz[l]}
-	}
-	aMat := mpcObj.TruncMat(mpcObj.SSMultMat(null.omp, xtzCol), db, fb)
-	a := make(mpc_core.RVec, c)
-	for l := 0; l < c; l++ {
-		a[l] = aMat[l][0]
-	}
+	a := mpcObj.TruncVec(ast.ssMatVec(null.omp, xtz), db, fb) // Ω'·xtz (elementwise trunc ≡ old TruncMat+col0)
 	corr := vdot(xtz, a)
 	corr = mpcObj.TruncVec(mpc_core.RVec{corr.Mul(rtype.FromFloat64(1.0/N, fb))}, db, fb)[0]
 	ast.metricEnd("gene_burden_projection", projectionMark)

@@ -202,7 +202,7 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	fedTimings.nullTotal = time.Since(tStart)
 	preBlockMark := ast.metricMark()
 	nullClassified := ast.fedMetrics.parentLeafDuration("null_model", "null_other")
-	ast.fedMetrics.addDuration("null_other", nonNegativeDuration(fedTimings.nullTotal-nullClassified))
+	ast.fedMetrics.addDurationCount("null_other", nonNegativeDuration(fedTimings.nullTotal-nullClassified), 1)
 	log.LLvl1(fmt.Sprintf("[skat_fed] null model: %v", fedTimings.nullTotal.Round(time.Millisecond)))
 
 	nB := ast.general.config.GenoNumBlocks
@@ -366,7 +366,7 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	postBlock := nonNegativeDuration(fedTimings.total - fedTimings.nullTotal -
 		ast.fedMetrics.stageDuration("pre_block_setup") - fedTimings.blocks)
 	finalizeClassified := ast.fedMetrics.parentLeafDuration("post_block_finalize", "finalize_other")
-	ast.fedMetrics.addDuration("finalize_other", nonNegativeDuration(postBlock-finalizeClassified))
+	ast.fedMetrics.addDurationCount("finalize_other", nonNegativeDuration(postBlock-finalizeClassified), 1)
 	log.LLvl1(fmt.Sprintf("[skat_fed] total compute: %v", fedTimings.total.Round(time.Millisecond)))
 	return skatStatOut, burdenOut, skatZStat
 }

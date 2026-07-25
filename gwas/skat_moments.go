@@ -16,27 +16,12 @@ import (
 func (ast *AssocTest) secureClampVec(x mpc_core.RVec, loPub, hiPub float64) mpc_core.RVec {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
-	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
-	hub := mpcObj.GetPid() == mpcObj.GetHubPid()
+	fb := mpcObj.GetFracBits()
 	bv := mpcObj.GetBooleanShareFlag()
-	sel := func(cond mpc_core.RVec, boundPub float64, x mpc_core.RVec) mpc_core.RVec {
-		cond.MulScalar(rtype.FromFloat64(1.0, fb)) // lift 0/1 bits to fixed-point {0, 1.0}
-		diff := make(mpc_core.RVec, len(x))
-		for i := range x {
-			diff[i] = x[i].Neg()
-			if hub {
-				diff[i] = diff[i].Add(rtype.FromFloat64(boundPub, fb)) // bound − x (public bound on hub only)
-			}
-		}
-		d := mpcObj.TruncVec(mpcObj.SSMultElemVec(cond, diff), db, fb)
-		out := make(mpc_core.RVec, len(x))
-		for i := range x {
-			out[i] = x[i].Add(d[i]) // cond ? bound : x
-		}
-		return out
-	}
-	x = sel(mpcObj.LessThanPublic(x, rtype.FromFloat64(loPub, fb), bv), loPub, x)    // x<lo → lo
-	x = sel(mpcObj.NotLessThanPublic(x, rtype.FromFloat64(hiPub, fb), bv), hiPub, x) // x≥hi → hi
+	n := len(x)
+	// cond ? bound : x via the shared select; bound is a hub-only public share (hubVec).
+	x = ast.secureSelectVec(mpcObj.LessThanPublic(x, rtype.FromFloat64(loPub, fb), bv), ast.hubVec(loPub, n), x)    // x<lo → lo
+	x = ast.secureSelectVec(mpcObj.NotLessThanPublic(x, rtype.FromFloat64(hiPub, fb), bv), ast.hubVec(hiPub, n), x) // x≥hi → hi
 	return x
 }
 
@@ -58,19 +43,7 @@ func (ast *AssocTest) secureSelectVec(cond, whenTrue, whenFalse mpc_core.RVec) m
 // secureSelectOrPublicVec returns valid ? x : fallbackPub without revealing valid.
 // valid is an arithmetic sharing of bits at scale 0; x/fallback use the configured fixed-point scale.
 func (ast *AssocTest) secureSelectOrPublicVec(valid, x mpc_core.RVec, fallbackPub float64) mpc_core.RVec {
-	mpcObj := ast.general.mpcObj[0]
-	rtype := mpcObj.GetRType()
-	fb := mpcObj.GetFracBits()
-	hub := mpcObj.GetPid() == mpcObj.GetHubPid()
-
-	fallback := mpc_core.InitRVec(rtype.Zero(), len(x))
-	if hub {
-		fallbackElem := rtype.FromFloat64(fallbackPub, fb)
-		for i := range fallback {
-			fallback[i] = fallbackElem
-		}
-	}
-	return ast.secureSelectVec(valid, x, fallback)
+	return ast.secureSelectVec(valid, x, ast.hubVec(fallbackPub, len(x)))
 }
 
 // secureCbrtVec returns the real signed cube root of SECRET x. It classifies |x| against a fixed,
@@ -84,38 +57,14 @@ func (ast *AssocTest) secureCbrtVec(x mpc_core.RVec) mpc_core.RVec {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
-	hub := mpcObj.GetPid() == mpcObj.GetHubPid()
 	n := len(x)
 
-	mul := func(a, b mpc_core.RVec) mpc_core.RVec { // secret × secret → truncate to fb
-		return mpcObj.TruncVec(mpcObj.SSMultElemVec(a, b), db, fb)
-	}
-	square := func(a mpc_core.RVec) mpc_core.RVec {
-		return mpcObj.TruncVec(mpcObj.SSSquareElemVec(a), db, fb)
-	}
-	pmul := func(a mpc_core.RVec, cf float64) mpc_core.RVec { // secret × public constant → fb
-		cfE := rtype.FromFloat64(cf, fb)
-		out := make(mpc_core.RVec, len(a))
-		for i := range a {
-			out[i] = a[i].Mul(cfE)
-		}
-		return mpcObj.TruncVec(out, db, fb)
-	}
+	mul, square, pmul := ast.ssMul, ast.ssSquare, ast.ssPMul // shared fixed-point SS primitives
 	addScaledBits := func(dst, bits mpc_core.RVec, cf float64) {
 		cfE := rtype.FromFloat64(cf, fb)
 		for i := range dst {
 			dst[i] = dst[i].Add(bits[i].Mul(cfE)) // scale-0 bit × public fixed-point constant
 		}
-	}
-	publicOnes := func() mpc_core.RVec {
-		out := mpc_core.InitRVec(rtype.Zero(), n)
-		if hub {
-			one := rtype.FromFloat64(1.0, fb)
-			for i := range out {
-				out[i] = one
-			}
-		}
-		return out
 	}
 
 	bv := mpcObj.GetBooleanShareFlag()
@@ -130,7 +79,8 @@ func (ast *AssocTest) secureCbrtVec(x mpc_core.RVec) mpc_core.RVec {
 	//   8^-n = 1 - Σ 7/8^(k+1),  2^n = 1 + Σ 2^k,
 	//   8^n  = 1 + Σ 7·8^k,      2^-n = 1 - Σ 2^-(k+1).
 	// A group is capped so its smallest fractional and largest integer coefficient are representable;
-	// repeating a public number of groups supports asymmetric db/fb configurations as well as 60/30.
+	// repeating a public number of groups supports asymmetric db/fb configs (e.g. FED_DATABITS=80/100)
+	// as well as 60/30 — the step counts are derived from db/fb, not hard-coded.
 	integerBits := db - fb - 1
 	if integerBits < 4 || fb < 3 {
 		panic("secureCbrtVec: fixed-point format needs at least 4 integer and 3 fractional bits")
@@ -150,7 +100,7 @@ func (ast *AssocTest) secureCbrtVec(x mpc_core.RVec) mpc_core.RVec {
 			if group > maxGroup {
 				group = maxGroup
 			}
-			rangeScale, rootScale := publicOnes(), publicOnes()
+			rangeScale, rootScale := ast.hubVec(1.0, n), ast.hubVec(1.0, n)
 			highThreshold, highRootCoeff := 8.0, 1.0
 			lowThreshold, lowRangeCoeff, lowRootCoeff := 0.1, 7.0, 0.5
 			for k := 0; k < group; k++ {
@@ -178,20 +128,9 @@ func (ast *AssocTest) secureCbrtVec(x mpc_core.RVec) mpc_core.RVec {
 	reduce(lowSteps, (integerBits-1)/3, false) // 8^group must fit the signed integer range
 	// After the full public ladder, every representable nonzero magnitude is >=0.1; only zero is tiny.
 	tiny := mpcObj.LessThanPublic(absX, rtype.FromFloat64(0.1, fb), bv)
-	zeroSurrogate := mpc_core.InitRVec(rtype.Zero(), n)
-	if hub {
-		for i := range zeroSurrogate {
-			zeroSurrogate[i] = rtype.FromFloat64(0.1, fb)
-		}
-	}
-	x = ast.secureSelectVec(tiny, zeroSurrogate, absX)
+	x = ast.secureSelectVec(tiny, ast.hubVec(0.1, n), absX)
 
-	y := mpc_core.InitRVec(rtype.Zero(), n) // seed 0.7 as an additive share (hub holds it, others 0)
-	if hub {
-		for i := range y {
-			y[i] = rtype.FromFloat64(0.7, fb)
-		}
-	}
+	y := ast.hubVec(0.7, n) // seed 0.7 as an additive share (hub holds it, others 0)
 	four := rtype.FromFloat64(4.0, 0)
 	for it := 0; it < 8; it++ {
 		y2 := square(y)
@@ -208,13 +147,7 @@ func (ast *AssocTest) secureCbrtVec(x mpc_core.RVec) mpc_core.RVec {
 		root = mul(root, rootScale)
 	}
 	// signNonzero is +1 (positive), -1 (negative), or 0 (zero); neg and tiny are disjoint.
-	signNonzero := mpc_core.InitRVec(rtype.Zero(), n)
-	if hub {
-		one := rtype.FromFloat64(1.0, fb)
-		for i := range signNonzero {
-			signNonzero[i] = one
-		}
-	}
+	signNonzero := ast.hubVec(1.0, n)
 	addScaledBits(signNonzero, neg, -2.0)
 	addScaledBits(signNonzero, tiny, -1.0)
 	return mul(root, signNonzero)
@@ -431,14 +364,7 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, priv *
 		}
 		return sumAllMat(elemMulM(a, transpose(bb)))
 	}
-	vdot := func(a, bb mpc_core.RVec) mpc_core.RElem {
-		p := mpcObj.TruncVec(mpcObj.SSMultElemVec(a, bb), db, fb)
-		acc := rtype.Zero()
-		for i := range p {
-			acc = acc.Add(p[i])
-		}
-		return acc
-	}
+	vdot := ast.ssDot                                                   // shared SS dot product
 	scaleRows := func(d mpc_core.RVec, M mpc_core.RMat) mpc_core.RMat { // row j × d[j]
 		if len(M) == 0 {
 			return M
@@ -908,20 +834,7 @@ func (ast *AssocTest) skatZSSVec(Q, S1, S2, S3 mpc_core.RVec) mpc_core.RVec {
 	rtype := mpcObj.GetRType()
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
 	hub := mpcObj.GetPid() == mpcObj.GetHubPid()
-	mul := func(a, b mpc_core.RVec) mpc_core.RVec {
-		return mpcObj.TruncVec(mpcObj.SSMultElemVec(a, b), db, fb)
-	}
-	square := func(a mpc_core.RVec) mpc_core.RVec {
-		return mpcObj.TruncVec(mpcObj.SSSquareElemVec(a), db, fb)
-	}
-	pmul := func(a mpc_core.RVec, cf float64) mpc_core.RVec {
-		cfE := rtype.FromFloat64(cf, fb)
-		out := make(mpc_core.RVec, len(a))
-		for i := range a {
-			out[i] = a[i].Mul(cfE)
-		}
-		return mpcObj.TruncVec(out, db, fb)
-	}
+	mul, square, pmul := ast.ssMul, ast.ssSquare, ast.ssPMul // shared fixed-point SS primitives
 	// Record the PSD/fixed-point domain guard before clamping. The bit remains secret; invalid,
 	// underflow, or unrepresentably large genes use safe surrogate inputs and end at z=-9 (p≈1).
 	momentFloor := skatMomentFloor(fb)
@@ -947,13 +860,7 @@ func (ast *AssocTest) skatZSSVec(Q, S1, S2, S3 mpc_core.RVec) mpc_core.RVec {
 	// Compute min(S3/S2^1.5,1) without allowing an inconsistent Hutchinson pair to wrap before
 	// the final clamp. For S2<1, cap after every increasing multiply by si; for S2>=1, si<=1 so
 	// the three products are monotonically non-increasing. The inactive branch receives safe inputs.
-	oneVec := mpc_core.InitRVec(rtype.Zero(), len(S2))
-	if hub {
-		one := rtype.FromFloat64(1.0, fb)
-		for i := range oneVec {
-			oneVec[i] = one
-		}
-	}
+	oneVec := ast.hubVec(1.0, len(S2))
 	smallS2 := mpcObj.LessThanPublic(S2, rtype.FromFloat64(1.0, fb), bv)
 	lowSi := ast.secureSelectOrPublicVec(smallS2, si, 1.0)
 	lowSkew := ast.secureClampVec(S3, 0.0, 1.0)

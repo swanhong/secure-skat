@@ -6,7 +6,6 @@ import (
 
 	mpc_core "github.com/hhcho/mpc-core"
 	"github.com/hhcho/sfgwas/crypto"
-	"github.com/tuneinsight/lattigo/v6/core/rlwe"
 	"go.dedis.ch/onet/v3/log"
 	"gonum.org/v1/gonum/mat"
 )
@@ -55,45 +54,6 @@ func localGenotypeContract(G, X *mat.Dense, y0 []float64) LocalContraction {
 		GtX:       &GtX,
 		Gty0:      vecToSlice(&Gty),
 		DosageSum: dosage,
-	}
-}
-
-// LocalContract contracts (G, X, y0) locally; y0 centered, X includes intercept.
-func LocalContract(G, X *mat.Dense, y0 []float64) LocalContraction {
-	lc := localGenotypeContract(G, X, y0)
-	n, _ := X.Dims()
-	y0v := mat.NewVecDense(n, y0)
-
-	var XtX mat.Dense
-	XtX.Mul(X.T(), X)
-	var Xty mat.VecDense
-	Xty.MulVec(X.T(), y0v)
-	lc.XtX = &XtX
-	lc.Xty0 = vecToSlice(&Xty)
-	lc.Y0ty0 = mat.Dot(y0v, y0v)
-	return lc
-}
-
-// Add sums two contractions party-wise (all fields additive) — the n-independence invariant
-// (Σ_party == full cohort) checked by TestSKATLocalPartyAdditivity.
-func (a LocalContraction) Add(b LocalContraction) LocalContraction {
-	var XtX, GtX mat.Dense
-	XtX.Add(a.XtX, b.XtX)
-	GtX.Add(a.GtX, b.GtX)
-	addVec := func(x, y []float64) []float64 {
-		out := make([]float64, len(x))
-		for i := range x {
-			out[i] = x[i] + y[i]
-		}
-		return out
-	}
-	return LocalContraction{
-		XtX:       &XtX,
-		Xty0:      addVec(a.Xty0, b.Xty0),
-		Y0ty0:     a.Y0ty0 + b.Y0ty0,
-		GtX:       &GtX,
-		Gty0:      addVec(a.Gty0, b.Gty0),
-		DosageSum: addVec(a.DosageSum, b.DosageSum),
 	}
 }
 
@@ -149,14 +109,8 @@ func localNullEquations(cov, pheno *mat.Dense, center float64) localNull {
 		}
 		y0[i] = pheno.At(i, 0) - center
 	}
-	y0v := mat.NewVecDense(n, y0)
-
-	var XtX mat.Dense
-	XtX.Mul(X.T(), X)
-	var Xty mat.VecDense
-	Xty.MulVec(X.T(), y0v)
-
-	return localNull{X: X, Y0: y0, XtX: &XtX, Xty0: vecToSlice(&Xty), Y0ty0: mat.Dot(y0v, y0v)}
+	xtx, xty, yty := normalEqs(X, mat.NewVecDense(n, y0))
+	return localNull{X: X, Y0: y0, XtX: xtx, Xty0: xty, Y0ty0: yty}
 }
 
 // matrices flattens the c-dim aggregates into the plaintext forms the encoders consume;
@@ -195,10 +149,9 @@ const ridgeRel = 1e-6
 func (ast *AssocTest) choleskyFactor(A mpc_core.RMat) (mpc_core.RMat, mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
-	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
 	c := len(A)
 	mul := func(x, y mpc_core.RElem) mpc_core.RElem { // SS scalar product, back to fracBits
-		return mpcObj.TruncVec(mpcObj.SSMultElemVec(mpc_core.RVec{x}, mpc_core.RVec{y}), db, fb)[0]
+		return ast.ssMul(mpc_core.RVec{x}, mpc_core.RVec{y})[0]
 	}
 	L := mpc_core.InitRMat(rtype.Zero(), c, c) // lower-triangular Cholesky factor
 	dInv := make(mpc_core.RVec, c)             // dInv[j] = 1/L[j][j]
@@ -225,14 +178,13 @@ func (ast *AssocTest) choleskyFactor(A mpc_core.RMat) (mpc_core.RMat, mpc_core.R
 func (ast *AssocTest) choleskySolveMat(L mpc_core.RMat, dInv mpc_core.RVec, B mpc_core.RMat) mpc_core.RMat {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
-	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
 	c := len(dInv)
 	R := 0
 	if len(B) > 0 {
 		R = len(B[0])
 	}
 	smul := func(s mpc_core.RElem, row mpc_core.RVec) mpc_core.RVec { // secret scalar × length-R row
-		return mpcObj.TruncVec(mpcObj.SSMultElemVec(mpc_core.InitRVec(s, R), row), db, fb)
+		return ast.ssMul(mpc_core.InitRVec(s, R), row)
 	}
 	Z := mpc_core.InitRMat(rtype.Zero(), c, R) // forward:  L·Z = B
 	for i := 0; i < c; i++ {
@@ -326,11 +278,7 @@ func (ast *AssocTest) nullSetup() (null skatNull, X *mat.Dense, y0 []float64) {
 	solveMark := ast.metricMark()
 
 	xtxSS := mpcObj.CMatToSS(cps, rtype, xtxEnc, -1, c, 1, c)
-	var xtyCt *rlwe.Ciphertext
-	if len(xtyEnc) > 0 {
-		xtyCt = xtyEnc[0]
-	}
-	xtySS := mpcObj.CiphertextToSS(cps, rtype, xtyCt, mpcObj.GetHubPid(), c)
+	xtySS := mpcObj.CiphertextToSS(cps, rtype, firstCt(xtyEnc), mpcObj.GetHubPid(), c)
 	xtxL, xtxDinv := ast.choleskyFactor(xtxSS)
 	// Solve [β̂ | Ω']=(XᵀX)⁻¹[Xᵀy₀ | N·I] as one c×(c+1) RHS. Batching removes a duplicate
 	// forward/back-substitution schedule, and cached Ω'=N(XᵀX)⁻¹ removes every per-gene solve.
@@ -377,31 +325,11 @@ func (ast *AssocTest) nullSetup() (null skatNull, X *mat.Dense, y0 []float64) {
 
 	// Residual-norm RSS (robust σ̂²): RSS = y₀ᵀy₀ − 2·(Xᵀy₀·β̂) + β̂ᵀ(XᵀX)β̂, 2nd-order in the β̂ error
 	// (the plain identity y₀ᵀy₀ − Xᵀy₀·β̂ is 1st-order). All from the c-dim SS aggregates.
-	sumRVec := func(v mpc_core.RVec) mpc_core.RElem {
-		acc := rtype.Zero()
-		for _, x := range v {
-			acc = acc.Add(x)
-		}
-		return acc
-	}
-	betaCol := make(mpc_core.RMat, c)
-	for k := 0; k < c; k++ {
-		betaCol[k] = mpc_core.RVec{betaSS[k]}
-	}
-	xtxBetaMat := mpcObj.SSMultMat(xtxSS, betaCol) // (XᵀX)·β̂
-	xtxBeta := make(mpc_core.RVec, c)
-	for k := 0; k < c; k++ {
-		xtxBeta[k] = xtxBetaMat[k][0]
-	}
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
-	xtxBeta = mpcObj.TruncVec(xtxBeta, db, fb)
-	xtyBeta := sumRVec(mpcObj.TruncVec(mpcObj.SSMultElemVec(xtySS, betaSS), db, fb))
-	betaXtxBeta := sumRVec(mpcObj.TruncVec(mpcObj.SSMultElemVec(betaSS, xtxBeta), db, fb))
-	var y0Ct *rlwe.Ciphertext
-	if len(y0ty0Enc) > 0 {
-		y0Ct = y0ty0Enc[0]
-	}
-	y0ty0SS := mpcObj.CiphertextToSS(cps, rtype, y0Ct, mpcObj.GetHubPid(), 1)[0]
+	xtxBeta := mpcObj.TruncVec(ast.ssMatVec(xtxSS, betaSS), db, fb) // (XᵀX)·β̂
+	xtyBeta := ast.ssDot(xtySS, betaSS)
+	betaXtxBeta := ast.ssDot(betaSS, xtxBeta)
+	y0ty0SS := mpcObj.CiphertextToSS(cps, rtype, firstCt(y0ty0Enc), mpcObj.GetHubPid(), 1)[0]
 	rssSS := y0ty0SS.Sub(xtyBeta).Sub(xtyBeta).Add(betaXtxBeta)
 	rssDuration := ast.metricEnd("null_rss", rssMark)
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: RSS %v", rssDuration.Round(time.Millisecond)))
