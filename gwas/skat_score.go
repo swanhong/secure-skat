@@ -82,9 +82,8 @@ func (ast *AssocTest) scoreSS(GtX *mat.Dense, Gty0 []float64, betaSS mpc_core.RV
 
 	prod := mpcObj.TruncVec(ast.ssMatVec(gtxSS, betaSS), mpcObj.GetDataBits(), fracBits) // GᵀX·β̂
 
-	s := gty0SS.Copy()
-	s.Sub(prod) // exact SS subtraction — cancellation is lossless here
-	return s
+	gty0SS.Sub(prod) // exact SS subtraction — cancellation is lossless here
+	return gty0SS
 }
 
 // blindWeightCKKS computes w_j = 25·(1-MAF_j)^24

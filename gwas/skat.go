@@ -9,7 +9,6 @@ import (
 	"go.dedis.ch/onet/v3/log"
 )
 
-// initSKAT skips the legacy association-test phenotype/covariate encodings, which SKAT never reads.
 func (g *ProtocolInfo) initSKAT() *AssocTest { return &AssocTest{general: g} }
 
 // ComputeSKATStatisticsPerBlock returns per-block Q and Burden (slot b = block b's
@@ -36,8 +35,12 @@ func (ast *AssocTest) ComputeSKATStatisticsPerBlock() (qPerBlock, burdenPerBlock
 			continue
 		}
 		tb := time.Now()
-		gl := ast.computeGeneLocal(b, nsnps, X, y0)
-		q, bl, _ := ast.blockStat(nsnps, null, gl)
+		var lc LocalContraction
+		if mpcObj.GetPid() > 0 {
+			G := orientGenotypeLocal(ast.readGenoBlockLocal(b))
+			lc = localGenotypeContract(G, X, y0)
+		}
+		q, bl, _ := ast.blockStat(nsnps, null, lc)
 		qBlockSS[b] = q[0]
 		bLinBlockSS[b] = bl[0]
 		done++
@@ -47,8 +50,7 @@ func (ast *AssocTest) ComputeSKATStatisticsPerBlock() (qPerBlock, burdenPerBlock
 		}
 	}
 
-	burdenSqSS := mpcObj.SSSquareElemVec(bLinBlockSS)
-	burdenSqSS = mpcObj.TruncVec(burdenSqSS, mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	burdenSqSS := ast.ssSquare(bLinBlockSS)
 	if scaleSS, ok := ast.general.rareVariantScaleShares(null.rssSS); ok {
 		qBlockSS = ast.general.scaleRareVariantShareStat(qBlockSS, scaleSS)
 		burdenSqSS = ast.general.scaleRareVariantShareStat(burdenSqSS, scaleSS)

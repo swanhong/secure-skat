@@ -32,18 +32,17 @@ func (ast *AssocTest) burdenVarSS(nsnps int, null skatNull, priv *privateGeneLoc
 	N := float64(ast.skatTotalNumInds())
 	sqrtN := math.Sqrt(N)
 
-	vdot := ast.ssDot // Σ aᵢbᵢ in SS (mult+truncate, then local ring sum)
+	vdot := ast.ssDot
 
 	// --- public list: GᵀX (m×c, small) as SS shares; the m×m GᵀG is kept as a local plaintext gram
 	// (gg) and streamed in row-chunks below, so a full m×m *secret* matrix never materializes. ---
 	var gg *mat.Dense
 	gtxT := mpc_core.InitRMat(rtype.Zero(), c, nsnps)
 	if pid > 0 && nsnps > 0 {
-		g := gl
-		gg = g.gg
+		gg = gl.gg
 		for j := 0; j < nsnps; j++ {
 			for l := 0; l < c; l++ {
-				gtxT[l][j] = rtype.FromFloat64(g.GtX.At(j, l)/sqrtN, fb) // XᵀG/√N
+				gtxT[l][j] = rtype.FromFloat64(gl.GtX.At(j, l)/sqrtN, fb) // XᵀG/√N
 			}
 		}
 	}
@@ -72,7 +71,10 @@ func (ast *AssocTest) burdenVarSS(nsnps int, null skatNull, priv *privateGeneLoc
 					}
 				}
 			}
-			copy(gw[start:end], col0(mpcObj.SSMultMat(gtgChunk, wCol)))
+			prod := mpcObj.SSMultMat(gtgChunk, wCol)
+			for i := range prod {
+				gw[start+i] = prod[i][0]
+			}
 		}
 		gw = mpcObj.TruncVec(gw, db, fb)
 		pubZZ = vdot(wPub, gw)
@@ -117,15 +119,13 @@ func (ast *AssocTest) burdenVarSS(nsnps int, null skatNull, priv *privateGeneLoc
 		crossZZ = vdot(wPub, crossD)
 	}
 	zz := pubZZ.Add(crossZZ).Add(crossZZ).Add(privZZ) // crossZZ added twice = the 2· term
-	xtz := make(mpc_core.RVec, c)
-	for l := 0; l < c; l++ {
-		xtz[l] = pubXtz[l].Add(privXtz[l])
-	}
+	xtz := pubXtz.Copy()
+	xtz.Add(privXtz)
 	ast.metricEnd("gene_burden_private_cross", privateCrossMark)
 
 	// zᵀPz/N = zz − (1/N)·xtzᵀΩ'xtz, Ω'=N(XtX)⁻¹ cached once by the null model.
 	projectionMark := ast.metricMark()
-	a := mpcObj.TruncVec(ast.ssMatVec(null.omp, xtz), db, fb) // Ω'·xtz (elementwise trunc ≡ old TruncMat+col0)
+	a := mpcObj.TruncVec(ast.ssMatVec(null.omp, xtz), db, fb) // Ω'·xtz, truncated elementwise
 	corr := vdot(xtz, a)
 	corr = mpcObj.TruncVec(mpc_core.RVec{corr.Mul(rtype.FromFloat64(1.0/N, fb))}, db, fb)[0]
 	ast.metricEnd("gene_burden_projection", projectionMark)

@@ -213,9 +213,12 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	bLinBlockSS := mpc_core.InitRVec(rtype.Zero(), nB) // Σw·s  (Burden linear term, per gene)
 	zpzBlockSS := mpc_core.InitRVec(rtype.Zero(), nB)  // zᵀPz     (Burden variance, per gene; unscaled)
 	nProbes := ast.general.config.SkatPValueProbes     // trace-column budget (exact basis when m<=budget); 0 = disabled
-	s1B := mpc_core.InitRVec(rtype.Zero(), nB)         // SKAT kernel moments per gene (N-normalized), if enabled
-	s2B := mpc_core.InitRVec(rtype.Zero(), nB)
-	s3B := mpc_core.InitRVec(rtype.Zero(), nB)
+	var s1B, s2B, s3B mpc_core.RVec
+	if nProbes > 0 {
+		s1B = mpc_core.InitRVec(rtype.Zero(), nB) // SKAT kernel moments per gene (N-normalized)
+		s2B = mpc_core.InitRVec(rtype.Zero(), nB)
+		s3B = mpc_core.InitRVec(rtype.Zero(), nB)
+	}
 	blockSecs := make([]float64, 0, nB)
 	// ETA weight: the moment cost is O(m_pub²·probes), so weight each gene by nsnps² of its public block.
 	var totalWork, doneWork float64
@@ -244,12 +247,12 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 		gl := ast.computeGeneLocal(b, nsnps, X, y0)
 		tLocal := ast.metricEnd("gene_local_public_gtg_gtx_gty", localMark)
 
-		// PART A: secure SKAT over the public list (existing per-block path).
+		// PART A: secure SKAT over the public variant list.
 		var wA mpc_core.RVec // unsigned weight from PART A, reused by burden/moment paths below
 		var tPublic, tPrivateLocal, tPrivateShare, tBurden, tMoments time.Duration
 		if nsnps > 0 {
 			t := time.Now()
-			skatA, burdenA, wPub := ast.blockStat(nsnps, null, gl)
+			skatA, burdenA, wPub := ast.blockStat(nsnps, null, gl.LocalContraction)
 			tPublic = time.Since(t)
 			accSkat.Add(skatA)
 			accBurden.Add(burdenA)
@@ -315,10 +318,9 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
 	totalInds := ast.skatTotalNumInds()
 	invSqrtN := rtype.FromFloat64(1.0/math.Sqrt(float64(totalInds)), fb)
-	bLinNorm := bLinBlockSS.Copy()
-	bLinNorm.MulScalar(invSqrtN)
-	bLinNorm = mpcObj.TruncVec(bLinNorm, db, fb)
-	burdenBlockSS := mpcObj.TruncVec(mpcObj.SSSquareElemVec(bLinNorm), db, fb)
+	bLinBlockSS.MulScalar(invSqrtN)
+	bLinNorm := mpcObj.TruncVec(bLinBlockSS, db, fb)
+	burdenBlockSS := ast.ssSquare(bLinNorm)
 
 	// Common 1/(2σ̂²) applied once to both stats (linear, distributes over A+B).
 	scaleSS, ok := ast.general.rareVariantScaleShares(null.rssSS)
@@ -338,17 +340,16 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	burdenPMark := ast.metricMark()
 	sqrtBurden, _ := mpcObj.SqrtAndSqrtInverse(burdenBlockSS, false)
 	_, invSqrtZpz := mpcObj.SqrtAndSqrtInverse(zpzBlockSS, false)
-	sqrtT2 := mpcObj.TruncVec(mpcObj.SSMultElemVec(sqrtBurden, invSqrtZpz), db, fb)
+	sqrtT2 := ast.ssMul(sqrtBurden, invSqrtZpz)
 	ast.metricEnd("finalize_burden_pvalue", burdenPMark)
 
-	// SKAT p-value pivot z per gene: Q_norm = (scaled SKAT stat)/N, then WH z = skatZSS(Q,S1,S2,S3).
+	// SKAT p-value pivot z per gene: Q_norm = (scaled SKAT stat)/N, then WH z = skatZSSVec(Q,S1,S2,S3).
 	// Reveal only z (Q_skat, moments stay secret); driver applies p = ½erfc(z/√2).
 	if nProbes > 0 {
 		skatPMark := ast.metricMark()
 		invN := rtype.FromFloat64(1.0/float64(totalInds), fb)
-		qNorm := skatBlockSS.Copy()
-		qNorm.MulScalar(invN)
-		qNorm = mpcObj.TruncVec(qNorm, db, fb)
+		skatBlockSS.MulScalar(invN)
+		qNorm := mpcObj.TruncVec(skatBlockSS, db, fb)
 		zB := ast.skatZSSVec(qNorm, s1B, s2B, s3B)
 		skatZStat = mpcObj.SSToCVec(cps, zB)
 		ast.metricEnd("finalize_skat_pvalue", skatPMark)

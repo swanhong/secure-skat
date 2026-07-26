@@ -19,7 +19,6 @@ func (ast *AssocTest) secureClampVec(x mpc_core.RVec, loPub, hiPub float64) mpc_
 	fb := mpcObj.GetFracBits()
 	bv := mpcObj.GetBooleanShareFlag()
 	n := len(x)
-	// cond ? bound : x via the shared select; bound is a hub-only public share (hubVec).
 	x = ast.secureSelectVec(mpcObj.LessThanPublic(x, rtype.FromFloat64(loPub, fb), bv), ast.hubVec(loPub, n), x)    // x<lo → lo
 	x = ast.secureSelectVec(mpcObj.NotLessThanPublic(x, rtype.FromFloat64(hiPub, fb), bv), ast.hubVec(hiPub, n), x) // x≥hi → hi
 	return x
@@ -29,12 +28,12 @@ func (ast *AssocTest) secureClampVec(x mpc_core.RVec, loPub, hiPub float64) mpc_
 func (ast *AssocTest) secureSelectVec(cond, whenTrue, whenFalse mpc_core.RVec) mpc_core.RVec {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
-	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
+	fb := mpcObj.GetFracBits()
 	cond = cond.Copy()
 	cond.MulScalar(rtype.FromFloat64(1.0, fb))
 	diff := whenTrue.Copy()
 	diff.Sub(whenFalse)
-	delta := mpcObj.TruncVec(mpcObj.SSMultElemVec(cond, diff), db, fb)
+	delta := ast.ssMul(cond, diff)
 	out := whenFalse.Copy()
 	out.Add(delta)
 	return out
@@ -59,7 +58,7 @@ func (ast *AssocTest) secureCbrtVec(x mpc_core.RVec) mpc_core.RVec {
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
 	n := len(x)
 
-	mul, square, pmul := ast.ssMul, ast.ssSquare, ast.ssPMul // shared fixed-point SS primitives
+	mul, square, pmul := ast.ssMul, ast.ssSquare, ast.ssPMul
 	addScaledBits := func(dst, bits mpc_core.RVec, cf float64) {
 		cfE := rtype.FromFloat64(cf, fb)
 		for i := range dst {
@@ -78,9 +77,8 @@ func (ast *AssocTest) secureCbrtVec(x mpc_core.RVec) mpc_core.RVec {
 	// If n nested ladder predicates hold, these linear identities give the secret factors:
 	//   8^-n = 1 - Σ 7/8^(k+1),  2^n = 1 + Σ 2^k,
 	//   8^n  = 1 + Σ 7·8^k,      2^-n = 1 - Σ 2^-(k+1).
-	// A group is capped so its smallest fractional and largest integer coefficient are representable;
-	// repeating a public number of groups supports asymmetric db/fb configs (e.g. FED_DATABITS=80/100)
-	// as well as 60/30 — the step counts are derived from db/fb, not hard-coded.
+	// A group is capped so its smallest fractional and largest integer coefficient are representable.
+	// Repeating public groups supports asymmetric db/fb configurations.
 	integerBits := db - fb - 1
 	if integerBits < 4 || fb < 3 {
 		panic("secureCbrtVec: fixed-point format needs at least 4 integer and 3 fractional bits")
@@ -234,9 +232,8 @@ func matTraceProduct(a, b [][]float64) float64 {
 	return s
 }
 
-// skatTraceProbes returns public probe columns and their trace multiplier. When requested >= m,
-// the m standard-basis vectors give an exact trace with fewer columns; otherwise deterministic
-// Rademacher probes preserve the existing estimator. The branch depends only on public dimensions.
+// skatTraceProbes uses the standard basis for an exact trace when requested >= m and deterministic
+// Rademacher probes otherwise. The branch depends only on public dimensions.
 func skatTraceProbes(m, requested int, seed int64) (values [][]float64, multiplier float64, exact bool) {
 	if requested <= 0 {
 		panic("skatTraceProbes: requested must be positive")
@@ -344,7 +341,7 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, priv *
 		for i := range a {
 			flat = append(flat, a[i]...)
 		}
-		sq := mpcObj.TruncVec(mpcObj.SSSquareElemVec(flat), db, fb)
+		sq := ast.ssSquare(flat)
 		acc := rtype.Zero()
 		for i := range sq {
 			acc = acc.Add(sq[i])
@@ -364,7 +361,7 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, priv *
 		}
 		return sumAllMat(elemMulM(a, transpose(bb)))
 	}
-	vdot := ast.ssDot                                                   // shared SS dot product
+	vdot := ast.ssDot
 	scaleRows := func(d mpc_core.RVec, M mpc_core.RMat) mpc_core.RMat { // row j × d[j]
 		if len(M) == 0 {
 			return M
@@ -403,12 +400,11 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, priv *
 	Up := mpc_core.InitRMat(rtype.Zero(), m, c)
 	sppDiag := mpc_core.InitRVec(rtype.Zero(), m)
 	if pid > 0 && nsnps > 0 {
-		g := gl
-		gg = g.gg
+		gg = gl.gg
 		for j := 0; j < m; j++ {
 			sppDiag[j] = rtype.FromFloat64(gg.At(j, j)/N, fb)
 			for l := 0; l < c; l++ {
-				Up[j][l] = rtype.FromFloat64(g.GtX.At(j, l)/N, fb)
+				Up[j][l] = rtype.FromFloat64(gl.GtX.At(j, l)/N, fb)
 			}
 		}
 	}
@@ -427,7 +423,7 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, priv *
 	Dp2 := mpc_core.InitRVec(rtype.Zero(), m)
 	if m > 0 {
 		Theta = ssMulM(Up, Omp)
-		Dp2 = mpcObj.TruncVec(mpcObj.SSSquareElemVec(w), db, fb)
+		Dp2 = ast.ssSquare(w)
 	}
 	upT := transpose(Up)
 
@@ -741,7 +737,7 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, priv *
 					tauRight[idx] = Up[j][l]
 				}
 			}
-			tauTerms := mpcObj.TruncVec(mpcObj.SSMultElemVec(tauLeft, tauRight), db, fb)
+			tauTerms := ast.ssMul(tauLeft, tauRight)
 			tau1Acc := rtype.Zero()
 			for i := 0; i < m; i++ {
 				tau1Acc = tau1Acc.Add(tauTerms[i])
@@ -823,7 +819,7 @@ func skatSkewFloor(fracBits int) float64 {
 	return math.Max(1e-4, 3.0*math.Sqrt(math.Ldexp(1.0, -fracBits)))
 }
 
-// skatZSS assembles the Wilson-Hilferty pivot z from (Q, S1, S2, S3) in secret shares (δ=0, S4 unused).
+// skatZSSVec assembles the Wilson-Hilferty pivot z from (Q, S1, S2, S3) in secret shares (δ=0, S4 unused).
 // Uses the algebraically reduced Liu form s=S3/S2^1.5, u=(Q−S1)s/√S2, h=2s²/9:
 //
 //	z = (∛(arg) − 1 + h)/√h.
@@ -834,7 +830,7 @@ func (ast *AssocTest) skatZSSVec(Q, S1, S2, S3 mpc_core.RVec) mpc_core.RVec {
 	rtype := mpcObj.GetRType()
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
 	hub := mpcObj.GetPid() == mpcObj.GetHubPid()
-	mul, square, pmul := ast.ssMul, ast.ssSquare, ast.ssPMul // shared fixed-point SS primitives
+	mul, square, pmul := ast.ssMul, ast.ssSquare, ast.ssPMul
 	// Record the PSD/fixed-point domain guard before clamping. The bit remains secret; invalid,
 	// underflow, or unrepresentably large genes use safe surrogate inputs and end at z=-9 (p≈1).
 	momentFloor := skatMomentFloor(fb)

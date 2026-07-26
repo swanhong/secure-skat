@@ -402,7 +402,7 @@ func TestSecureSKATEndToEnd(t *testing.T) {
 	}
 }
 
-// --- low-rank local plaintext contraction (skat.go LocalContract) ---
+// --- low-rank local genotype contraction ---
 
 func rowSlice(m *mat.Dense, r0, r1 int) *mat.Dense {
 	_, c := m.Dims()
@@ -428,25 +428,13 @@ func matApprox(t *testing.T, name string, got, want *mat.Dense, tol float64) {
 	}
 }
 
-// LocalContract matches gonum on the full cohort (correctness).
+// localGenotypeContract matches gonum on the full cohort.
 func TestSKATLocalMatchesGonum(t *testing.T) {
 	G, X, y := plainFixture()
 	n, _ := X.Dims()
 	yv := mat.NewVecDense(n, y)
 
-	lc := LocalContract(G, X, y)
-
-	var XtX mat.Dense
-	XtX.Mul(X.T(), X)
-	matApprox(t, "XtX", lc.XtX, &XtX, 1e-9)
-
-	var Xty mat.VecDense
-	Xty.MulVec(X.T(), yv)
-	vecApprox(t, "Xty0", lc.Xty0, vecToSlice(&Xty), 1e-9)
-
-	if !approxEqual(lc.Y0ty0, mat.Dot(yv, yv), 1e-9) {
-		t.Errorf("y0ty0: got %.12g want %.12g", lc.Y0ty0, mat.Dot(yv, yv))
-	}
+	lc := localGenotypeContract(G, X, y)
 
 	var GtX mat.Dense
 	GtX.Mul(G.T(), X)
@@ -469,20 +457,22 @@ func TestSKATLocalMatchesGonum(t *testing.T) {
 // n-independence invariant: Σ over party row-slices == full cohort.
 func TestSKATLocalPartyAdditivity(t *testing.T) {
 	G, X, y := plainFixture() // n=6
-	full := LocalContract(G, X, y)
+	full := localGenotypeContract(G, X, y)
 
-	p1 := LocalContract(rowSlice(G, 0, 3), rowSlice(X, 0, 3), y[0:3])
-	p2 := LocalContract(rowSlice(G, 3, 6), rowSlice(X, 3, 6), y[3:6])
-	sum := p1.Add(p2)
-
-	matApprox(t, "XtX", sum.XtX, full.XtX, 1e-9)
-	vecApprox(t, "Xty0", sum.Xty0, full.Xty0, 1e-9)
-	if !approxEqual(sum.Y0ty0, full.Y0ty0, 1e-9) {
-		t.Errorf("y0ty0: got %.12g want %.12g", sum.Y0ty0, full.Y0ty0)
+	p1 := localGenotypeContract(rowSlice(G, 0, 3), rowSlice(X, 0, 3), y[0:3])
+	p2 := localGenotypeContract(rowSlice(G, 3, 6), rowSlice(X, 3, 6), y[3:6])
+	addVec := func(a, b []float64) []float64 {
+		out := make([]float64, len(a))
+		for i := range out {
+			out[i] = a[i] + b[i]
+		}
+		return out
 	}
-	matApprox(t, "GtX", sum.GtX, full.GtX, 1e-9)
-	vecApprox(t, "Gty0", sum.Gty0, full.Gty0, 1e-9)
-	vecApprox(t, "dosageSum", sum.DosageSum, full.DosageSum, 1e-9)
+	var GtX mat.Dense
+	GtX.Add(p1.GtX, p2.GtX)
+	matApprox(t, "GtX", &GtX, full.GtX, 1e-9)
+	vecApprox(t, "Gty0", addVec(p1.Gty0, p2.Gty0), full.Gty0, 1e-9)
+	vecApprox(t, "dosageSum", addVec(p1.DosageSum, p2.DosageSum), full.DosageSum, 1e-9)
 }
 
 // --- low-rank null model (skat.go localNullEquations / nullSetup / RSS) ---
@@ -766,7 +756,7 @@ func TestSKATScore(t *testing.T) {
 				localG.Set(i, j, fullG.At(offset+i, j))
 			}
 		}
-		lc := LocalContract(localG, localX, localY0)
+		lc := localGenotypeContract(localG, localX, localY0)
 		SBlock = crypto.CipherMatrix{assocTest.scoreHE(lc.GtX, lc.Gty0, null)}
 	}
 
@@ -967,7 +957,7 @@ func TestSKATLocalOrientation(t *testing.T) {
 	}
 }
 
-// --- low-rank driver (skat.go ComputeSKATStatistics, file-backed) ---
+// --- file-backed secure SKAT driver ---
 
 // File-backed driver E2E: reads per-party "blocks"-format genotype fixtures, runs the full
 // low-rank path over 3 blocks, and compares decrypted Q/Burden to the plaintext oracle.
@@ -1372,8 +1362,7 @@ func TestSecureCbrt(t *testing.T) {
 	}
 }
 
-// TestSecureClamp checks the vectorized secure min/max primitive used by the moment guards and the
-// overflow-safe WH skew-ratio path. secureCbrt itself now uses signed range reduction, not a clamp.
+// TestSecureClamp checks the secure min/max primitive used by the moment guards and WH skew-ratio path.
 func TestSecureClamp(t *testing.T) {
 	prot := InitProtocolForTest(t)
 	if prot == nil {
@@ -1410,9 +1399,9 @@ func TestSecureClamp(t *testing.T) {
 	}
 }
 
-// TestSKATZSS checks the reduced WH circuit, including an arg beyond the former cube-root clamp and
-// branch-free handling of degenerate moments. Inputs are additive shares (hub owns the public fixture).
-func TestSKATZSS(t *testing.T) {
+// TestSKATZSSVec checks the reduced WH circuit on large positive arguments and degenerate moments
+// using additive-share inputs.
+func TestSKATZSSVec(t *testing.T) {
 	prot := InitProtocolForTest(t)
 	if prot == nil {
 		return
@@ -1465,9 +1454,9 @@ func TestSKATZSS(t *testing.T) {
 		if tc.valid {
 			want = whClampedZ(tc.q, tc.s1, tc.s2, tc.s3)
 		}
-		t.Logf("skatZSS[%d] = %.6f (want %.6f)", i, got[i], want)
+		t.Logf("skatZSSVec[%d] = %.6f (want %.6f)", i, got[i], want)
 		if math.Abs(got[i]-want) > 5e-3 {
-			t.Errorf("skatZSS[%d]: got %.6f want %.6f", i, got[i], want)
+			t.Errorf("skatZSSVec[%d]: got %.6f want %.6f", i, got[i], want)
 		}
 	}
 }
@@ -1563,7 +1552,7 @@ func TestSKATMomentsSS(t *testing.T) {
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
 	gl := assocTest.computeGeneLocal(0, mPub, X, y0)
 	pl := assocTest.computePrivateGeneLocal(privG, X, y0, gl, true)
-	qPub, _, wPub := assocTest.blockStat(mPub, null, gl)
+	qPub, _, wPub := assocTest.blockStat(mPub, null, gl.LocalContraction)
 	qPriv, _ := assocTest.privateBlockStat(pl, null, 2)
 	qRaw := mpc_core.RVec{qPub[0].Add(qPriv[0])}
 	scaleSS, ok := assocTest.general.rareVariantScaleShares(null.rssSS)

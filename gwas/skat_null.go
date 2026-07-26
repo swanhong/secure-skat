@@ -10,12 +10,9 @@ import (
 	"gonum.org/v1/gonum/mat"
 )
 
-// LocalContraction is one party's plaintext contraction of (G, X, y0): only c-/m-dim
-// aggregates (never n), additive across parties so Σ_party == full-cohort contraction.
+// LocalContraction holds one party's n-free, gene-dependent aggregates of (G, X, y0).
+// Its fields add component-wise across parties to the pooled contraction.
 type LocalContraction struct {
-	XtX       *mat.Dense // c×c
-	Xty0      []float64  // c
-	Y0ty0     float64
 	GtX       *mat.Dense // m×c
 	Gty0      []float64  // m
 	DosageSum []float64  // m
@@ -29,8 +26,7 @@ func vecToSlice(v *mat.VecDense) []float64 {
 	return out
 }
 
-// localGenotypeContract computes only the gene-dependent fields. Per-gene SKAT callers use this
-// instead of recomputing the null-only XtX, Xty0, and y0ty0 for every public/private block.
+// localGenotypeContract computes the gene-dependent contraction used by per-gene SKAT.
 func localGenotypeContract(G, X *mat.Dense, y0 []float64) LocalContraction {
 	n, _ := X.Dims()
 	gn, m := G.Dims()
@@ -109,8 +105,12 @@ func localNullEquations(cov, pheno *mat.Dense, center float64) localNull {
 		}
 		y0[i] = pheno.At(i, 0) - center
 	}
-	xtx, xty, yty := normalEqs(X, mat.NewVecDense(n, y0))
-	return localNull{X: X, Y0: y0, XtX: xtx, Xty0: xty, Y0ty0: yty}
+	y0v := mat.NewVecDense(n, y0)
+	var XtX mat.Dense
+	XtX.Mul(X.T(), X)
+	var Xty mat.VecDense
+	Xty.MulVec(X.T(), y0v)
+	return localNull{X: X, Y0: y0, XtX: &XtX, Xty0: vecToSlice(&Xty), Y0ty0: mat.Dot(y0v, y0v)}
 }
 
 // matrices flattens the c-dim aggregates into the plaintext forms the encoders consume;
@@ -280,8 +280,8 @@ func (ast *AssocTest) nullSetup() (null skatNull, X *mat.Dense, y0 []float64) {
 	xtxSS := mpcObj.CMatToSS(cps, rtype, xtxEnc, -1, c, 1, c)
 	xtySS := mpcObj.CiphertextToSS(cps, rtype, firstCt(xtyEnc), mpcObj.GetHubPid(), c)
 	xtxL, xtxDinv := ast.choleskyFactor(xtxSS)
-	// Solve [β̂ | Ω']=(XᵀX)⁻¹[Xᵀy₀ | N·I] as one c×(c+1) RHS. Batching removes a duplicate
-	// forward/back-substitution schedule, and cached Ω'=N(XᵀX)⁻¹ removes every per-gene solve.
+	// Solve [β̂ | Ω']=(XᵀX)⁻¹[Xᵀy₀ | N·I] as one batched RHS and reuse
+	// Ω'=N(XᵀX)⁻¹ for every gene.
 	rhs := mpc_core.InitRMat(rtype.Zero(), c, c+1)
 	for i := 0; i < c; i++ {
 		rhs[i][0] = xtySS[i]
@@ -303,8 +303,8 @@ func (ast *AssocTest) nullSetup() (null skatNull, X *mat.Dense, y0 []float64) {
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: XtX->SS + Cholesky solve %v", solveDuration.Round(time.Millisecond)))
 	betaMark := ast.metricMark()
 
-	// betaRep[ℓ] = β̂_ℓ replicated in every slot (for the score's CPMult). Convert all
-	// c rows in one masked SS→CKKS schedule instead of c separate collective conversions.
+	// betaRep[ℓ] = β̂_ℓ replicated in every slot for the score's CPMult.
+	// Convert all c rows in one masked SS→CKKS schedule.
 	var betaRepSS mpc_core.RMat
 	if pid > 0 { // pid 0 sits out SSToCMat and needs no c×slots temporary
 		slots := cps.GetSlots()

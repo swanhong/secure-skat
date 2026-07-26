@@ -4,13 +4,9 @@ import (
 	mpc_core "github.com/hhcho/mpc-core"
 	"github.com/hhcho/sfgwas/crypto"
 	"github.com/tuneinsight/lattigo/v6/core/rlwe"
-	"gonum.org/v1/gonum/mat"
 )
 
-// Shared fixed-point SS primitives and RVec/RMat shape glue used across the secure-SKAT layer
-// (null model, score, burden, moments, p-value pivot). Every method derives mpcObj/rtype/db/fb from
-// ast.general.mpcObj[0], so a single source is bit-identical to the closures it replaces; truncation
-// stays at the call site for ssMatVec/asCol/col0 to keep each caller's Trunc schedule unchanged.
+// Fixed-point secret-sharing and shape helpers for secure SKAT.
 
 // ssMul returns TruncVec(a⊙b) at fracBits — secret×secret elementwise multiply.
 func (ast *AssocTest) ssMul(a, b mpc_core.RVec) mpc_core.RVec {
@@ -29,10 +25,7 @@ func (ast *AssocTest) ssPMul(a mpc_core.RVec, cf float64) mpc_core.RVec {
 	mpcObj := ast.general.mpcObj[0]
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
 	cfE := mpcObj.GetRType().FromFloat64(cf, fb)
-	out := make(mpc_core.RVec, len(a))
-	for i := range a {
-		out[i] = a[i].Mul(cfE)
-	}
+	out := mpc_core.RMultConstVec(cfE, a)
 	return mpcObj.TruncVec(out, db, fb)
 }
 
@@ -47,8 +40,7 @@ func (ast *AssocTest) ssDot(a, b mpc_core.RVec) mpc_core.RElem {
 	return acc
 }
 
-// ssMatVec returns column 0 of M·asCol(v) — the SS matrix×vector product, UNtruncated so callers
-// keep their existing TruncVec/TruncMat at the same site.
+// ssMatVec returns the untruncated secret-shared product M·v.
 func (ast *AssocTest) ssMatVec(M mpc_core.RMat, v mpc_core.RVec) mpc_core.RVec {
 	return col0(ast.general.mpcObj[0].SSMultMat(M, asCol(v)))
 }
@@ -56,14 +48,11 @@ func (ast *AssocTest) ssMatVec(M mpc_core.RMat, v mpc_core.RVec) mpc_core.RVec {
 // hubVec returns an additive share of the public constant cnst (hub holds it at fracBits, others 0).
 func (ast *AssocTest) hubVec(cnst float64, n int) mpc_core.RVec {
 	mpcObj := ast.general.mpcObj[0]
-	out := mpc_core.InitRVec(mpcObj.GetRType().Zero(), n)
+	e := mpcObj.GetRType().Zero()
 	if mpcObj.GetPid() == mpcObj.GetHubPid() {
-		e := mpcObj.GetRType().FromFloat64(cnst, mpcObj.GetFracBits())
-		for i := range out {
-			out[i] = e
-		}
+		e = mpcObj.GetRType().FromFloat64(cnst, mpcObj.GetFracBits())
 	}
-	return out
+	return mpc_core.InitRVec(e, n)
 }
 
 // asCol wraps v as an n×1 column RMat; col0 extracts column 0. Pure reshape, no arithmetic/truncation.
@@ -89,14 +78,4 @@ func firstCt(cv crypto.CipherVector) *rlwe.Ciphertext {
 		return cv[0]
 	}
 	return nil
-}
-
-// normalEqs forms the plaintext normal-equation pieces XᵀX (c×c), Xᵀy₀ (c), y₀ᵀy₀ shared by the
-// null model and the party-additivity contraction.
-func normalEqs(X *mat.Dense, y0v *mat.VecDense) (*mat.Dense, []float64, float64) {
-	var XtX mat.Dense
-	XtX.Mul(X.T(), X)
-	var Xty mat.VecDense
-	Xty.MulVec(X.T(), y0v)
-	return &XtX, vecToSlice(&Xty), mat.Dot(y0v, y0v)
 }

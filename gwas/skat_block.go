@@ -150,7 +150,7 @@ func loadDenseBlocks(prefix string, nGenes, n int) ([]*mat.Dense, error) {
 		}
 		m := int(fi.Size()) / n
 		if m == 0 {
-			blocks[b] = nil // gene with no private variants; privateQRaw(nil) -> Enc(0)
+			blocks[b] = nil // gene with no private variants
 			continue
 		}
 		blocks[b] = denseFromStream(NewGenoFileStream(path, uint64(n), uint64(m), false))
@@ -166,16 +166,15 @@ func (ast *AssocTest) readGenoBlockLocal(b int) *mat.Dense {
 
 // blockStat computes one block's raw statistics as 1-elem RVecs: qRawSS = Σw²s² and
 // bLinSS = Σw·s (burden linear term, squared by the caller).
-func (ast *AssocTest) blockStat(nsnps int, null skatNull, gl *geneLocal) (qRawSS, bLinSS, weightSS mpc_core.RVec) {
+func (ast *AssocTest) blockStat(nsnps int, null skatNull, lc LocalContraction) (qRawSS, bLinSS, weightSS mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	cps := ast.general.cps
 	pid := mpcObj.GetPid()
 
 	var GtX *mat.Dense
 	var Gty0 []float64
-	dosage := make([]float64, nsnps)
+	var dosage []float64
 	if pid > 0 {
-		lc := gl.LocalContraction
 		GtX, Gty0, dosage = lc.GtX, lc.Gty0, lc.DosageSum
 	}
 
