@@ -93,16 +93,14 @@ dsub_args=(
   --min-ram "$BATCH_MIN_RAM"
   --boot-disk-size "$BATCH_BOOT_DISK_SIZE"
   --disk-size "$BATCH_DISK_SIZE"
-  --input "CODE_BUNDLE=$BUNDLE_GCS"
-  --input "PGEN_PGEN=$GENO_GCS.pgen"
-  --input "PGEN_PVAR=$GENO_GCS.pvar"
-  --input "PGEN_PSAM=$GENO_GCS.psam"
-  --input "ANCESTRY_TSV=$COV_GCS"
-  --input "PHENO_CSV=$PHENO_GCS"
   --output-recursive "RESULTS=$RUN_GCS/results"
   --env
     "GOOGLE_CLOUD_PROJECT=$GOOGLE_CLOUD_PROJECT"
-    "HEARTBEAT_GCS=$RUN_GCS/heartbeat"
+    "BATCH_WORK_ROOT=$BATCH_WORK_ROOT"
+    "CODE_BUNDLE_GCS=$BUNDLE_GCS"
+    "GENO_GCS=$GENO_GCS"
+    "COV_GCS=$COV_GCS"
+    "PHENO_GCS=$PHENO_GCS"
   --script "$ROOT/${BATCH_SCRIPT:-scripts/aou/run_fed_batch.sh}"
 )
 
@@ -116,5 +114,4 @@ fi
 
 echo "results:   $RUN_GCS/results"
 echo "logs:      $RUN_GCS/logs"
-echo "heartbeat: $RUN_GCS/heartbeat/diag.log"
 echo "monitor: dstat --provider google-batch --project $GOOGLE_CLOUD_PROJECT --location $BATCH_REGION --status '*' --age 1d --summary"
