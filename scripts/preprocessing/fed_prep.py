@@ -47,10 +47,15 @@ CKKS_PARAMS = os.environ.get("FED_CKKS", "PN14QP438")  # PN13QP218 = ~half RAM (
 DATA_BITS = int(os.environ.get("FED_DATABITS", "60"))  # MPC fixed-point total bits; raise if large-n aggregates overflow
 FRAC_BITS = int(os.environ.get("FED_FRACBITS", "30"))  # fractional bits (integer range = DATA_BITS-FRAC_BITS)
 N_PCS = int(os.environ.get("FED_NPCS", "5"))     # first N PCs from ancestry_preds as covariates (age/sex deferred)
-N_SUB = int(os.environ.get("FED_NSUB", "5000"))  # samples per cohort; <= eligible//2. secure is n-independent
+N_SUB = os.environ.get("FED_NSUB", "5000")  # per-cohort samples; int, or "max"/"all" = full eligible split in half
 N_GENES = int(os.environ.get("FED_NGENES", "20"))  # genes (spread across chrom); >= chrom total picks all
 PROBES = int(os.environ.get("FED_PROBES", "0"))    # SKAT p: trace budget; exact if m_pub<=budget, else Hutchinson (0=off)
 SEED = 71
+
+
+def resolve_n_sub(n_eligible):
+    """FED_NSUB as an int, or 'max'/'all' -> half the eligible pool (use the full cohort, split A/B)."""
+    return n_eligible // 2 if str(N_SUB).strip().lower() in ("max", "all") else int(N_SUB)
 FRAC_SHARED, FRAC_PUBONLY = 0.6, 0.2   # rest = private
 PLINK2 = os.environ.get("PLINK2", "plink2")   # override: PLINK2=/path/to/plink2 python3 fed_prep.py
 MAX_ALLELE_LEN = 1000   # --set-all-var-ids cap; long indels keep full chr:pos:ref:alt key (chr22 max=193). Bump if a chrom exceeds this.
@@ -275,11 +280,15 @@ def run():
     ancestry_label = ANCESTRY_GROUP.upper() if ANCESTRY_GROUP else "all"
     print(f"  geno={len(gset)} pheno={len(pheno)} ancestry[{ancestry_label}]={len(pcs)} | "
           f"geno∩pheno={len(gset & pheno.keys())} geno∩pc={len(gset & pcs.keys())} eligible={len(eligible)}")
-    if len(eligible) < 2 * N_SUB:
-        raise SystemExit(f"only {len(eligible)} eligible samples < 2*N_SUB={2 * N_SUB} (check person_id==research_id matching)")
+    ns = resolve_n_sub(len(eligible))
+    if len(eligible) < 2 * ns:
+        raise SystemExit(f"only {len(eligible)} eligible samples < 2*n_sub={2 * ns} (check person_id==research_id matching)")
+    # 'max'/'all' uses the whole pool; an odd leftover goes to cohort A (A = ns+1).
+    a_n = len(eligible) - ns if str(N_SUB).strip().lower() in ("max", "all") else ns
+    print(f"  cohorts A={a_n} B={ns} (FED_NSUB={N_SUB}) -> {a_n + ns} of {len(eligible)} eligible used")
     perm = sample_rng.permutation(len(eligible))
-    A_ids = [eligible[i] for i in perm[:N_SUB]]
-    B_ids = [eligible[i] for i in perm[N_SUB:2 * N_SUB]]
+    A_ids = [eligible[i] for i in perm[:a_n]]
+    B_ids = [eligible[i] for i in perm[a_n:a_n + ns]]
     write_lines(f"{OUT_DIR}/A.keep", A_ids, "#IID"); write_lines(f"{OUT_DIR}/B.keep", B_ids, "#IID")
 
     gene_keys, priv_keys, roles_all, all_keys = [], [], {}, []
@@ -432,9 +441,10 @@ def check():
     ancestry_label = ANCESTRY_GROUP.upper() if ANCESTRY_GROUP else "all"
     print(f"samples: geno={len(geno)}  ancestry[{ancestry_label}](PC)={len(anc)}  pheno(LDL)={len(phe)}")
     print(f"  pairwise: geno∩pheno={len(geno & phe)}  geno∩anc={len(geno & anc)}  anc∩pheno={len(anc & phe)}")
-    print(f"  eligible (geno∩anc∩pheno) = {len(elig)}   (need ≥ 2*N_SUB = {2 * N_SUB})")
-    if len(elig) < 2 * N_SUB:
-        print("  !! eligible < 2*N_SUB → lower FED_NSUB, or person_id!=research_id namespace mismatch")
+    ns = resolve_n_sub(len(elig))
+    print(f"  eligible (geno∩anc∩pheno) = {len(elig)}   (n_sub={ns}/cohort, need ≥ 2*n_sub = {2 * ns})")
+    if len(elig) < 2 * ns:
+        print("  !! eligible < 2*n_sub → lower FED_NSUB, or person_id!=research_id namespace mismatch")
 
     genes = load_gencode_genes(GENCODE, CHR, N_GENES)
     counts = count_variants(f"{PGEN}.pvar", genes)
