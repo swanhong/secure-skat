@@ -8,18 +8,28 @@ INPUT=$WORK/input
 RUN=$WORK/run
 mkdir -p "$REPO" "$INPUT" "$RUN" "$RESULTS"
 
-finish_diag() {
+LOG=$RESULTS/$([ "$DIAG" = 1 ] && echo diag_report.txt || echo run_log.txt)
+exec > "$LOG" 2>&1
+
+# dsub uploads $RESULTS only at the end (and only on success), so live-stream the
+# log to GCS every 20s. Watch: watch -n20 "gcloud storage cat $LIVE_LOG_GCS | tail -40"
+if [ -n "${LIVE_LOG_GCS:-}" ]; then
+  ( while :; do sleep 20; gsutil -q cp "$LOG" "$LIVE_LOG_GCS" 2>/dev/null || true; done ) &
+  STREAM_PID=$!
+fi
+
+finish() {
   local rc=$?
   trap - EXIT
+  [ -n "${STREAM_PID:-}" ] && kill "$STREAM_PID" 2>/dev/null || true
   cp "$RUN"/prep.log "$RUN"/party*.log "$RESULTS"/ 2>/dev/null || true
   echo "exit=$rc"
-  exit 0
+  [ -n "${LIVE_LOG_GCS:-}" ] && gsutil -q cp "$LOG" "$LIVE_LOG_GCS" 2>/dev/null || true
+  # diag always succeeds so $RESULTS delocalizes; real run keeps its real exit code
+  # (its log already lives in $LIVE_LOG_GCS even on failure).
+  [ "$DIAG" = 1 ] && exit 0 || exit "$rc"
 }
-
-if [ "$DIAG" = 1 ]; then
-  exec > "$RESULTS/diag_report.txt" 2>&1
-  trap finish_diag EXIT
-fi
+trap finish EXIT
 
 gsutil -u "$GOOGLE_CLOUD_PROJECT" cp "$CODE_BUNDLE_GCS" "$WORK/code.tar.gz"
 tar -xzf "$WORK/code.tar.gz" -C "$REPO"
@@ -45,7 +55,7 @@ echo ">>> setup done (plink2=$PLINK2) — launching run_fed.sh"
 
 if [ "$DIAG" = 1 ]; then
   export FED_SPLIT_ANCESTRY=0 FED_ANCESTRY_GROUP=EUR
-  export FED_NGENES=1 FED_NSUB=1000 FED_PROBES=1
+  export FED_NGENES=1 FED_NSUB=max FED_PROBES=1   # 1 gene, full-ancestry n (validates DATABITS at scale)
   timeout 480 bash "$REPO/run_fed.sh"
 else
   bash "$REPO/run_fed.sh"

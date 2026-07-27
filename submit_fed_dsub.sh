@@ -41,7 +41,9 @@ dsub \
   --output-recursive "RESULTS=$RUN_GCS/results" \
   --env "GOOGLE_CLOUD_PROJECT=$GOOGLE_CLOUD_PROJECT" \
         "CODE_BUNDLE_GCS=$CODE_GCS" "BATCH_DIAG=$DIAG" \
+        "LIVE_LOG_GCS=$RUN_GCS/live.log" \
   --script "$ROOT/scripts/aou/run_fed_batch.sh"
 
 echo "results: $RUN_GCS/results"
 echo "logs:    $RUN_GCS/logs"
+echo "live:    $RUN_GCS/live.log"

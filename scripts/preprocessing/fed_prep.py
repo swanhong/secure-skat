@@ -147,7 +147,7 @@ def write_config_helpers(gene_keys, chrom, out_dir):
     return sum(sizes)
 
 
-def write_configs(out_dir, num_snps, n_blocks, keys_path):
+def write_configs(out_dir, num_snps, n_blocks, keys_path, n_a, n_b):
     """Generate the sfgwas skat_fed config (global + party 0/1/2) with paths into out_dir, so the
     data dims (num_snps/num_inds/num_covs/n_blocks) always match the data. n_blocks = genes that
     actually have variants (< N_GENES when some picked genes are empty). Run: SFGWAS_CONFIG_PATH=<out>/config."""
@@ -164,7 +164,7 @@ mpc_data_bits = {DATA_BITS}
 mpc_frac_bits = {FRAC_BITS}
 div_sqrt_max_len = 1000000
 mpc_boolean_shares = true
-num_inds = [0, {N_SUB}, {N_SUB}]
+num_inds = [0, {n_a}, {n_b}]
 num_snps = {num_snps}
 num_covs = {N_PCS}
 cov_all_ones = false
@@ -304,10 +304,10 @@ def run():
 
     # (4) extract genotypes (plink2 -> int8), reorder to a single key->column map
     Ag, Ak, Afam = plink_extract_to_int8(PGEN, f"{OUT_DIR}/A.keep", f"{OUT_DIR}/A_keys.txt",
-                                         N_SUB, f"{OUT_DIR}/A_geno")
+                                         a_n, f"{OUT_DIR}/A_geno")
     tmr["extract_A"] = time.perf_counter() - t; t = time.perf_counter()
     Bg, Bk, Bfam = plink_extract_to_int8(PGEN, f"{OUT_DIR}/B.keep", f"{OUT_DIR}/B_keys.txt",
-                                         N_SUB, f"{OUT_DIR}/B_geno")
+                                         ns, f"{OUT_DIR}/B_geno")
     tmr["extract_B"] = time.perf_counter() - t; t = time.perf_counter()
     A_geno, B_geno, keycol = merge_cohort_columns(Ag, Ak, Bg, Bk)
     del Ag, Bg  # free pre-merge matrices (RAM-tight workbench)
@@ -323,7 +323,7 @@ def run():
     print("run (real AoU pgen):")
     write_blocks(gene_keys, priv_keys, roles_all, A_geno, B_geno, keycol, OUT_DIR)
     num_snps = write_config_helpers(gene_keys, CHR, OUT_DIR)
-    write_configs(OUT_DIR, num_snps, len(gene_keys), KEYS_PATH)
+    write_configs(OUT_DIR, num_snps, len(gene_keys), KEYS_PATH, len(Afam), len(Bfam))
     write_cov(Afam, pcs, f"{OUT_DIR}/A/cov.txt")
     write_cov(Bfam, pcs, f"{OUT_DIR}/B/cov.txt")
     write_pheno(Afam, pheno, f"{OUT_DIR}/A/pheno.txt")
