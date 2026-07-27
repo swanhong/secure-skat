@@ -1,9 +1,9 @@
 #!/bin/bash
 # End-to-end federated-private SKAT (#4 benchmark): prep -> build -> secure 3-party -> compare.
 #
-#   PLINK2=$HOME/plink2 bash run_fed.sh                                  # full run → $HOME/runs/out<YYMMDDHHMMSS>
+#   bash run_fed.sh                                                       # full run → $HOME/runs/out<YYMMDDHHMMSS>
 #   FED_SPLIT_ANCESTRY=1 FED_OUT=$HOME/runs/by_ancestry bash run_fed.sh  # run EUR/AFR/AMR separately
-#   PLINK2=$HOME/plink2 FED_NSUB=38000 FED_DATABITS=100 bash run_fed.sh  # scale n (needs more fixed-point range)
+#   FED_NSUB=38000 FED_DATABITS=100 bash run_fed.sh                       # scale n (needs more fixed-point range)
 #   FED_PREP_SRC=$HOME/fed_prep_out SKIP_PREP=1 SKIP_BUILD=1 bash run_fed.sh   # reuse a prior prep, archive results in a fresh dir
 #   FED_OUT=$HOME/runs/out260712202430 SKIP_PREP=1 SKIP_BUILD=1 bash run_fed.sh # re-run in an existing archived dir
 #
@@ -16,6 +16,18 @@
 # FED_PROBES=N (N>0) turns ON the SKAT p-value (exact traces when m_pub<=N, else Hutchinson → WH z;
 # 0 = Q+burden p only);
 set -eo pipefail
+
+# Prefer an explicit override, then the location used by setup_fed.sh, then PATH.
+if [ -z "${PLINK2:-}" ]; then
+  if [ -x "$HOME/plink2" ]; then
+    PLINK2="$HOME/plink2"
+  elif command -v plink2 >/dev/null 2>&1; then
+    PLINK2=$(command -v plink2)
+  else
+    PLINK2=plink2
+  fi
+fi
+export PLINK2
 
 REPO=$(cd "$(dirname "$0")" && pwd)
 if [ "${FED_SPLIT_ANCESTRY:-0}" = "1" ]; then

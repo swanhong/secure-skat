@@ -86,6 +86,7 @@ dsub_args=(
   --use-private-address
   --user-project "$GOOGLE_CLOUD_PROJECT"
   --name "$BATCH_JOB_NAME"
+  --timeout "${BATCH_TIMEOUT:-24h}"
   --logging "$RUN_GCS/logs"
   --image "$BATCH_IMAGE"
   --min-cores "$BATCH_MIN_CORES"
@@ -101,8 +102,8 @@ dsub_args=(
   --output-recursive "RESULTS=$RUN_GCS/results"
   --env
     "GOOGLE_CLOUD_PROJECT=$GOOGLE_CLOUD_PROJECT"
-    "BATCH_WORK_ROOT=$BATCH_WORK_ROOT"
-  --script "$ROOT/scripts/aou/run_fed_batch.sh"
+    "HEARTBEAT_GCS=$RUN_GCS/heartbeat"
+  --script "$ROOT/${BATCH_SCRIPT:-scripts/aou/run_fed_batch.sh}"
 )
 
 if [ "$MODE" = "--dry-run" ]; then
@@ -113,6 +114,7 @@ else
   dsub "${dsub_args[@]}"
 fi
 
-echo "results: $RUN_GCS/results"
-echo "logs:    $RUN_GCS/logs"
+echo "results:   $RUN_GCS/results"
+echo "logs:      $RUN_GCS/logs"
+echo "heartbeat: $RUN_GCS/heartbeat/diag.log"
 echo "monitor: dstat --provider google-batch --project $GOOGLE_CLOUD_PROJECT --location $BATCH_REGION --status '*' --age 1d --summary"
