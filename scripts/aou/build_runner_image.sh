@@ -12,9 +12,9 @@ trap 'rm -rf "$CTX"' EXIT
 cp "$ROOT/docker/Dockerfile" "$CTX/"
 cp "$PLINK2" "$CTX/plink2"
 
-# Artifact Registry doesn't auto-create the repo on push (unlike gcr.io); make it.
-gcloud artifacts repositories create "$(echo "$BATCH_IMAGE" | cut -d/ -f3)" \
-  --repository-format=docker --location="$BATCH_REGION" \
-  --project "$GOOGLE_CLOUD_PROJECT" 2>/dev/null || true
-
-gcloud builds submit "$CTX" --tag "$BATCH_IMAGE" --project "$GOOGLE_CLOUD_PROJECT"
+# GCR (gcr.io) auto-creates its backing bucket on first push, so no repo-create
+# permission is needed (the PET SA is denied artifactregistry.repositories.create).
+gcloud builds submit "$CTX" --tag "$BATCH_IMAGE" \
+  --project "$GOOGLE_CLOUD_PROJECT" --region "$BATCH_REGION" \
+  --gcs-source-staging-dir "$BATCH_ROOT/cloudbuild/source" \
+  --gcs-log-dir "$BATCH_ROOT/cloudbuild/logs"
