@@ -22,6 +22,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
   go -C "$ROOT" build -trimpath -mod=vendor -o "$TMP/repo/sfgwas" .
 cp -a "$ROOT/run_fed.sh" "$ROOT/fed_aou.conf" "$ROOT/scripts" "$TMP/repo/"
 cp -a "$ROOT/example_data/keys" "$TMP/repo/example_data/"
+cp -a "${PLINK2:-$HOME/plink2}" "$TMP/repo/plink2"   # runner image has no plink2
 tar --exclude='__pycache__' --exclude='*.pyc' \
   -C "$TMP/repo" -czf "$TMP/code.tar.gz" .
 gcloud storage cp "$TMP/code.tar.gz" "$CODE_GCS"
@@ -34,7 +35,7 @@ dsub \
   --subnetwork "projects/${GOOGLE_CLOUD_PROJECT}/regions/${BATCH_REGION}/subnetworks/subnetwork" \
   --use-private-address --user-project "$GOOGLE_CLOUD_PROJECT" \
   --name secure-skat-fed --timeout "$BATCH_TIMEOUT" \
-  --logging "$RUN_GCS/logs" --image "$BATCH_IMAGE" \
+  --logging "$RUN_GCS/logs" --image "${BATCH_IMAGE_OVERRIDE:-$BATCH_IMAGE}" \
   --min-cores "$BATCH_MIN_CORES" --min-ram "$BATCH_MIN_RAM" \
   --boot-disk-size "$BATCH_BOOT_DISK_SIZE" --disk-size "$BATCH_DISK_SIZE" \
   --output-recursive "RESULTS=$RUN_GCS/results" \
