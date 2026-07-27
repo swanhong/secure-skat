@@ -12,7 +12,7 @@ shared/public_only/private. Writes the int8 blocks the Go `skat_fed` mode reads:
     manifest.json     per-gene m (public/private)
 
 Block = row-major n*m int8 (dosage 0/1/2, missing<0 -> Go reads 0), same layout as
-plinkBedToBinary.py. Samples = geno ∩ pheno(LDL) ∩ ancestry(PC), join key person_id==research_id.
+plinkBedToBinary.py. Samples = geno ∩ pheno(LDL) ∩ ancestry(PC, optional group), join key person_id==research_id.
 Key = chr:pos:ref:alt / GRCh38 / biallelic / PASS (see .local/warning.md). Secure SKAT is
 n-independent, so N_SUB subsamples to keep blocks small while m stays realistic. Block
 assembly/alignment lives in skat_plain_local.py.
@@ -36,6 +36,7 @@ PGEN = os.path.expanduser(os.environ.get("FED_PGEN", f"{_V9}/exome/pgen/exome.{C
 GENCODE = os.path.expanduser(os.environ.get("FED_GENCODE",  # public GENCODE v44 pc-gene coords, committed next to this script
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "gencode_v44_pc_genes.bed")))
 ANCESTRY = os.path.expanduser(os.environ.get("FED_ANCESTRY", f"{_V9}/aux/ancestry/ancestry_preds.tsv"))
+ANCESTRY_GROUP = os.environ.get("FED_ANCESTRY_GROUP", "").strip().lower()
 PHENO_CSV = os.path.expanduser(os.environ.get("FED_PHENO",
     "~/workspace/gwas-data-wgs/pheno/v9_final_lipid_med_corrected_short_read_tot.csv"))
 PHENO_COL = os.environ.get("FED_PHENO_COL", "LDLC_final_mgdl_6sd_masked")  # LDL (mg/dL), continuous
@@ -83,7 +84,8 @@ def write_blocks(gene_keys, priv_keys, roles, A_geno, B_geno, keycol, out_dir):
     shared_m = [sum(1 for k in g if roles[k] == "shared") for g in gene_keys]
     pubonly_m = [sum(1 for k in g if roles[k] == "public_only") for g in gene_keys]
     priv_m = [b.shape[1] for b in B_priv]
-    json.dump({"n_genes": len(gene_keys),
+    json.dump({"ancestry_group": ANCESTRY_GROUP or "all",
+               "n_genes": len(gene_keys),
                "pub_m": [len(k) for k in gene_keys],  # public list = shared + public_only
                "priv_m": priv_m,
                "shared_m": shared_m,        # intersection (both cohorts)
@@ -94,18 +96,31 @@ def write_blocks(gene_keys, priv_keys, roles, A_geno, B_geno, keycol, out_dir):
           f"private={sum(priv_m)} total={sum(shared_m) + sum(pubonly_m) + sum(priv_m)}")
 
 
-def load_ancestry_pcs(path, n_pcs):
-    """research_id -> [n_pcs PCs] from AoU ancestry_preds.tsv (pca_features = '[v1, ..., v16]')."""
+def load_ancestry_pcs(path, n_pcs, ancestry_group=""):
+    """Load PCs, optionally keeping one ancestry from the AoU ancestry TSV."""
+    ancestry_group = ancestry_group.strip().lower()
     pcs = {}
     with open(path) as f:
         header = f.readline().rstrip("\n").split("\t")
         rid, pca = header.index("research_id"), header.index("pca_features")
+        ancestry = None
+        if ancestry_group:
+            for column in ("ancestry_pred_other", "ancestry_pred"):
+                if column in header:
+                    ancestry = header.index(column)
+                    break
+            if ancestry is None:
+                raise ValueError("ancestry TSV has no ancestry_pred_other or ancestry_pred column")
         for ln in f:
             x = ln.rstrip("\n").split("\t")
+            if ancestry is not None and x[ancestry].strip().lower() != ancestry_group:
+                continue
             vals = [float(v) for v in x[pca].strip().strip("[]").split(",")]
             if len(vals) < n_pcs:
                 raise ValueError(f"pca_features has {len(vals)} PCs < N_PCS={n_pcs}")
             pcs[x[rid]] = vals[:n_pcs]
+    if ancestry_group and not pcs:
+        raise ValueError(f"no ancestry rows matched FED_ANCESTRY_GROUP={ancestry_group}")
     return pcs
 
 
@@ -234,7 +249,8 @@ def plink_extract_to_int8(pgen, keep_file, keys_file, n, out_prefix):
 def run():
     """Real prep on the workbench. Reads AoU pgen, splits into 2 cohorts, writes genotype blocks."""
     run_started = time.perf_counter()
-    rng = np.random.default_rng(SEED)
+    sample_rng = np.random.default_rng(SEED)
+    role_rng = np.random.default_rng(SEED + 1)
     os.makedirs(OUT_DIR, exist_ok=True)
     tmr = {}
     t = time.perf_counter()
@@ -250,24 +266,25 @@ def run():
     gene_keys_all = scan_pvar_into_genes(f"{keyed}.pvar", genes)  # gene -> ordered [keys] (PASS only)
 
     # (3) eligible = geno ∩ pheno(LDL) ∩ ancestry(PC); split into cohort A/B; per-gene role split
-    pcs = load_ancestry_pcs(ANCESTRY, N_PCS)
+    pcs = load_ancestry_pcs(ANCESTRY, N_PCS, ANCESTRY_GROUP)
     pheno = load_pheno(PHENO_CSV, PHENO_COL)
     psam = [ln.split()[0] for ln in open(f"{PGEN}.psam") if not ln.startswith("#")]  # samples unchanged by keying
     gset = set(psam)
     eligible = [s for s in psam if s in pheno and s in pcs]
     # per-component + pairwise counts so a person_id!=research_id namespace mismatch is visible
-    print(f"  geno={len(gset)} pheno={len(pheno)} pc={len(pcs)} | "
+    ancestry_label = ANCESTRY_GROUP.upper() if ANCESTRY_GROUP else "all"
+    print(f"  geno={len(gset)} pheno={len(pheno)} ancestry[{ancestry_label}]={len(pcs)} | "
           f"geno∩pheno={len(gset & pheno.keys())} geno∩pc={len(gset & pcs.keys())} eligible={len(eligible)}")
     if len(eligible) < 2 * N_SUB:
         raise SystemExit(f"only {len(eligible)} eligible samples < 2*N_SUB={2 * N_SUB} (check person_id==research_id matching)")
-    perm = rng.permutation(len(eligible))
+    perm = sample_rng.permutation(len(eligible))
     A_ids = [eligible[i] for i in perm[:N_SUB]]
     B_ids = [eligible[i] for i in perm[N_SUB:2 * N_SUB]]
     write_lines(f"{OUT_DIR}/A.keep", A_ids, "#IID"); write_lines(f"{OUT_DIR}/B.keep", B_ids, "#IID")
 
     gene_keys, priv_keys, roles_all, all_keys = [], [], {}, []
     for keys in gene_keys_all:
-        roles, pub, priv = split_roles(rng, keys)
+        roles, pub, priv = split_roles(role_rng, keys)
         gene_keys.append(pub); priv_keys.append(priv)
         roles_all.update(roles); all_keys += keys
     A_extract = [k for k in all_keys if roles_all[k] in ("shared", "public_only")]
@@ -409,10 +426,11 @@ def check():
     """Dry-run: report sizes (sample N, eligible intersection, per-gene variant counts, A/B split)
     from the real files WITHOUT plink2 extraction or the secure run. Sanity-check before a full run."""
     geno = {ln.split()[0] for ln in open(f"{PGEN}.psam") if not ln.startswith("#")}
-    anc = set(load_ancestry_pcs(ANCESTRY, N_PCS))
+    anc = set(load_ancestry_pcs(ANCESTRY, N_PCS, ANCESTRY_GROUP))
     phe = set(load_pheno(PHENO_CSV, PHENO_COL))
     elig = geno & anc & phe
-    print(f"samples: geno={len(geno)}  ancestry(PC)={len(anc)}  pheno(LDL)={len(phe)}")
+    ancestry_label = ANCESTRY_GROUP.upper() if ANCESTRY_GROUP else "all"
+    print(f"samples: geno={len(geno)}  ancestry[{ancestry_label}](PC)={len(anc)}  pheno(LDL)={len(phe)}")
     print(f"  pairwise: geno∩pheno={len(geno & phe)}  geno∩anc={len(geno & anc)}  anc∩pheno={len(anc & phe)}")
     print(f"  eligible (geno∩anc∩pheno) = {len(elig)}   (need ≥ 2*N_SUB = {2 * N_SUB})")
     if len(elig) < 2 * N_SUB:

@@ -2,6 +2,7 @@
 # End-to-end federated-private SKAT (#4 benchmark): prep -> build -> secure 3-party -> compare.
 #
 #   PLINK2=$HOME/plink2 bash run_fed.sh                                  # full run → $HOME/runs/out<YYMMDDHHMMSS>
+#   FED_SPLIT_ANCESTRY=1 FED_OUT=$HOME/runs/by_ancestry bash run_fed.sh  # run EUR/AFR/AMR separately
 #   PLINK2=$HOME/plink2 FED_NSUB=38000 FED_DATABITS=100 bash run_fed.sh  # scale n (needs more fixed-point range)
 #   FED_PREP_SRC=$HOME/fed_prep_out SKIP_PREP=1 SKIP_BUILD=1 bash run_fed.sh   # reuse a prior prep, archive results in a fresh dir
 #   FED_OUT=$HOME/runs/out260712202430 SKIP_PREP=1 SKIP_BUILD=1 bash run_fed.sh # re-run in an existing archived dir
@@ -17,6 +18,24 @@
 set -eo pipefail
 
 REPO=$(cd "$(dirname "$0")" && pwd)
+if [ "${FED_SPLIT_ANCESTRY:-0}" = "1" ]; then
+  : "${FED_OUT:=$HOME/runs/out$(date +%y%m%d%H%M%S)}"
+  split_skip_build=${SKIP_BUILD:-}
+  echo "=== ancestry split: EUR, AFR, AMR -> $FED_OUT ==="
+  for ancestry in EUR AFR AMR; do
+    echo "=== ancestry: $ancestry ==="
+    FED_SPLIT_ANCESTRY=0 \
+    FED_ANCESTRY_GROUP=$ancestry \
+    FED_OUT="$FED_OUT/$ancestry" \
+    FED_PREP_SRC="${FED_PREP_SRC:+$FED_PREP_SRC/$ancestry}" \
+    SKIP_BUILD="$split_skip_build" \
+      bash "$REPO/run_fed.sh"
+    split_skip_build=1
+  done
+  echo "=== ancestry split complete: $FED_OUT ==="
+  exit 0
+fi
+
 # Each run lives in its own timestamped dir so past results are kept: FED_OUT unset → $HOME/runs/out<YYMMDDHHMMSS>
 # holds fed_in (prep blocks/config) + fed_out (secure results, compare csv). Set FED_OUT to reuse/target a dir.
 # FED_PREP_SRC=<prior run dir>: with SKIP_PREP, seed this run's fed_in from there (symlink blocks, copy+repath
@@ -150,10 +169,20 @@ if [ -n "$SKIP_PREP" ] && [ -n "$FED_PREP_SRC" ] && [ ! -f "$CFG/configGlobal.to
   find "$CFG" -name '*.toml' -exec sed -i.bak "s|$FED_PREP_SRC|$OUT|g" {} + && rm -f "$CFG"/*.bak
 fi
 
+if [ -n "$SKIP_PREP" ] && [ -n "$FED_ANCESTRY_GROUP" ]; then
+  [ -f "$OUT/manifest.json" ] || { echo "error: missing $OUT/manifest.json" >&2; exit 1; }
+  PREP_ANCESTRY=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("ancestry_group", ""))' "$OUT/manifest.json")
+  REQUESTED_ANCESTRY=$(printf '%s' "$FED_ANCESTRY_GROUP" | tr '[:upper:]' '[:lower:]')
+  [ "$PREP_ANCESTRY" = "$REQUESTED_ANCESTRY" ] || {
+    echo "error: requested ancestry $FED_ANCESTRY_GROUP, but prep contains ${PREP_ANCESTRY:-unknown}" >&2
+    exit 1
+  }
+fi
+
 echo "=== run dir: $OUT ==="
 echo "=== run knobs (env; blank = fed_prep default) ==="
-printf '  PLINK2=%s\n  FED_CHR=%s FED_NSUB=%s FED_NGENES=%s FED_NPCS=%s\n  FED_CKKS=%s FED_DATABITS=%s FED_FRACBITS=%s FED_PHENO_COL=%s\n   FED_PROBES=%s\n  SKIP_PREP=%s SKIP_BUILD=%s FED_CSV=%s FED_PREP_SRC=%s\n' \
-  "${PLINK2:-plink2}" "${FED_CHR:-}" "${FED_NSUB:-}" "${FED_NGENES:-}" "${FED_NPCS:-}" \
+printf '  PLINK2=%s\n  FED_SPLIT_ANCESTRY=%s FED_ANCESTRY_GROUP=%s FED_CHR=%s FED_NSUB=%s FED_NGENES=%s FED_NPCS=%s\n  FED_CKKS=%s FED_DATABITS=%s FED_FRACBITS=%s FED_PHENO_COL=%s\n   FED_PROBES=%s\n  SKIP_PREP=%s SKIP_BUILD=%s FED_CSV=%s FED_PREP_SRC=%s\n' \
+  "${PLINK2:-plink2}" "${FED_SPLIT_ANCESTRY:-0}" "${FED_ANCESTRY_GROUP:-}" "${FED_CHR:-}" "${FED_NSUB:-}" "${FED_NGENES:-}" "${FED_NPCS:-}" \
   "${FED_CKKS:-}" "${FED_DATABITS:-}" "${FED_FRACBITS:-}" "${FED_PHENO_COL:-}" \
   "${FED_PROBES:-}" \
   "${SKIP_PREP:-}" "${SKIP_BUILD:-}" "${FED_CSV:-}" "${FED_PREP_SRC:-}"
