@@ -55,13 +55,14 @@ echo ">>> setup done (plink2=$PLINK2) — launching run_fed.sh"
 
 if [ "$DIAG" = 1 ]; then
   export FED_SPLIT_ANCESTRY=0 FED_ANCESTRY_GROUP=EUR
-  export FED_NGENES=1 FED_NSUB=max FED_PROBES=1   # 1 gene, full-ancestry n (validates DATABITS at scale)
+  export FED_NGENES=1 FED_NSUB=1000 FED_PROBES=1   # fast smoke; for full-n validation run normally with FED_NGENES=1
   timeout 480 bash "$REPO/run_fed.sh"
 else
   bash "$REPO/run_fed.sh"
 fi
 
-# Only aggregate outputs leave the Batch VM.
+# Aggregate result files leave the Batch VM here; diagnostic logs (prep/party) also
+# exit via finish(), and live.log streams during the run — all intended output.
 cd "$RUN"
 while IFS= read -r -d '' file; do
   rel=${file#./}
