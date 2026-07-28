@@ -185,9 +185,17 @@ if os.environ.get("FED_CSV"):
     csv_started = time.perf_counter()
     chrom, pos = gene_positions(ng)
     has_skatp = SkatPsec is not None
+    # genes.txt (block order) is what makes these rows joinable to an external per-gene table;
+    # runs prepped before it existed just get blanks.
+    try:
+        symbols = [ln.strip() for ln in open(f"{OUT}/genes.txt")]
+    except FileNotFoundError:
+        symbols = []
+    if symbols and len(symbols) != ng:
+        raise SystemExit(f"genes.txt has {len(symbols)} rows but manifest says n_genes={ng}")
     csv_path = f"{OUT}/fed_results.csv"
     with open(csv_path, "w") as f:
-        header = "gene,chrom,pos,burden_p_secure,burden_p_plain"
+        header = "gene,gene_symbol,chrom,pos,burden_p_secure,burden_p_plain"
         if has_skatp:
             # Keep skat_p_plain as the historical plaintext-WH column, and preserve the
             # additional plaintext references so plots can distinguish implementation
@@ -195,7 +203,7 @@ if os.environ.get("FED_CSV"):
             header += ",skat_p_secure,skat_p_plain,skat_p_liu,skat_p_davies"
         f.write(header + "\n")
         for b in range(ng):
-            row = f"{b},{chrom[b]},{pos[b]},{Psec[b]:.6e},{Pplain[b]:.6e}"
+            row = f"{b},{symbols[b] if symbols else ''},{chrom[b]},{pos[b]},{Psec[b]:.6e},{Pplain[b]:.6e}"
             if has_skatp:
                 row += (f",{SkatPsec[b]:.6e},{SkatPplain[b]:.6e}"
                         f",{LiuPlain[b]:.6e},{DaviesPlain[b]:.6e}")

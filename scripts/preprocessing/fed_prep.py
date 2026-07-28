@@ -49,6 +49,7 @@ FRAC_BITS = int(os.environ.get("FED_FRACBITS", "30"))  # fractional bits (intege
 N_PCS = int(os.environ.get("FED_NPCS", "5"))     # first N PCs from ancestry_preds as covariates (age/sex deferred)
 N_SUB = os.environ.get("FED_NSUB", "5000")  # per-cohort samples; int, or "max"/"all" = full eligible split in half
 N_GENES = int(os.environ.get("FED_NGENES", "20"))  # genes (spread across chrom); >= chrom total picks all
+GENE_LIST = os.environ.get("FED_GENES", "").strip()  # ""=stride-pick N_GENES; "ALL"=every pc gene on CHR; else file of symbols (one per line)
 PROBES = int(os.environ.get("FED_PROBES", "0"))    # SKAT p: trace budget; exact if m_pub<=budget, else Hutchinson (0=off)
 SEED = 71
 
@@ -77,7 +78,7 @@ def write_int8_block(path, mat):
     np.asarray(np.rint(mat), dtype=np.int8).tofile(path)
 
 
-def write_blocks(gene_keys, priv_keys, roles, A_geno, B_geno, keycol, out_dir):
+def write_blocks(gene_keys, priv_keys, roles, A_geno, B_geno, keycol, out_dir, gene_names=None):
     A_blocks, B_aligned, B_priv, _ = build_party_blocks(
         gene_keys, priv_keys, roles, A_geno, B_geno, keycol, with_union=False)  # union is fed_compare's job
     os.makedirs(f"{out_dir}/A", exist_ok=True)
@@ -91,6 +92,7 @@ def write_blocks(gene_keys, priv_keys, roles, A_geno, B_geno, keycol, out_dir):
     priv_m = [b.shape[1] for b in B_priv]
     json.dump({"ancestry_group": ANCESTRY_GROUP or "all",
                "n_genes": len(gene_keys),
+               "gene_symbols": gene_names or [],  # block order; [] on older runs
                "pub_m": [len(k) for k in gene_keys],  # public list = shared + public_only
                "priv_m": priv_m,
                "shared_m": shared_m,        # intersection (both cohorts)
@@ -268,7 +270,9 @@ def run():
 
     # (2) gene -> PASS variants (read keyed .pvar; map to GENCODE genes)
     genes = load_gencode_genes(GENCODE, CHR, N_GENES)
-    gene_keys_all = scan_pvar_into_genes(f"{keyed}.pvar", genes)  # gene -> ordered [keys] (PASS only)
+    gene_names, gene_keys_all = scan_pvar_into_genes(f"{keyed}.pvar", genes)  # gene -> ordered [keys] (PASS only)
+    print(f"  genes: {len(genes)} selected -> {len(gene_names)} with variants "
+          f"(FED_GENES={GENE_LIST or 'stride'})")
 
     # (3) eligible = geno ∩ pheno(LDL) ∩ ancestry(PC); split into cohort A/B; per-gene role split
     pcs = load_ancestry_pcs(ANCESTRY, N_PCS, ANCESTRY_GROUP)
@@ -321,7 +325,8 @@ def run():
 
     # (5) write genotype blocks + real covariates (5 PCs) + real LDL phenotype, all geno-row order
     print("run (real AoU pgen):")
-    write_blocks(gene_keys, priv_keys, roles_all, A_geno, B_geno, keycol, OUT_DIR)
+    write_blocks(gene_keys, priv_keys, roles_all, A_geno, B_geno, keycol, OUT_DIR, gene_names)
+    write_lines(f"{OUT_DIR}/genes.txt", gene_names)  # block index -> symbol; the join key for external tables
     num_snps = write_config_helpers(gene_keys, CHR, OUT_DIR)
     write_configs(OUT_DIR, num_snps, len(gene_keys), KEYS_PATH, len(Afam), len(Bfam))
     write_cov(Afam, pcs, f"{OUT_DIR}/A/cov.txt")
@@ -369,7 +374,12 @@ def split_roles(rng, keys):
 
 
 def load_gencode_genes(bed, chrom, n_genes):
-    """gene -> (lo, hi) for n_genes protein-coding genes on chrom, spread across it."""
+    """gene -> (lo, hi) for protein-coding genes on chrom, always in genomic order.
+
+    FED_GENES selects which: unset = stride-pick n_genes spread across the chromosome (the historical
+    behaviour, positional not biological); "ALL" = every gene on chrom; else a path to a file of gene
+    symbols, one per line. Genomic order is enforced in every mode so the block order -- and therefore
+    genes.txt, block_sizes.txt and the result vectors -- is reproducible regardless of input order."""
     genes = []
     for ln in open(bed):
         f = ln.rstrip("\n").split("\t")
@@ -378,13 +388,26 @@ def load_gencode_genes(bed, chrom, n_genes):
         name = f[3] if len(f) > 3 else f"{f[0]}:{f[1]}"
         genes.append((name, int(f[1]), int(f[2])))
     genes.sort(key=lambda x: x[1])
-    step = max(1, len(genes) // n_genes)
-    picked = genes[::step][:n_genes]
+    if GENE_LIST.upper() == "ALL":
+        picked = genes
+    elif GENE_LIST:
+        want = {ln.split("#", 1)[0].strip() for ln in open(GENE_LIST)}
+        want.discard("")
+        picked = [g for g in genes if g[0] in want]
+        missing = want - {g[0] for g in picked}
+        if missing:  # a typo'd symbol must not silently shrink the panel
+            raise SystemExit(f"FED_GENES={GENE_LIST}: {len(missing)} symbol(s) not in {bed} "
+                             f"for {chrom}: {sorted(missing)[:10]}")
+    else:
+        step = max(1, len(genes) // n_genes)
+        picked = genes[::step][:n_genes]
     return {name: (lo, hi) for name, lo, hi in picked}
 
 
 def scan_pvar_into_genes(pvar, genes):
-    """assign PASS biallelic keys to genes by position; return list of ordered key-lists."""
+    """assign PASS biallelic keys to genes by position; return (symbols, key-lists), both in block
+    order with genes that got no variants dropped from both. The symbols are the only record of which
+    gene a block is -- nothing downstream carries them, so they must be written out here."""
     buckets = {name: [] for name in genes}
     for ln in open(pvar):
         if ln.startswith("#"):
@@ -399,7 +422,8 @@ def scan_pvar_into_genes(pvar, genes):
             if lo <= pos < hi:
                 buckets[name].append(vid)  # vid is the chr:pos:ref:alt key set by --set-all-var-ids
                 break
-    return [v for v in buckets.values() if v]
+    kept = [(name, v) for name, v in buckets.items() if v]
+    return [name for name, _ in kept], [v for _, v in kept]
 
 
 def merge_cohort_columns(Ag, Ak, Bg, Bk):
@@ -461,6 +485,60 @@ def check():
     print(f"  => A public-list m={pub_tot}   B private m={priv_tot}   (synthetic {FRAC_SHARED:.0%}/{FRAC_PUBONLY:.0%}/rest split)")
 
 
+def _selfcheck():
+    """Gene selection + block/symbol alignment, on the committed GENCODE BED. No AoU data needed:
+    python3 scripts/preprocessing/fed_prep.py --selfcheck"""
+    import tempfile
+    global GENE_LIST
+    saved = GENE_LIST
+    tmp = tempfile.mkdtemp()
+
+    GENE_LIST = ""
+    stride = load_gencode_genes(GENCODE, "chr22", 20)
+    assert len(stride) == 20, len(stride)
+    assert list(stride)[:3] == ["OR11H1", "FAM246B", "RTL10"], list(stride)[:3]  # historical panel unchanged
+
+    GENE_LIST = "ALL"
+    every = load_gencode_genes(GENCODE, "chr22", 20)
+    assert len(every) == 447, len(every)
+    assert list(every) == sorted(every, key=lambda g: every[g][0]), "ALL must be in genomic order"
+
+    # file order deliberately reversed: output must still be genomic order, else block indices
+    # would depend on how someone happened to type the list
+    path = f"{tmp}/genes.txt"
+    open(path, "w").write("PPARA\nSREBF2\n# a comment\nCSF2RB\n\nIL17RA\n")
+    GENE_LIST = path
+    picked = load_gencode_genes(GENCODE, "chr22", 20)
+    assert list(picked) == ["IL17RA", "CSF2RB", "SREBF2", "PPARA"], list(picked)
+
+    open(path, "w").write("IL17RA\nNOT_A_REAL_GENE\n")
+    try:
+        load_gencode_genes(GENCODE, "chr22", 20)
+        raise AssertionError("a bogus symbol must abort, not silently shrink the panel")
+    except SystemExit:
+        pass
+
+    # symbols must stay aligned with key-lists, and empty genes must drop from BOTH
+    pvar = f"{tmp}/test.pvar"
+    open(pvar, "w").write(
+        "#CHROM\tPOS\tID\tREF\tALT\tFILTER\n"
+        "chr22\t17084990\tchr22:17084990:G:A\tG\tA\tPASS\n"      # IL17RA
+        "chr22\t41833200\tchr22:41833200:C:T\tC\tT\tPASS\n"      # SREBF2
+        "chr22\t41833300\tchr22:41833300:A:G\tA\tG\tFAIL\n")     # SREBF2 but filtered out
+    genes = {"IL17RA": (17084985, 17115694), "CSF2RB": (36917999, 36951061),
+             "SREBF2": (41833104, 41907306)}
+    names, keys = scan_pvar_into_genes(pvar, genes)
+    assert names == ["IL17RA", "SREBF2"], names          # CSF2RB had no variants -> dropped
+    assert len(names) == len(keys), (len(names), len(keys))
+    assert [len(k) for k in keys] == [1, 1], keys        # the FAIL row is excluded
+
+    GENE_LIST = saved
+    print("fed_prep selfcheck OK")
+
+
 if __name__ == "__main__":
     import sys
-    check() if "--check" in sys.argv else run()
+    if "--selfcheck" in sys.argv:
+        _selfcheck()
+    else:
+        check() if "--check" in sys.argv else run()
