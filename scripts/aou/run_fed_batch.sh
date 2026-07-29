@@ -43,12 +43,14 @@ gsutil -u "$GOOGLE_CLOUD_PROJECT" -m cp \
   "$COV_GCS" "$PHENO_GCS" "$INPUT/"
 
 # Per-run inputs uploaded by submit_fed_dsub.sh.
+# gcloud storage, not gsutil: a >150 MB upload lands as a COMPOSITE object, and gsutil refuses to
+# download those unless crcmod's C extension is installed -- which it is not on the runner image.
 if [ -n "${ANNOT_GCS:-}" ]; then
-  gsutil -u "$GOOGLE_CLOUD_PROJECT" cp "$ANNOT_GCS" "$INPUT/annotation.tsv"
+  gcloud storage cp --billing-project "$GOOGLE_CLOUD_PROJECT" "$ANNOT_GCS" "$INPUT/annotation.tsv"
   export FED_ANNOT="$INPUT/annotation.tsv"
 fi
 if [ -n "${GENES_GCS:-}" ]; then
-  gsutil -u "$GOOGLE_CLOUD_PROJECT" cp "$GENES_GCS" "$INPUT/genes.txt"
+  gcloud storage cp --billing-project "$GOOGLE_CLOUD_PROJECT" "$GENES_GCS" "$INPUT/genes.txt"
   export FED_GENES="$INPUT/genes.txt"
 fi
 
