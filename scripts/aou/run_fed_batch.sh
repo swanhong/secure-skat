@@ -42,6 +42,16 @@ gsutil -u "$GOOGLE_CLOUD_PROJECT" -m cp \
   "$GENO_GCS".pgen "$GENO_GCS".pvar "$GENO_GCS".psam \
   "$COV_GCS" "$PHENO_GCS" "$INPUT/"
 
+# Per-run inputs uploaded by submit_fed_dsub.sh.
+if [ -n "${ANNOT_GCS:-}" ]; then
+  gsutil -u "$GOOGLE_CLOUD_PROJECT" cp "$ANNOT_GCS" "$INPUT/annotation.tsv"
+  export FED_ANNOT="$INPUT/annotation.tsv"
+fi
+if [ -n "${GENES_GCS:-}" ]; then
+  gsutil -u "$GOOGLE_CLOUD_PROJECT" cp "$GENES_GCS" "$INPUT/genes.txt"
+  export FED_GENES="$INPUT/genes.txt"
+fi
+
 # plink2 ships in the bundle (the runner image has no plink2).
 chmod +x "$REPO/plink2"
 export PLINK2="$REPO/plink2"
