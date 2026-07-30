@@ -50,6 +50,10 @@ N_PCS = int(os.environ.get("FED_NPCS", "5"))     # first N PCs from ancestry_pre
 N_SUB = os.environ.get("FED_NSUB", "5000")  # per-cohort samples; int, or "max"/"all" = full eligible split in half
 N_GENES = int(os.environ.get("FED_NGENES", "20"))  # genes (spread across chrom); >= chrom total picks all
 GENE_LIST = os.environ.get("FED_GENES", "").strip()  # ""=stride-pick N_GENES; "ALL"=every pc gene on CHR; else file of symbols (one per line)
+ANNOT = os.path.expanduser(os.environ.get("FED_ANNOT", ""))  # vat_annotate.py table; ""=positional gene assignment, no mask
+MASK = os.environ.get("FED_MASK", "pLoF;missenseLC")  # annotation classes to keep; ";"-joined, missenseLC = missense+LC
+MAX_MAF = float(os.environ.get("FED_MAXMAF", "0.001"))  # All-by-All serves 1e-4/1e-3/1e-2
+AF_SOURCE = os.environ.get("FED_AF", "gnomad")  # gnomad = public + portable (zero-reveal); gvs = AoU-internal
 PROBES = int(os.environ.get("FED_PROBES", "0"))    # SKAT p: trace budget; exact if m_pub<=budget, else Hutchinson (0=off)
 SEED = 71
 
@@ -59,7 +63,7 @@ def resolve_n_sub(n_eligible):
     return n_eligible // 2 if str(N_SUB).strip().lower() in ("max", "all") else int(N_SUB)
 FRAC_SHARED, FRAC_PUBONLY = 0.6, 0.2   # rest = private
 PLINK2 = os.environ.get("PLINK2", "plink2")   # override: PLINK2=/path/to/plink2 python3 fed_prep.py
-MAX_ALLELE_LEN = 1000   # --set-all-var-ids cap; long indels keep full chr:pos:ref:alt key (chr22 max=193). Bump if a chrom exceeds this.
+MAX_ALLELE_LEN = 1000   # --set-all-var-ids cap so long indels keep a full key. Bump if a chrom exceeds it.
 
 
 def emit_timing(scope, milliseconds, kind="phase", status="done", count=1):
@@ -270,7 +274,8 @@ def run():
 
     # (2) gene -> PASS variants (read keyed .pvar; map to GENCODE genes)
     genes = load_gencode_genes(GENCODE, CHR, N_GENES)
-    gene_names, gene_keys_all = scan_pvar_into_genes(f"{keyed}.pvar", genes)  # gene -> ordered [keys] (PASS only)
+    annot = load_annotation(ANNOT, MASK, MAX_MAF, AF_SOURCE) if ANNOT else None
+    gene_names, gene_keys_all = scan_pvar_into_genes(f"{keyed}.pvar", genes, annot)
     print(f"  genes: {len(genes)} selected -> {len(gene_names)} with variants "
           f"(FED_GENES={GENE_LIST or 'stride'})")
 
@@ -404,24 +409,92 @@ def load_gencode_genes(bed, chrom, n_genes):
     return {name: (lo, hi) for name, lo, hi in picked}
 
 
-def scan_pvar_into_genes(pvar, genes):
-    """assign PASS biallelic keys to genes by position; return (symbols, key-lists), both in block
-    order with genes that got no variants dropped from both. The symbols are the only record of which
-    gene a block is -- nothing downstream carries them, so they must be written out here."""
+def load_annotation(path, mask, max_maf, af_source):
+    """variant_key -> [gene_symbol, ...], keeping only rows that pass the mask and the MAF cut.
+
+    The table comes from vat_annotate.py, one row per (variant, gene): a variant's consequence is
+    gene-specific, so the same variant can be missense for one gene and upstream of its neighbour.
+    A "mask" is a SELECTION over annotation classes -- All-by-All serves pLoF, missenseLC,
+    pLoF;missenseLC and synonymous, where missenseLC means missense or low-confidence LoF.
+
+    Variants absent from the AF source are KEPT: absence from gnomAD means ultra-rare, and dropping
+    them would cut exactly the tail SKAT weights hardest. Counted and reported, not silent."""
+    classes = {"missenseLC": ("missense", "LC")}
+    wanted = set()
+    for part in mask.split(";"):
+        part = part.strip()
+        wanted.update(classes.get(part, (part,)))
+    af_col = {"gnomad": 4, "gvs": 5}[af_source]
+
+    key2genes, n_rows, drop_mask, drop_maf, no_af = {}, 0, 0, 0, 0
+    with open(path) as f:
+        f.readline()  # header
+        for ln in f:
+            r = ln.rstrip("\n").split("\t")
+            n_rows += 1
+            if r[3] not in wanted:
+                drop_mask += 1
+                continue
+            raw = r[af_col].strip()
+            if not raw:
+                no_af += 1
+            elif float(raw) > max_maf:
+                drop_maf += 1
+                continue
+            key2genes.setdefault(r[0], []).append(r[2])  # gene_symbol; gene_id kept in the file
+    print(f"  annotation: {n_rows:,} rows -> {len(key2genes):,} variants pass "
+          f"mask={mask} maf<={max_maf} af={af_source}")
+    print(f"    dropped {drop_mask:,} on annotation, {drop_maf:,} on MAF; "
+          f"{no_af:,} kept with no {af_source} AF (treated as rare)")
+    return key2genes
+
+
+def scan_pvar_into_genes(pvar, genes, annot=None):
+    """assign PASS biallelic keys to genes; return (symbols, key-lists), both in block order with
+    genes that got no variants dropped from both. The symbols are the only record of which gene a
+    block is -- nothing downstream carries them, so they must be written out here.
+
+    With `annot`, a variant joins gene G iff the VAT annotated it FOR G with a wanted class. That is
+    the assignment All-by-All uses, and the only correct one where genes overlap: variants routinely
+    carry annotations for more than one gene, so first-match-by-position would file one under a
+    neighbouring gene and then read off that gene's (usually 'other') consequence. Without `annot`,
+    fall back to the positional rule."""
     buckets = {name: [] for name in genes}
+    n_var = n_placed = n_unannotated = 0
     for ln in open(pvar):
         if ln.startswith("#"):
             continue
         f = ln.rstrip("\n").split("\t")
-        chrom, pos, vid, ref, alt, flt = f[0], int(f[1]), f[2], f[3], f[4], f[5]
+        pos, vid, ref, alt, flt = int(f[1]), f[2], f[3], f[4], f[5]
         if flt not in ("PASS", "."):
             continue
         if "," in alt:        # multiallelic already excluded by --max-alleles, belt-and-suspenders
             continue
-        for name, (lo, hi) in genes.items():
-            if lo <= pos < hi:
-                buckets[name].append(vid)  # vid is the chr:pos:ref:alt key set by --set-all-var-ids
-                break
+        n_var += 1
+        if annot is None:
+            for name, (lo, hi) in genes.items():
+                if lo <= pos < hi:
+                    buckets[name].append(vid)  # vid is the key set by --set-all-var-ids
+                    break
+        else:
+            # vat_annotate.py keys on pos:ref:alt -- no contig, because plink2 and the VAT disagree
+            # on the 'chr' prefix and that mismatch alone once made the join return nothing.
+            hit = annot.get(f"{pos}:{ref}:{alt}")
+            if hit is None:
+                n_unannotated += 1
+                continue
+            for name in hit:
+                if name in buckets:
+                    buckets[name].append(vid)
+                    n_placed += 1
+    if annot is not None:
+        empty = [g for g in genes if not buckets[g]]
+        print(f"  assignment: {n_var:,} pvar variants -> {n_placed:,} gene slots "
+              f"({n_unannotated:,} carried no wanted annotation)")
+        if empty:
+            print(f"    {len(empty)} of {len(genes)} selected genes got nothing"
+                  f"{' (symbol mismatch?)' if len(empty) > len(genes) // 2 else ''}: "
+                  f"{empty[:8]}{' ...' if len(empty) > 8 else ''}")
     kept = [(name, v) for name, v in buckets.items() if v]
     return [name for name, _ in kept], [v for _, v in kept]
 
@@ -436,23 +509,6 @@ def merge_cohort_columns(Ag, Ak, Bg, Bk):
     A[:, np.fromiter((keycol[k] for k in Ak), int, len(Ak))] = Ag
     B[:, np.fromiter((keycol[k] for k in Bk), int, len(Bk))] = Bg
     return A, B, keycol
-
-
-def count_variants(pvar, genes):
-    """per-gene count of PASS biallelic variants in the RAW pvar (position-based, no plink2/keys)."""
-    counts = {name: 0 for name in genes}
-    for ln in open(pvar):
-        if ln.startswith("#"):
-            continue
-        f = ln.rstrip("\n").split("\t")
-        pos, alt, flt = int(f[1]), f[4], f[5]
-        if flt not in ("PASS", ".") or "," in alt:   # PASS + biallelic only
-            continue
-        for name, (lo, hi) in genes.items():
-            if lo <= pos < hi:
-                counts[name] += 1
-                break
-    return {k: v for k, v in counts.items() if v > 0}
 
 
 def check():
@@ -470,24 +526,42 @@ def check():
     if len(elig) < 2 * ns:
         print("  !! eligible < 2*n_sub → lower FED_NSUB, or person_id!=research_id namespace mismatch")
 
+    # Run the SAME assignment the real prep runs, so --check previews what will actually happen.
+    # (It used to count positionally and ignore FED_ANNOT entirely, which reported the unfiltered
+    # ~600k and made a masked run look like it had changed nothing.)
     genes = load_gencode_genes(GENCODE, CHR, N_GENES)
-    counts = count_variants(f"{PGEN}.pvar", genes)
+    print()
+    annot = load_annotation(ANNOT, MASK, MAX_MAF, AF_SOURCE) if ANNOT else None
+    names, keys = scan_pvar_into_genes(f"{PGEN}.pvar", genes, annot)
+    counts = dict(zip(names, (len(k) for k in keys)))
     tot = sum(counts.values())
-    print(f"\nvariants (PASS biallelic, {CHR}, {len(counts)} genes with data): total m={tot}")
-    pub_tot = priv_tot = 0
-    for name, m in counts.items():
-        sh_ = round(FRAC_SHARED * m)
-        pu_ = round(FRAC_PUBONLY * m)
-        pr_ = m - sh_ - pu_
-        pub_tot += sh_ + pu_
-        priv_tot += pr_
-        print(f"  {name:<18} m={m:<5} shared={sh_:<4} public_only={pu_:<4} private={pr_}")
-    print(f"  => A public-list m={pub_tot}   B private m={priv_tot}   (synthetic {FRAC_SHARED:.0%}/{FRAC_PUBONLY:.0%}/rest split)")
+    how = f"mask={MASK} maf<={MAX_MAF}" if annot else "NO mask (FED_ANNOT unset)"
+    print(f"\nvariants (PASS biallelic, {CHR}, {how}): {len(counts)} genes with data, total m={tot:,}")
+
+    sizes = sorted(counts.values())
+    if sizes:
+        q = lambda p: sizes[min(len(sizes) - 1, int(p * len(sizes)))]
+        print(f"  per-gene m: min={sizes[0]} p25={q(.25)} median={q(.5)} p75={q(.75)} max={sizes[-1]}"
+              f"   mean={tot / len(sizes):.0f}")
+        big = sum(1 for s in sizes if s > PROBES) if PROBES else 0
+        if PROBES:
+            print(f"  m > FED_PROBES({PROBES}): {big}/{len(sizes)} genes need Hutchinson, "
+                  f"{len(sizes) - big} get the exact trace")
+    pub_tot = sum(round(FRAC_SHARED * m) + round(FRAC_PUBONLY * m) for m in counts.values())
+    priv_tot = tot - pub_tot
+    print(f"  => A public-list m={pub_tot:,}   B private m={priv_tot:,}   "
+          f"(synthetic {FRAC_SHARED:.0%}/{FRAC_PUBONLY:.0%}/rest split)")
+
+    top = sorted(counts.items(), key=lambda kv: -kv[1])[:15]
+    print(f"  largest genes: " + ", ".join(f"{n}={m}" for n, m in top))
 
 
 def _selfcheck():
     """Gene selection + block/symbol alignment, on the committed GENCODE BED. No AoU data needed:
-    python3 scripts/preprocessing/fed_prep.py --selfcheck"""
+    python3 scripts/preprocessing/fed_prep.py --selfcheck
+
+    ponytail: temporary scaffold for the FED_GENES / genes.txt change -- delete once the mask work
+    lands and a real run has confirmed the block-to-symbol alignment on AoU."""
     import tempfile
     global GENE_LIST
     saved = GENE_LIST
@@ -518,19 +592,60 @@ def _selfcheck():
     except SystemExit:
         pass
 
+    # Fixtures below use round, obviously-synthetic coordinates. Anything shaped like a real
+    # chr:pos:ref:alt is indistinguishable from an AoU callset variant to a reader, and a variant
+    # key is Controlled Tier -- it says that allele exists in the cohort. Keep test data unmistakable.
+    G1, G2, G3 = "TESTGENE1", "TESTGENE2", "TESTGENE3"
+    genes = {G1: (1000, 2000), G2: (2000, 3000), G3: (3000, 4000)}
+
     # symbols must stay aligned with key-lists, and empty genes must drop from BOTH
     pvar = f"{tmp}/test.pvar"
     open(pvar, "w").write(
         "#CHROM\tPOS\tID\tREF\tALT\tFILTER\n"
-        "chr22\t17084990\tchr22:17084990:G:A\tG\tA\tPASS\n"      # IL17RA
-        "chr22\t41833200\tchr22:41833200:C:T\tC\tT\tPASS\n"      # SREBF2
-        "chr22\t41833300\tchr22:41833300:A:G\tA\tG\tFAIL\n")     # SREBF2 but filtered out
-    genes = {"IL17RA": (17084985, 17115694), "CSF2RB": (36917999, 36951061),
-             "SREBF2": (41833104, 41907306)}
+        "chrTEST\t1100\tv1\tG\tA\tPASS\n"      # in G1
+        "chrTEST\t3100\tv2\tC\tT\tPASS\n"      # in G3
+        "chrTEST\t3200\tv3\tA\tG\tFAIL\n")     # in G3 but filtered out
     names, keys = scan_pvar_into_genes(pvar, genes)
-    assert names == ["IL17RA", "SREBF2"], names          # CSF2RB had no variants -> dropped
+    assert names == [G1, G3], names                      # G2 had no variants -> dropped
     assert len(names) == len(keys), (len(names), len(keys))
     assert [len(k) for k in keys] == [1, 1], keys        # the FAIL row is excluded
+
+    # run() filters again against the keys plink2 actually emitted. That comprehension is what keeps
+    # gene_names aligned, so pin it here: length preserved, order preserved, a gene may go empty but
+    # must NOT vanish -- if it ever starts vanishing, gene_names has to be filtered in lockstep.
+    present = {keys[1][0]}                               # pretend plink2 dropped G1's only variant
+    filtered = [[k for k in g if k in present] for g in keys]
+    assert len(filtered) == len(names), (len(filtered), len(names))
+    assert [len(g) for g in filtered] == [0, 1], filtered
+    assert names[1] == G3 and filtered[1] == keys[1], "block->symbol alignment shifted"
+
+    # annotation-driven assignment (option B): the gene comes from the VAT row, not from coordinates
+    ann = f"{tmp}/ann.tsv"
+    open(ann, "w").write(
+        "variant_key\tgene_id\tgene_symbol\tannotation\tgnomad_af\tgvs_af\n"
+        # AFs are 0 (passes any cutoff) or 9 (fails any cutoff) so the fixture cannot be mistaken
+        # for real frequencies, and the test does not depend on the cutoff's value.
+        f"1100:G:A\tENSG_A\t{G1}\tpLoF\t0\t0\n"
+        f"3100:C:T\tENSG_B\t{G3}\tmissense\t0\t0\n"
+        f"3100:C:T\tENSG_C\t{G2}\tother\t0\t0\n"       # same variant, neighbour gene
+        f"3200:A:G\tENSG_B\t{G3}\tsynonymous\t0\t0\n"  # wrong class for our mask
+        f"3300:T:C\tENSG_B\t{G3}\tpLoF\t9\t9\n")       # right class, over any cutoff
+    a = load_annotation(ann, "pLoF;missenseLC", 0.001, "gnomad")
+    assert a == {"1100:G:A": [G1], "3100:C:T": [G3]}, a
+
+    pvar2 = f"{tmp}/t2.pvar"
+    open(pvar2, "w").write(
+        "#CHROM\tPOS\tID\tREF\tALT\tFILTER\n"
+        "chrTEST\t1100\tv1\tG\tA\tPASS\n"
+        "chrTEST\t3100\tv2\tC\tT\tPASS\n"
+        "chrTEST\t3200\tv3\tA\tG\tPASS\n"
+        "chrTEST\t3300\tv4\tT\tC\tPASS\n"
+        "chrTEST\t3900\tv5\tG\tC\tPASS\n")  # inside G3's span, but unannotated
+    # G3's span contains four of these; positional assignment would take all four, and would also
+    # hand 3100 to whichever of G2/G3 sorts first. Annotation mode must not.
+    names2, keys2 = scan_pvar_into_genes(pvar2, genes, a)
+    assert names2 == [G1, G3], names2
+    assert keys2 == [["v1"], ["v2"]], keys2
 
     GENE_LIST = saved
     print("fed_prep selfcheck OK")

@@ -42,6 +42,18 @@ gsutil -u "$GOOGLE_CLOUD_PROJECT" -m cp \
   "$GENO_GCS".pgen "$GENO_GCS".pvar "$GENO_GCS".psam \
   "$COV_GCS" "$PHENO_GCS" "$INPUT/"
 
+# Per-run inputs uploaded by submit_fed_dsub.sh.
+# gcloud storage, not gsutil: a >150 MB upload lands as a COMPOSITE object, and gsutil refuses to
+# download those unless crcmod's C extension is installed -- which it is not on the runner image.
+if [ -n "${ANNOT_GCS:-}" ]; then
+  gcloud storage cp --billing-project "$GOOGLE_CLOUD_PROJECT" "$ANNOT_GCS" "$INPUT/annotation.tsv"
+  export FED_ANNOT="$INPUT/annotation.tsv"
+fi
+if [ -n "${GENES_GCS:-}" ]; then
+  gcloud storage cp --billing-project "$GOOGLE_CLOUD_PROJECT" "$GENES_GCS" "$INPUT/genes.txt"
+  export FED_GENES="$INPUT/genes.txt"
+fi
+
 # plink2 ships in the bundle (the runner image has no plink2).
 chmod +x "$REPO/plink2"
 export PLINK2="$REPO/plink2"

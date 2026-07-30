@@ -27,6 +27,26 @@ tar --exclude='__pycache__' --exclude='*.pyc' \
   -C "$TMP/repo" -czf "$TMP/code.tar.gz" .
 gcloud storage cp "$TMP/code.tar.gz" "$CODE_GCS"
 
+# Per-run inputs kept out of the code bundle: the annotation table is VAT-derived (Controlled Tier)
+# and can be hundreds of MB, so it goes to the same in-project bucket as everything else here.
+EXTRA_ENV=()
+if [ -n "${FED_ANNOT:-}" ]; then
+  gcloud storage cp "$FED_ANNOT" "$RUN_GCS/$(basename "$FED_ANNOT")"
+  EXTRA_ENV+=("ANNOT_GCS=$RUN_GCS/$(basename "$FED_ANNOT")")
+fi
+if [ -n "${FED_GENES:-}" ] && [ -f "$FED_GENES" ]; then
+  gcloud storage cp "$FED_GENES" "$RUN_GCS/$(basename "$FED_GENES")"
+  EXTRA_ENV+=("GENES_GCS=$RUN_GCS/$(basename "$FED_GENES")")
+elif [ -n "${FED_GENES:-}" ]; then
+  EXTRA_ENV+=("FED_GENES=$FED_GENES")   # "ALL", or a path that already exists on the VM
+fi
+
+# Forward every FED_* the caller set so fed_aou.conf's defaults can be overridden per run.
+for v in $(compgen -v FED_); do
+  case $v in FED_ANNOT|FED_GENES) continue ;; esac
+  [ -n "${!v}" ] && EXTRA_ENV+=("$v=${!v}")
+done
+
 dsub \
   --provider google-batch \
   --project "$GOOGLE_CLOUD_PROJECT" --location "$BATCH_REGION" \
@@ -34,7 +54,7 @@ dsub \
   --network "projects/${GOOGLE_CLOUD_PROJECT}/global/networks/network" \
   --subnetwork "projects/${GOOGLE_CLOUD_PROJECT}/regions/${BATCH_REGION}/subnetworks/subnetwork" \
   --use-private-address --user-project "$GOOGLE_CLOUD_PROJECT" \
-  --name secure-skat-fed --timeout "$BATCH_TIMEOUT" \
+  --name "${BATCH_NAME:-secure-skat-fed}" --timeout "${BATCH_TIMEOUT_OVERRIDE:-$BATCH_TIMEOUT}" \
   --logging "$RUN_GCS/logs" --image "${BATCH_IMAGE_OVERRIDE:-$BATCH_IMAGE}" \
   --min-cores "$BATCH_MIN_CORES" --min-ram "$BATCH_MIN_RAM" \
   --boot-disk-size "$BATCH_BOOT_DISK_SIZE" --disk-size "$BATCH_DISK_SIZE" \
@@ -42,6 +62,7 @@ dsub \
   --env "GOOGLE_CLOUD_PROJECT=$GOOGLE_CLOUD_PROJECT" \
         "CODE_BUNDLE_GCS=$CODE_GCS" "BATCH_DIAG=$DIAG" \
         "LIVE_LOG_GCS=$RUN_GCS/live.log" \
+        ${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"} \
   --script "$ROOT/scripts/aou/run_fed_batch.sh"
 
 echo "results: $RUN_GCS/results"

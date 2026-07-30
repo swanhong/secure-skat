@@ -21,3 +21,7 @@ test_data/*
 *.pyc
 out_*
 tmp/
+
+# VAT-derived annotation tables: the variant list alone is Controlled Tier (it reveals which
+# alleles exist in the AoU callset). The extraction code is public; its output never is.
+*_annotation.tsv
