@@ -1412,6 +1412,8 @@ func TestSKATZSSVec(t *testing.T) {
 	rtype := mpcObj.GetRType()
 	fb := mpcObj.GetFracBits()
 	hub := mpcObj.GetPid() == mpcObj.GetHubPid()
+	oneQuantum := math.Ldexp(1.0, -fb)
+	rankOneLambda := math.Cbrt(oneQuantum)
 	momentCeil := math.Ldexp(1.0, mpcObj.GetDataBits()-fb-2)
 	tests := []struct {
 		q, s1, s2, s3 float64
@@ -1422,6 +1424,10 @@ func TestSKATZSSVec(t *testing.T) {
 		{q: 0, s1: 1, s2: 1, s3: 1, valid: true},    // arg=0: equal-eigenvalue low tail
 		{q: 0, s1: 3, s2: 5, s3: 9, valid: true},    // arg=-0.08: signed cube root
 		{q: 2, s1: 1, s2: 1e-6, s3: 1, valid: true}, // raw skew=1e9: must cap before ring overflow
+		// Smallest representable S2 must remain a valid input to the normalizer-backed inverse sqrt.
+		{q: 0, s1: 0, s2: oneQuantum, s3: 1, valid: true},
+		// Rank-one S3 at exactly one quantum is positive and valid. The former 1e-8 floor rejected it.
+		{q: rankOneLambda, s1: rankOneLambda, s2: rankOneLambda * rankOneLambda, s3: oneQuantum, valid: true},
 		{q: 0, s1: 0, s2: 0, s3: 0},
 		{q: 1, s1: 1, s2: 1, s3: 0},
 		{q: 1, s1: 1, s2: momentCeil, s3: 1},

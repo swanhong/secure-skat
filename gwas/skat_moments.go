@@ -810,8 +810,7 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, priv *
 }
 
 func skatMomentFloor(fracBits int) float64 {
-	// Never choose a positive guard that rounds to zero in the configured fixed-point format.
-	return math.Max(1e-8, math.Ldexp(1.0, -fracBits))
+	return math.Ldexp(1.0, -fracBits)
 }
 
 func skatSkewFloor(fracBits int) float64 {
@@ -831,8 +830,8 @@ func (ast *AssocTest) skatZSSVec(Q, S1, S2, S3 mpc_core.RVec) mpc_core.RVec {
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
 	hub := mpcObj.GetPid() == mpcObj.GetHubPid()
 	mul, square, pmul := ast.ssMul, ast.ssSquare, ast.ssPMul
-	// Record the PSD/fixed-point domain guard before clamping. The bit remains secret; invalid,
-	// underflow, or unrepresentably large genes use safe surrogate inputs and end at z=-9 (p≈1).
+	// Record the PSD/fixed-point domain guard before clamping. The bit remains secret; non-positive,
+	// underflowed, or unrepresentably large genes use safe surrogate inputs and end at z=-9 (p≈1).
 	momentFloor := skatMomentFloor(fb)
 	momentCeil := math.Ldexp(1.0, db-fb-2) // one signed-integer headroom bit for sqrt/intermediates
 	bv := mpcObj.GetBooleanShareFlag()
@@ -842,9 +841,9 @@ func (ast *AssocTest) skatZSSVec(Q, S1, S2, S3 mpc_core.RVec) mpc_core.RVec {
 	valid := mpcObj.SSMultElemVec(s2Valid, s3Valid)
 	valid = mpcObj.SSMultElemVec(valid, s2BelowCeil) // scale-0 AND
 
-	// Floor S2 off zero: an all-common window underflows S2/N² to 0 → SqrtAndSqrtInverse(0) garbage.
-	// The ceil leaves one signed-integer headroom bit so the bound is representable under the
-	// configured db/fb fixed-point format and is valid input to the normalizer-backed sqrt.
+	// Floor S2 off zero: an all-common window can underflow S2/N² to 0, while the normalizer-backed
+	// square root requires a strictly positive input. The one-quantum floor is the smallest positive
+	// value representable at fb bits; the ceil leaves one signed-integer headroom bit.
 	S2 = ast.secureSelectOrPublicVec(s2Valid, S2, momentFloor)
 	S2 = ast.secureSelectOrPublicVec(s2BelowCeil, S2, momentCeil)
 	S3 = ast.secureSelectOrPublicVec(valid, S3, momentFloor)

@@ -45,11 +45,10 @@ func TestSKATTraceProbes(t *testing.T) {
 }
 
 func TestSKATMomentFloor(t *testing.T) {
-	if got := skatMomentFloor(30); got != 1e-8 {
-		t.Fatalf("30-bit floor = %g, want 1e-8", got)
-	}
-	if got, want := skatMomentFloor(20), math.Ldexp(1.0, -20); got != want {
-		t.Fatalf("20-bit floor = %g, want one fixed-point quantum %g", got, want)
+	for _, fracBits := range []int{20, 30, 40} {
+		if got, want := skatMomentFloor(fracBits), math.Ldexp(1.0, -fracBits); got != want {
+			t.Fatalf("%d-bit floor = %g, want one fixed-point quantum %g", fracBits, got, want)
+		}
 	}
 	if got := skatSkewFloor(30); got != 1e-4 {
 		t.Fatalf("30-bit skew floor = %g, want 1e-4", got)

@@ -126,8 +126,8 @@ summary += f"SKAT Q {skat_within}/{ng},  " if skat_within is not None else ""
 summary += f"Burden p {burdenp_within}/{ng},  Burden T {burdenT_within}/{ng}"
 
 # SKAT p-value (only if the secure run was configured with skat_pvalue_probes > 0). The secure output
-# is the Wilson-Hilferty screening p; the plaintext oracle also computes the Liu and Davies references
-# so the WH approximation can be judged against them (WH vs Liu, WH vs Davies).
+# is the Wilson-Hilferty screening p; the plaintext oracle also computes Liu and an exact Davies
+# reference so the WH approximation can be judged against them (WH vs Liu, WH vs Davies).
 SkatPsec = SkatPplain = LiuPlain = DaviesPlain = None
 skat_p_file = f"{OUT}/out/party2/skat_fed_skat_p_out.txt"
 if os.path.exists(skat_p_file):
@@ -146,19 +146,34 @@ if os.path.exists(skat_p_file):
     for b in range(ng):
         print(f"{b:>4} {SkatPsec[b]:>12.4e} {WHplain[b]:>12.4e} {LiuPlain[b]:>12.4e} {DaviesPlain[b]:>12.4e}")
 
+    def _paired(a, ref):
+        keep = np.isfinite(a) & np.isfinite(ref)
+        return a[keep], ref[keep]
+
     def _r2(a, ref):
+        a, ref = _paired(a, ref)
+        if len(ref) == 0:
+            return float("nan")
         ss = float(np.sum((ref - ref.mean()) ** 2))
         return 1 - float(np.sum((a - ref) ** 2)) / ss if ss > 0 else float("nan")
 
     def _maxrel(a, ref):
-        return max(abs(a[i] - ref[i]) / max(abs(ref[i]), 1e-12) for i in range(len(ref)))
+        a, ref = _paired(a, ref)
+        if len(ref) == 0:
+            return float("nan")
+        return float(np.max(np.abs(a - ref) / np.maximum(np.abs(ref), 1e-12)))
 
     def _mae(a, ref):
-        return float(np.mean(np.abs(a - ref)))
+        a, ref = _paired(a, ref)
+        return float(np.mean(np.abs(a - ref))) if len(ref) else float("nan")
 
-    print(f"\n  {'comparison':<24} {'R^2':>10} {'max rel':>10} {'mean abs err':>13}")
+    def _npaired(a, ref):
+        return int(np.sum(np.isfinite(a) & np.isfinite(ref)))
+
+    print(f"\n  {'comparison':<24} {'n':>6} {'R^2':>10} {'max rel':>10} {'mean abs err':>13}")
     for name, ref in [("secure-WH vs plain-WH", WHplain), ("WH vs Liu", LiuPlain), ("WH vs Davies", DaviesPlain)]:
-        print(f"  {name:<24} {_r2(SkatPsec, ref):>10.6f} {_maxrel(SkatPsec, ref):>10.2e} {_mae(SkatPsec, ref):>13.2e}")
+        print(f"  {name:<24} {_npaired(SkatPsec, ref):>6} {_r2(SkatPsec, ref):>10.6f} "
+              f"{_maxrel(SkatPsec, ref):>10.2e} {_mae(SkatPsec, ref):>13.2e}")
     summary += f",  SKAT p (WH vs Liu R^2={_r2(SkatPsec, LiuPlain):.4f}, vs Davies R^2={_r2(SkatPsec, DaviesPlain):.4f})"
 else:
     emit_timing("compare.plain_skat_p_refs", 0.0, status="skipped", count=0)

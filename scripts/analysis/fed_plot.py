@@ -42,6 +42,12 @@ def manhattan(psec, label, out):
 
 
 def scatter(psec, pref, label, out, reference_label="plaintext"):
+    valid = (np.isfinite(psec) & np.isfinite(pref) &
+             (psec > 0.0) & (psec <= 1.0) & (pref > 0.0) & (pref <= 1.0))
+    if not np.any(valid):
+        print(f"warning: skipping {label} vs {reference_label}; no resolved p-value pairs")
+        return False
+    psec, pref = psec[valid], pref[valid]
     xs, ys = mlog(pref), mlog(psec)
     ss_tot = np.sum((xs - xs.mean()) ** 2)
     r2 = 1 - np.sum((ys - xs) ** 2) / ss_tot if ss_tot > 0 else float("nan")  # agreement vs y=x
@@ -55,11 +61,12 @@ def scatter(psec, pref, label, out, reference_label="plaintext"):
     ax.set_ylim(0, hi)
     ax.set_xlabel(f"-log10({reference_label} {label} p)")
     ax.set_ylabel(f"-log10(secure {label} p)")
-    ax.set_title(f"{label} p-value: secure vs {reference_label}")
+    ax.set_title(f"{label} p-value: secure vs {reference_label} (n={len(xs)}/{ng})")
     ax.legend()
     fig.tight_layout()
     fig.savefig(out, dpi=150)
     plt.close(fig)
+    return True
 
 
 # One (manhattan, scatter) pair per p-value the CSV carries. Burden is always present; SKAT p appears
@@ -73,16 +80,17 @@ for label, sec_col, plain_col, tag, reference_label in stats:
     psec = np.atleast_1d(d[sec_col]).astype(float)
     pplain = np.atleast_1d(d[plain_col]).astype(float)
     manhattan(psec, label, f"{outdir}/manhattan_{tag}.png")
-    scatter(psec, pplain, label, f"{outdir}/scatter_{tag}.png", reference_label)
-    written += [f"manhattan_{tag}.png", f"scatter_{tag}.png"]
+    written.append(f"manhattan_{tag}.png")
+    if scatter(psec, pplain, label, f"{outdir}/scatter_{tag}.png", reference_label):
+        written.append(f"scatter_{tag}.png")
 
 # The secure SKAT output is Wilson-Hilferty. This additional plot measures the
-# approximation against the same-kernel plaintext Davies/Imhof reference rather
-# than merely checking secure-WH implementation agreement with plaintext WH.
+# approximation against the same-kernel exact Davies reference rather than merely
+# checking secure-WH implementation agreement with plaintext WH.
 if "skat_p_secure" in d.dtype.names and "skat_p_davies" in d.dtype.names:
     psec = np.atleast_1d(d["skat_p_secure"]).astype(float)
     pdavies = np.atleast_1d(d["skat_p_davies"]).astype(float)
-    scatter(psec, pdavies, "SKAT", f"{outdir}/scatter_skat_davies.png", "Davies")
-    written.append("scatter_skat_davies.png")
+    if scatter(psec, pdavies, "SKAT", f"{outdir}/scatter_skat_davies.png", "Davies"):
+        written.append("scatter_skat_davies.png")
 
 print(f"wrote {', '.join(written)} in {outdir}  ({ng} genes)")

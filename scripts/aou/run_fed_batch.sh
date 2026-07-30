@@ -86,6 +86,7 @@ done < <(
     -name timing_steps.csv -o \
     -name communication_summary.csv -o \
     -name manifest.json -o \
+    -name parameter.txt -o \
     -name '*.png' -o \
     -name 'skat_fed*_out.txt' \
   \) -print0

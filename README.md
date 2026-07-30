@@ -16,6 +16,8 @@ SF-GWAS requires that `go`, `python3`, and `plink2` are available in the exec pa
 
 - [Go](https://go.dev/doc/install) (>=1.18.3)
 - Python (>=3.9.2) with [NumPy](https://numpy.org/install/)
+- [R](https://cran.r-project.org/) with the [SKAT](https://cran.r-project.org/package=SKAT) package
+  (required by the plaintext Davies p-value reference; tested with SKAT 2.2.5)
 - [PLINK2](https://www.cog-genomics.org/plink/2.0/)
 
 ### Setting up required Go libraries for secure computation

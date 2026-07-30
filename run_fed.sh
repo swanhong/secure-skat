@@ -192,12 +192,14 @@ if [ -n "$SKIP_PREP" ] && [ -n "$FED_ANCESTRY_GROUP" ]; then
 fi
 
 echo "=== run dir: $OUT ==="
-echo "=== run knobs (env; blank = fed_prep default) ==="
-printf '  PLINK2=%s\n  FED_SPLIT_ANCESTRY=%s FED_ANCESTRY_GROUP=%s FED_CHR=%s FED_NSUB=%s FED_NGENES=%s FED_NPCS=%s\n  FED_CKKS=%s FED_DATABITS=%s FED_FRACBITS=%s FED_PHENO_COL=%s\n   FED_PROBES=%s\n  SKIP_PREP=%s SKIP_BUILD=%s FED_CSV=%s FED_PREP_SRC=%s\n' \
-  "${PLINK2:-plink2}" "${FED_SPLIT_ANCESTRY:-0}" "${FED_ANCESTRY_GROUP:-}" "${FED_CHR:-}" "${FED_NSUB:-}" "${FED_NGENES:-}" "${FED_NPCS:-}" \
-  "${FED_CKKS:-}" "${FED_DATABITS:-}" "${FED_FRACBITS:-}" "${FED_PHENO_COL:-}" \
-  "${FED_PROBES:-}" \
-  "${SKIP_PREP:-}" "${SKIP_BUILD:-}" "${FED_CSV:-}" "${FED_PREP_SRC:-}"
+# parameter.txt collects every input of this run (env knobs now, resolved config below)
+# so an archived result dir explains itself without the launch command.
+{
+  echo "=== run knobs (env; a FED_* not listed was unset -> fed_prep default) ==="
+  printf '  PLINK2=%s SKIP_PREP=%s SKIP_BUILD=%s\n' \
+    "${PLINK2:-plink2}" "${SKIP_PREP:-}" "${SKIP_BUILD:-}"
+  for v in $(compgen -v FED_ | sort); do printf '  %s=%s\n' "$v" "${!v}"; done
+} | tee "$OUT/parameter.txt"
 
 if [ -z "$SKIP_PREP" ]; then
   echo "=== [1/4] fed_prep (blocks + cov + pheno + config) ==="
@@ -222,8 +224,10 @@ else
 fi
 
 if [ -f "$CFG/configGlobal.toml" ]; then
-  echo "=== resolved params (n=num_inds, m=num_snps, c=num_covs; from $CFG) ==="
-  grep -E '^(num_inds|num_snps|num_covs|geno_num_blocks|ckks_params|mpc_data_bits|mpc_frac_bits|rotkey_pow2only|private_pid)\b' "$CFG/configGlobal.toml" | sed 's/^/  /'
+  {
+    echo "=== resolved params (n=num_inds, m=num_snps, c=num_covs; from $CFG) ==="
+    grep -E '^(num_inds|num_snps|num_covs|geno_num_blocks|ckks_params|mpc_data_bits|mpc_frac_bits|rotkey_pow2only|private_pid)\b' "$CFG/configGlobal.toml" | sed 's/^/  /'
+  } | tee -a "$OUT/parameter.txt"
 fi
 
 echo "=== [3/4] secure skat_fed (3 parties) ==="

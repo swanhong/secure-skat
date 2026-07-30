@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Plaintext federated SKAT/Burden on fed_prep output — NO secure run needed. Runs all genes and
 prints/saves per-gene SKAT Q, SKAT p (Wilson-Hilferty / Liu / Davies) and Burden p, using the same
-plaintext oracle (skat_plain_local.py) that fed_compare.py uses for its "plain" columns.
+plaintext oracle (skat_plain_local.py) that fed_compare.py uses for its "plain" columns. The exact
+general-rank Davies column requires R with the SKAT package.
 
     FED_OUT=~/runs/out260713034114 python3 fed_plain.py
     python3 fed_plain.py ~/runs/out260713034114        # dir as arg also works
