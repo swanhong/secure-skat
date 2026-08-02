@@ -178,8 +178,13 @@ func (mpcObj *MPC) decodePlainToElemSlots(cryptoParams *crypto.CryptoParams, rty
 	// otherwise the huge mask rounds away the signal and the field shares don't cancel.
 	// v2's DecodeRVec decoded exact big.Int coefficients through a big-float FFT; we match
 	// that by decoding with a high-precision encoder.
+	// Keyed on the full parameters, not just decPrec: the encoder's root table is bound to the
+	// ring, and decPrec alone would alias two parameter sets with equal LogQP.
 	decPrec := uint(cryptoParams.Params.LogQP() + 128)
-	encoder := ckks.NewEncoder(cryptoParams.Params, decPrec)
+	if mpcObj.hpEncoder == nil || !mpcObj.hpEncoder.GetParameters().Equal(&cryptoParams.Params) {
+		mpcObj.hpEncoder = ckks.NewEncoder(cryptoParams.Params, decPrec)
+	}
+	encoder := mpcObj.hpEncoder
 
 	out := mpc_core.InitRMat(rtype.Zero(), numCtxRow, nElemRow)
 	for i := range pm {

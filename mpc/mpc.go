@@ -10,6 +10,7 @@ import (
 	"go.dedis.ch/onet/v3/log"
 
 	mpc_core "github.com/hhcho/mpc-core"
+	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 
 	"sync"
 )
@@ -28,6 +29,13 @@ type MPC struct {
 	lagrangeCache   map[TypedKey]mpc_core.RMat
 	invPowCache     map[TypedKey]mpc_core.RElem
 	pascalCache     map[TypedKey]mpc_core.RMat
+
+	// High-precision encoder for the masked SS<->cipher decode, built once per MPC instance:
+	// its big.Complex root table costs ~0.4s and was otherwise rebuilt on every CMatToSS.
+	// Like the rest of MPC (syncCounter, the Beaver stream, Network), one instance is owned
+	// by one goroutine — parallel work uses ParallelMPC's per-thread MPC. See
+	// decodePlainToElemSlots.
+	hpEncoder *ckks.Encoder
 
 	syncCounter int
 }
