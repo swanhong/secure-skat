@@ -9,12 +9,43 @@ import (
 	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 )
 
+// These custom N14 parameter sets are diagnostic-only. They keep the same
+// ring dimension and 8192-slot capacity as PN14QP438 while matching each
+// rescaling prime to a higher default scale. Production use still requires the
+// collective SS<->CKKS, weight, moment, and end-to-end p-value gates described
+// in README.md.
+var (
+	ckksComplexParamsN14QP431S40 = ckks.ParametersLiteral{
+		LogN:            14,
+		LogQ:            []int{51, 40, 40, 40, 40, 40, 40, 40},
+		LogP:            []int{50, 50},
+		LogDefaultScale: 40,
+	}
+	ckksComplexParamsN14QP436S45 = ckks.ParametersLiteral{
+		LogN:            14,
+		LogQ:            []int{56, 45, 45, 45, 45, 45, 45},
+		LogP:            []int{55, 55},
+		LogDefaultScale: 45,
+	}
+)
+
 type heEngine struct {
-	CP     *securecrypto.CryptoParams
-	Beta   securecrypto.CipherVector // one full-slot replicated ciphertext per coefficient
-	C      int
-	Slots  int
-	Params string
+	CP              *securecrypto.CryptoParams
+	Beta            securecrypto.CipherVector // one full-slot replicated ciphertext per coefficient
+	C               int
+	Slots           int
+	Params          string
+	LogN            int
+	LogQP           float64
+	LogQ            []int
+	LogP            []int
+	LogDefaultScale int
+	MaxLevel        int
+	DiagnosticOnly  bool
+}
+
+func diagnosticOnlyParameter(name string) bool {
+	return name == "PN14QP431S40" || name == "PN14QP436S45"
 }
 
 func parameterLiteral(name string) (ckks.ParametersLiteral, error) {
@@ -25,6 +56,10 @@ func parameterLiteral(name string) (ckks.ParametersLiteral, error) {
 		return examples.CKKSComplexParamsN13QP218, nil
 	case "PN14QP438":
 		return examples.CKKSComplexParamsN14QP438, nil
+	case "PN14QP431S40":
+		return ckksComplexParamsN14QP431S40, nil
+	case "PN14QP436S45":
+		return ckksComplexParamsN14QP436S45, nil
 	case "PN15QP880", "PN15QP881":
 		return examples.CKKSComplexParamsN15QP881, nil
 	case "PN16QP1761":
@@ -62,7 +97,20 @@ func newHEEngine(name string, beta []float64, precision uint, threads int) (*heE
 		ct, _ := securecrypto.EncryptFloatVector(cp, repeated)
 		betaCT[k] = ct[0]
 	}
-	return &heEngine{CP: cp, Beta: betaCT, C: len(beta), Slots: slots, Params: name}, nil
+	return &heEngine{
+		CP:              cp,
+		Beta:            betaCT,
+		C:               len(beta),
+		Slots:           slots,
+		Params:          name,
+		LogN:            params.LogN(),
+		LogQP:           params.LogQP(),
+		LogQ:            params.LogQi(),
+		LogP:            params.LogPi(),
+		LogDefaultScale: params.LogDefaultScale(),
+		MaxLevel:        params.MaxLevel(),
+		DiagnosticOnly:  diagnosticOnlyParameter(name),
+	}, nil
 }
 
 func cipherLevel(v securecrypto.CipherVector) int {

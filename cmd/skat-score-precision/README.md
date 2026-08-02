@@ -37,10 +37,58 @@ go run -mod=vendor ./cmd/skat-score-precision \
   | tee "$FED_OUT/score_precision_pn14_public.log"
 ```
 
+### N14-only precision sweep
+
+The diagnostic also provides two experimental profiles that keep `LogN=14`
+and 8192 slots while raising the scale. Their rescaling primes are matched to
+the scale; simply increasing `LogDefaultScale` on the original 34-bit chain
+would cause scale growth after multiplication and is not an equivalent test.
+
+| Profile | Default scale | Maximum level | Nominal logQP | Purpose |
+| --- | ---: | ---: | ---: | --- |
+| `PN14QP438` | 34 bits | 9 | 438 | existing baseline |
+| `PN14QP431S40` | 40 bits | 7 | 431 | N14 with PN15-like scale |
+| `PN14QP436S45` | 45 bits | 6 | 436 | N14 with PN16-like scale |
+
+Run both experimental profiles on the same full gene set:
+
+```bash
+go run -mod=vendor ./cmd/skat-score-precision \
+  --out "$FED_OUT" \
+  --public-only \
+  --ckks PN14QP431S40 \
+  --threads 1 \
+  --top 0 \
+  --progress-every 50 \
+  --csv "$FED_OUT/score_precision_pn14_s40_public_run1.csv" \
+  2>&1 | tee "$FED_OUT/score_precision_pn14_s40_public_run1.log"
+
+go run -mod=vendor ./cmd/skat-score-precision \
+  --out "$FED_OUT" \
+  --public-only \
+  --ckks PN14QP436S45 \
+  --threads 1 \
+  --top 0 \
+  --progress-every 50 \
+  --csv "$FED_OUT/score_precision_pn14_s45_public_run1.csv" \
+  2>&1 | tee "$FED_OUT/score_precision_pn14_s45_public_run1.log"
+```
+
+These are custom, diagnostic-only score-circuit experiments, not new production
+parameters; do not copy their names into `configGlobal.toml` or a federated
+GWAS run. At depth 3, each profile passes Lattigo's two-party `lambda=128`
+statistical-masking bound check for collective refresh. That conservative
+budget check is covered by a unit test, but the command above does not execute
+a collective refresh or establish end-to-end protocol security. Weight
+computation should therefore be evaluated separately as two waves (`base -> w2 -> w4 -> w8`,
+refresh, then `w8 -> w16 -> w24`, refresh) before either profile is wired into
+the federated path.
+
 For a low-cost CKKS smoke test, add `--max-genes 50`; a limited sample can
 reject but cannot accept the design. For a full score-circuit check, run all
 genes three times (separate log/CSV names) because CKKS encryption noise is
-random. If PN14 is borderline, repeat with `--ckks PN15QP880`. Omit
+random. Use the N14-only sweep above before changing the ring dimension; if it
+is still borderline, repeat with `--ckks PN15QP880`. Omit
 `--public-only` only if the existing B-private CKKS score is also in scope.
 
 The plaintext screen reports SKAT-Q and Burden-L sensitivity, a cancellation

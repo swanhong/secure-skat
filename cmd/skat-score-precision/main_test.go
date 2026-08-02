@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/tuneinsight/lattigo/v6/multiparty/mpckks"
+	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 )
 
 func TestChooseGenesEvenly(t *testing.T) {
@@ -259,25 +262,97 @@ func TestMetricKappaQAndRequiredPrecision(t *testing.T) {
 
 func TestPackedCKKSScoreMatchesSameBetaPlaintext(t *testing.T) {
 	beta := []float64{0.25, -0.4}
-	engine, err := newHEEngine("PN14QP438", beta, 128, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
 	gty1 := []float64{10, -3, 8, 0.25}
 	gty2 := []float64{2, 5, -1, -0.75}
 	gtx1 := [][]float64{{4, 2, 7, 1}, {1, -2, 3, 4}}
 	gtx2 := [][]float64{{3, 1, 0, 2}, {-1, 5, 2, -3}}
-	got := engine.evaluate(gty1, gtx1, gty2, gtx2, true)
-	for i := range got {
-		want := gty1[i] + gty2[i]
-		for k := range beta {
-			want -= (gtx1[k][i] + gtx2[k][i]) * beta[k]
-		}
-		// This is a circuit-wiring regression, not the scientific acceptance
-		// threshold. PN14's approximate arithmetic can have milliscale absolute
-		// error even on this tiny cancellation example.
-		if gap := math.Abs(got[i] - want); gap > 5e-3 {
-			t.Fatalf("slot %d: got %.10f want %.10f gap %.3e", i, got[i], want, gap)
-		}
+	for _, profile := range []string{"PN14QP438", "PN14QP431S40", "PN14QP436S45"} {
+		t.Run(profile, func(t *testing.T) {
+			engine, err := newHEEngine(profile, beta, 128, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			party := engine.partyScore(gty1, gtx1)
+			if got, want := cipherLevel(party), engine.MaxLevel-1; got != want {
+				t.Fatalf("party score level=%d want=%d", got, want)
+			}
+			for j, ct := range party {
+				if gap := math.Abs(math.Log2(ct.Scale.Float64()) - float64(engine.LogDefaultScale)); gap > 0.25 {
+					t.Fatalf("ciphertext %d log-scale gap %.3f bits", j, gap)
+				}
+			}
+			got := engine.evaluate(gty1, gtx1, gty2, gtx2, true)
+			for i := range got {
+				want := gty1[i] + gty2[i]
+				for k := range beta {
+					want -= (gtx1[k][i] + gtx2[k][i]) * beta[k]
+				}
+				// This is a circuit-wiring regression, not the scientific
+				// acceptance threshold. The full Workbench dataset determines
+				// whether a profile handles realistic cancellation.
+				if gap := math.Abs(got[i] - want); gap > 5e-3 {
+					t.Fatalf("slot %d: got %.10f want %.10f gap %.3e", i, got[i], want, gap)
+				}
+			}
+		})
+	}
+}
+
+func TestN14HighScaleProfileBudgets(t *testing.T) {
+	tests := []struct {
+		name      string
+		logScale  int
+		maxLevel  int
+		logQ      []int
+		logP      []int
+		logQP     float64
+		depth     int
+		parties   int
+		security  int
+		wantSlots int
+		wantLogN  int
+	}{
+		{name: "PN14QP431S40", logScale: 40, maxLevel: 7, logQ: []int{51, 40, 40, 40, 40, 40, 40, 40}, logP: []int{50, 50}, logQP: 431, depth: 3, parties: 2, security: 128, wantSlots: 8192, wantLogN: 14},
+		{name: "PN14QP436S45", logScale: 45, maxLevel: 6, logQ: []int{56, 45, 45, 45, 45, 45, 45}, logP: []int{55, 55}, logQP: 436, depth: 3, parties: 2, security: 128, wantSlots: 8192, wantLogN: 14},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lit, err := parameterLiteral(tc.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			params, err := ckks.NewParametersFromLiteral(lit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if params.LogN() != tc.wantLogN || params.MaxSlots() != tc.wantSlots {
+				t.Fatalf("shape: logN=%d slots=%d", params.LogN(), params.MaxSlots())
+			}
+			if params.LogDefaultScale() != tc.logScale || params.MaxLevel() != tc.maxLevel {
+				t.Fatalf("budget: scale=2^%d maxLevel=%d", params.LogDefaultScale(), params.MaxLevel())
+			}
+			if params.LevelsConsumedPerRescaling() != 1 {
+				t.Fatalf("levels per rescale=%d want=1", params.LevelsConsumedPerRescaling())
+			}
+			if got := params.LogQi(); !reflect.DeepEqual(got, tc.logQ) {
+				t.Fatalf("logQ=%v want=%v", got, tc.logQ)
+			}
+			if got := params.LogPi(); !reflect.DeepEqual(got, tc.logP) {
+				t.Fatalf("logP=%v want=%v", got, tc.logP)
+			}
+			if logQP := params.LogQP(); math.Abs(logQP-tc.logQP) > 0.1 {
+				t.Fatalf("logQP %.3f differs from nominal %.3f", logQP, tc.logQP)
+			}
+
+			minRefreshLevel, _, ok := mpckks.GetMinimumLevelForRefresh(
+				tc.security, params.DefaultScale(), tc.parties, params.Q())
+			if !ok {
+				t.Fatal("no collective-refresh level satisfies the requested mask bound")
+			}
+			postDepthLevel := params.MaxLevel() - tc.depth
+			if postDepthLevel < minRefreshLevel {
+				t.Fatalf("depth-%d leaves level %d, below refresh minimum %d", tc.depth, postDepthLevel, minRefreshLevel)
+			}
+		})
 	}
 }
