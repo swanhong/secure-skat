@@ -440,8 +440,7 @@ func ReduceAndAddUint128(in []uint128, out []uint64, qInv, q uint64) {
 }
 
 func ModularReduceV2(cryptoParams *crypto.CryptoParams, cva CipherVectorAccV2, outScale float64) crypto.CipherVector {
-	N := cryptoParams.Params.N()
-	ringQ, _ := ring.NewRing(N, cryptoParams.Params.Q())
+	ringQ := cryptoParams.Params.RingQ()
 	level := len(cva.val[0].acc0)
 
 	out := make(crypto.CipherVector, len(cva.val))
@@ -483,8 +482,7 @@ func CPMultAccWithoutMRedV2(X crypto.CipherVector, Y crypto.PlainVector, Acc Cip
 }
 
 func ToMontgomeryForm(cryptoParams *crypto.CryptoParams, pt crypto.PlainVector) {
-	N := cryptoParams.Params.N()
-	ringQ, _ := ring.NewRing(N, cryptoParams.Params.Q())
+	ringQ := cryptoParams.Params.RingQ()
 	for i := range pt {
 		if pt[i] != nil {
 			MFormLvl(ringQ, pt[i].Level(), pt[i].Value, pt[i].Value)
