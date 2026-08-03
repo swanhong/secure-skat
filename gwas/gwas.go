@@ -14,7 +14,6 @@ import (
 
 	mpc_core "github.com/hhcho/mpc-core"
 
-	"github.com/tuneinsight/lattigo/v6/examples"
 	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 
 	"github.com/hhcho/sfgwas/crypto"
@@ -187,22 +186,13 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 	defer func() { fedTimings.initTotal = time.Since(tInit) }() // network + keygen + geno/cov load
 	var params ckks.Parameters
 	if !mpcOnly {
-		var paramsLiteral ckks.ParametersLiteral
-		switch config.CkksParams {
-		case "PN12QP109":
-			paramsLiteral = examples.CKKSComplexParamsN12QP109
-		case "PN13QP218":
-			paramsLiteral = examples.CKKSComplexParamsN13QP218
-		case "PN14QP438":
-			paramsLiteral = examples.CKKSComplexParamsN14QP438
-		case "PN15QP880":
-			paramsLiteral = examples.CKKSComplexParamsN15QP881
-		case "PN16QP1761":
-			paramsLiteral = examples.CKKSComplexParamsPN16QP1761
-		default:
-			panic("Undefined value of CKKS params in config")
+		if config.CkksParams == crypto.CKKSParamsPN14QP436S45 {
+			panic("PN14QP436S45 requires the unavailable skat_fed packed-experimental backend")
 		}
-		var err error
+		paramsLiteral, err := crypto.ResolveCKKSParametersLiteral(config.CkksParams)
+		if err != nil {
+			panic(err)
+		}
 		params, err = ckks.NewParametersFromLiteral(paramsLiteral)
 		if err != nil {
 			panic(err)

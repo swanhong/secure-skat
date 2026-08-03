@@ -5,7 +5,6 @@ import (
 	"runtime"
 
 	securecrypto "github.com/hhcho/sfgwas/crypto"
-	"github.com/tuneinsight/lattigo/v6/examples"
 	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 )
 
@@ -20,12 +19,6 @@ var (
 		LogQ:            []int{51, 40, 40, 40, 40, 40, 40, 40},
 		LogP:            []int{50, 50},
 		LogDefaultScale: 40,
-	}
-	ckksComplexParamsN14QP436S45 = ckks.ParametersLiteral{
-		LogN:            14,
-		LogQ:            []int{56, 45, 45, 45, 45, 45, 45},
-		LogP:            []int{55, 55},
-		LogDefaultScale: 45,
 	}
 )
 
@@ -49,24 +42,10 @@ func diagnosticOnlyParameter(name string) bool {
 }
 
 func parameterLiteral(name string) (ckks.ParametersLiteral, error) {
-	switch name {
-	case "PN12QP109":
-		return examples.CKKSComplexParamsN12QP109, nil
-	case "PN13QP218":
-		return examples.CKKSComplexParamsN13QP218, nil
-	case "PN14QP438":
-		return examples.CKKSComplexParamsN14QP438, nil
-	case "PN14QP431S40":
+	if name == "PN14QP431S40" {
 		return ckksComplexParamsN14QP431S40, nil
-	case "PN14QP436S45":
-		return ckksComplexParamsN14QP436S45, nil
-	case "PN15QP880", "PN15QP881":
-		return examples.CKKSComplexParamsN15QP881, nil
-	case "PN16QP1761":
-		return examples.CKKSComplexParamsPN16QP1761, nil
-	default:
-		return ckks.ParametersLiteral{}, fmt.Errorf("unsupported CKKS parameters %q", name)
 	}
+	return securecrypto.ResolveCKKSParametersLiteral(name)
 }
 
 func newHEEngine(name string, beta []float64, precision uint, threads int) (*heEngine, error) {

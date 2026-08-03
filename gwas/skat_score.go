@@ -117,7 +117,7 @@ func (ast *AssocTest) blindWeightCKKS(dosageSum []float64, nsnps int) (crypto.Ci
 		base24 = crypto.CMult(cps, w16, w8)
 	}
 
-	base24SS := mpcObj.CVecToSS(cps, rtype, base24, -1, len(base24), nsnps)
+	base24SS := mpcObj.CVecToSS(cps, rtype, base24, -1, len(base24), nsnps, 1) // Includes CKKS error around [0,1].
 	weightSS := base24SS.Copy()
 	weightSS.MulScalar(rtype.FromFloat64(25.0, 0))
 
