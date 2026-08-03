@@ -31,6 +31,19 @@ finish() {
 }
 trap finish EXIT
 
+if [ "${FED_PROBES:-0}" -gt 0 ]; then
+  if ! command -v Rscript >/dev/null; then
+    APT=(apt-get)
+    [ "$(id -u)" -eq 0 ] || APT=(sudo apt-get)
+    "${APT[@]}" update
+    DEBIAN_FRONTEND=noninteractive "${APT[@]}" install -y --no-install-recommends \
+      r-base r-base-dev build-essential gfortran
+  fi
+  export R_LIBS_USER=/tmp/secure-skat-r-library
+  mkdir -p "$R_LIBS_USER"
+  Rscript -e 'if (!requireNamespace("SKAT", quietly=TRUE)) install.packages("SKAT", repos="https://cloud.r-project.org"); library(SKAT)'
+fi
+
 gsutil -u "$GOOGLE_CLOUD_PROJECT" cp "$CODE_BUNDLE_GCS" "$WORK/code.tar.gz"
 tar -xzf "$WORK/code.tar.gz" -C "$REPO"
 
