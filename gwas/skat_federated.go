@@ -185,6 +185,7 @@ func (ast *AssocTest) privateBlockStat(pl *privateGeneLocal, null skatNull, priv
 var fedTimings struct {
 	initTotal, nullTotal, blocks, total time.Duration
 	blockSecs                           []float64
+	distributionName                    string
 }
 
 // blockSecStats formats min/Q1/avg/Q3/max of per-block seconds (nearest-rank quantiles).
@@ -211,6 +212,7 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	}
 
 	tStart := time.Now()
+	fedTimings.distributionName = "gene_duration_distribution"
 	manifestMark := ast.metricMark()
 	_, publicSizes := ast.prepareGeneBatchManifest()
 	ast.metricEnd("manifest_sync", manifestMark)

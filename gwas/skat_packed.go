@@ -11,24 +11,27 @@ import (
 
 // localPublicDosage reads the public blocks once for the chromosome-wide flat weight circuit.
 func (ast *AssocTest) localPublicDosage(publicSizes []int) []float64 {
-	genes := make([][]float64, len(publicSizes))
 	if ast.general.mpcObj[0].GetPid() == 0 {
-		return packFlatVariants(genes)
+		return nil
 	}
+	total := 0
+	for _, size := range publicSizes {
+		total += size
+	}
+	packed := make([]float64, total)
+	offset := 0
 	for gene, size := range publicSizes {
-		genes[gene] = make([]float64, size)
 		if size == 0 {
 			continue
 		}
-		G := orientGenotypeLocal(ast.readGenoBlockLocal(gene))
-		n, _ := G.Dims()
-		for j := 0; j < size; j++ {
-			for i := 0; i < n; i++ {
-				genes[gene][j] += G.At(i, j)
-			}
+		gfs := ast.openBlockGenoStream(gene)
+		if gfs == nil {
+			panic("missing public genotype block")
 		}
+		copy(packed[offset:offset+size], orientedDosageFromStream(gfs, size))
+		offset += size
 	}
-	return packFlatVariants(genes)
+	return packed
 }
 
 // packedPublicWeights evaluates all public weights in flat ciphertexts and returns flat shares.
@@ -100,9 +103,6 @@ func (ast *AssocTest) packedWindowScore(bucket GeneBatchBucket, window GeneBatch
 	}
 
 	score := ast.scoreHE(H, a, null)
-	zero := crypto.CZeros(ast.general.cps, len(score))
-	zero = crypto.DropLevel(ast.general.cps, crypto.CipherMatrix{zero}, score[0].Level())[0]
-	score = crypto.CAdd(ast.general.cps, score, zero)
 	return mpcObj.Network.AggregateCVec(ast.general.cps, score)
 }
 
@@ -252,7 +252,7 @@ func (ast *AssocTest) addPrivateQL(input *privateQLInput, gene int, local *priva
 	}
 }
 
-// packedPrivateQL evaluates every private gene from fixed nGenes-by-c shares.
+// packedPrivateQL evaluates one public window of private genes from fixed-shape shares.
 func (ast *AssocTest) packedPrivateQL(input privateQLInput, null skatNull) (q, l mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
@@ -285,6 +285,7 @@ func (ast *AssocTest) computePackedFederated(privateOnly []*mat.Dense, privatePi
 	started := time.Now()
 	fedTimings.nullTotal, fedTimings.blocks, fedTimings.total = 0, 0, 0
 	fedTimings.blockSecs = nil
+	fedTimings.distributionName = "packed_first_pass_window_distribution"
 
 	manifest := ast.general.skatManifest
 	publicSizes := ast.general.skatGeneSizes
@@ -313,7 +314,6 @@ func (ast *AssocTest) computePackedFederated(privateOnly []*mat.Dense, privatePi
 	q := mpc_core.InitRVec(rtype.Zero(), len(publicSizes))
 	l := mpc_core.InitRVec(rtype.Zero(), len(publicSizes))
 	zpz := mpc_core.InitRVec(rtype.Zero(), len(publicSizes))
-	private := newPrivateQLInput(rtype, len(publicSizes), null.c)
 	probes := ast.general.config.SkatPValueProbes
 	var moments []packedMomentGene
 	if probes > 0 {
@@ -359,6 +359,13 @@ func (ast *AssocTest) computePackedFederated(privateOnly []*mat.Dense, privatePi
 			if probes > 0 {
 				ast.packedMomentCorrections(states, null)
 			}
+			private := newPrivateQLInput(rtype, len(window.Tiles), null.c)
+			for tile := range window.Tiles {
+				ast.addPrivateQL(&private, tile, local[tile].Private)
+			}
+			privateQ, privateL := ast.packedPrivateQL(private, null)
+			windowQ.Add(privateQ)
+			windowL.Add(privateL)
 			for tile, entry := range window.Tiles {
 				q[entry.Gene] = windowQ[tile]
 				l[entry.Gene] = windowL[tile]
@@ -366,7 +373,6 @@ func (ast *AssocTest) computePackedFederated(privateOnly []*mat.Dense, privatePi
 				if probes > 0 {
 					moments[entry.Gene] = states[tile]
 				}
-				ast.addPrivateQL(&private, entry.Gene, local[tile].Private)
 			}
 			stage := "packed_raw_first_pass"
 			if bucket.Mode == geneBatchExact {
@@ -379,6 +385,7 @@ func (ast *AssocTest) computePackedFederated(privateOnly []*mat.Dense, privatePi
 	}
 
 	if hasHutchinson {
+		// Complete every Wave 1 window before any Wave 2 window.
 		ast.general.mpcObj[0].AssertSync()
 		for _, bucket := range manifest.Buckets {
 			if bucket.Mode != geneBatchHutchinson {
@@ -386,6 +393,7 @@ func (ast *AssocTest) computePackedFederated(privateOnly []*mat.Dense, privatePi
 			}
 			for _, window := range bucket.Windows {
 				wave2Mark := ast.metricMark()
+				// Recompute local Gram instead of retaining every window across the barrier.
 				local := ast.computeWindowLocal(window, X, y0, nil, -1, false)
 				u := ast.packedWindowU(window, local, null.c)
 				states := make([]packedMomentGene, len(window.Tiles))
@@ -404,9 +412,6 @@ func (ast *AssocTest) computePackedFederated(privateOnly []*mat.Dense, privatePi
 	fedTimings.blockSecs = blockSecs
 
 	finalMark := ast.metricMark()
-	privateQ, privateL := ast.packedPrivateQL(private, null)
-	q.Add(privateQ)
-	l.Add(privateL)
 	skatStat, burdenStat, skatZStat = ast.finalizePackedFederated(q, l, zpz, moments, null)
 	ast.metricEnd("packed_finalize", finalMark)
 	fedTimings.total = time.Since(started)

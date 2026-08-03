@@ -37,8 +37,8 @@ func (ast *AssocTest) skatBlockNumSnps(block int) int {
 	return nsnpsBlock
 }
 
-// openBlockGenoStream returns this party's genotype stream for block b (the open "blocks"
-// stream, or a pgen block materialized to a temp file). nil for an empty block.
+// openBlockGenoStream returns this party's genotype stream for block b, or nil when empty.
+// "blocks" streams are shared and consumed sequentially; PGEN blocks are materialized once and reopened.
 func (ast *AssocTest) openBlockGenoStream(b int) *GenoFileStream {
 	if !ast.general.IsPgen() {
 		if b < len(ast.general.genoBlocks) {
@@ -63,8 +63,14 @@ func (ast *AssocTest) openBlockGenoStream(b int) *GenoFileStream {
 	numInd := ast.skatNumInds()[ast.general.mpcObj[0].GetPid()]
 	pgenFile := fmt.Sprintf(ast.general.config.GenoFilePrefix, b+1)
 	tmp := ast.general.CachePath(fmt.Sprintf("lowrank_pgen_gfs.%d.tmp", b))
-	FilterMatrixFilePgen(pgenFile, numInd, nsnps, ast.general.config.SampleKeepFile,
-		ast.general.config.SnpIdsFile, shift, snpFilt, tmp, false)
+	if ast.pgenMaterialized == nil {
+		ast.pgenMaterialized = make([]bool, ast.general.config.GenoNumBlocks)
+	}
+	if !ast.pgenMaterialized[b] {
+		FilterMatrixFilePgen(pgenFile, numInd, nsnps, ast.general.config.SampleKeepFile,
+			ast.general.config.SnpIdsFile, shift, snpFilt, tmp, false)
+		ast.pgenMaterialized[b] = true
+	}
 	return NewGenoFileStream(tmp, uint64(numInd), uint64(nsnps), true)
 }
 
@@ -98,6 +104,35 @@ func denseFromStream(gfs *GenoFileStream) *mat.Dense {
 		panic(fmt.Sprintf("denseFromStream: got more than %d rows", n))
 	}
 	return mat.NewDense(n, m, data)
+}
+
+func orientedDosageFromStream(gfs *GenoFileStream, size int) []float64 {
+	gfs.Reset()
+	n, m := int(gfs.NumRowsToKeep()), int(gfs.NumColsToKeep())
+	if m != size {
+		panic(fmt.Sprintf("dosage stream has %d columns, want %d", m, size))
+	}
+	dosage := make([]float64, m)
+	for i := 0; i < n; i++ {
+		row := gfs.NextRow()
+		if len(row) != m {
+			panic(fmt.Sprintf("dosage stream row %d has %d columns, want %d", i, len(row), m))
+		}
+		for j, value := range row {
+			if value > 0 {
+				dosage[j] += float64(value)
+			}
+		}
+	}
+	if row := gfs.NextRow(); row != nil {
+		panic(fmt.Sprintf("dosage stream has more than %d rows", n))
+	}
+	for j := range dosage {
+		if dosage[j] > float64(n) {
+			dosage[j] = 2*float64(n) - dosage[j]
+		}
+	}
+	return dosage
 }
 
 // orientGenotypeLocal recodes each locally major-coded column in place so that dosage always counts

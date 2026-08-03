@@ -6,31 +6,6 @@ import (
 	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 )
 
-func packFlatVariants(genes [][]float64) []float64 {
-	n := 0
-	for _, gene := range genes {
-		n += len(gene)
-	}
-	packed := make([]float64, 0, n)
-	for _, gene := range genes {
-		packed = append(packed, gene...)
-	}
-	return packed
-}
-
-func scatterFlatVariants(packed []float64, sizes []int) [][]float64 {
-	genes := make([][]float64, len(sizes))
-	offset := 0
-	for gene, size := range sizes {
-		genes[gene] = append([]float64(nil), packed[offset:offset+size]...)
-		offset += size
-	}
-	if offset != len(packed) {
-		panic("flat variant size mismatch")
-	}
-	return genes
-}
-
 func windowGroupCount(window GeneBatchWindow, rhs int) int {
 	if rhs <= 0 {
 		panic("window RHS count must be positive")

@@ -13,6 +13,14 @@ import (
 
 const pcmmInputLevel = 5
 
+// pcmmWindowBytes is the encoded transform plus the raw diagonals alive during encoding.
+func pcmmWindowBytes(params ckks.Parameters, bucket GeneBatchBucket) uint64 {
+	levels := pcmmInputLevel + 1 + params.MaxLevelP() + 1
+	encoded := uint64(bucket.P) * uint64(levels) * uint64(params.N()) * 8
+	raw := uint64(bucket.P) * uint64(params.MaxSlots()) * 8
+	return encoded + raw
+}
+
 func pcmmParameters(params ckks.Parameters, bucket GeneBatchBucket) lintrans.Parameters {
 	diagonals := make([]int, bucket.P)
 	for d := range diagonals {
@@ -99,6 +107,7 @@ func (ast *AssocTest) packedGramAction(bucket GeneBatchBucket, window GeneBatchW
 		}); err != nil {
 			panic(err)
 		}
+		// Hide each party's deterministic local transform before aggregation.
 		zero := crypto.CZeros(ast.general.cps, len(output))
 		zero = crypto.DropLevel(ast.general.cps, crypto.CipherMatrix{zero}, output[0].Level())[0]
 		output = crypto.CAdd(ast.general.cps, output, zero)

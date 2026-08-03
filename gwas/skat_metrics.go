@@ -291,6 +291,6 @@ func printFedTimingRecords(metrics *fedRunMetrics, secureRun time.Duration) {
 	printTimingRecord(mode, pid, "post_block_finalize", "secure_compute", "inclusive", postBlock, 1, 0, 0, 0, 0, 0)
 	printTimingRecord(mode, pid, "protocol_total", "none", "inclusive", protocolTotal, 1, 0, 0, 0, 0, 0)
 	count, minMs, q1Ms, meanMs, q3Ms, maxMs := blockTimingDistribution(fedTimings.blockSecs)
-	printTimingRecord(mode, pid, "gene_duration_distribution", "genes", "distribution", time.Duration(meanMs)*time.Millisecond,
+	printTimingRecord(mode, pid, fedTimings.distributionName, "genes", "distribution", time.Duration(meanMs)*time.Millisecond,
 		count, minMs, q1Ms, meanMs, q3Ms, maxMs)
 }

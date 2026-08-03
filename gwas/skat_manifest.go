@@ -29,10 +29,11 @@ type GeneBatchManifest struct {
 }
 
 type GeneBatchBucket struct {
-	Mode    string            `json:"mode"`
-	P       int               `json:"p"`
-	L       int               `json:"lanes"`
-	Windows []GeneBatchWindow `json:"windows"`
+	Mode           string            `json:"mode"`
+	P              int               `json:"p"`
+	L              int               `json:"lanes"`
+	TransformBytes uint64            `json:"-"`
+	Windows        []GeneBatchWindow `json:"windows"`
 }
 
 type GeneBatchWindow struct {
@@ -125,6 +126,9 @@ func buildGeneBatchManifest(params ckks.Parameters, geneIDs []string, publicSize
 
 			lanes := slots / p
 			bucket := GeneBatchBucket{Mode: mode, P: p, L: lanes}
+			if mode == geneBatchHutchinson && params.MaxLevel() >= pcmmInputLevel {
+				bucket.TransformBytes = pcmmWindowBytes(params, bucket)
+			}
 			for start := 0; start < len(tiles); start += lanes {
 				window := GeneBatchWindow{Tiles: tiles[start:min(start+lanes, len(tiles))]}
 				window.H = lanes / len(window.Tiles)
@@ -256,8 +260,8 @@ func logGeneBatchManifest(manifest GeneBatchManifest, hash [sha256.Size]byte) {
 				mHistogram[tile.Variants]++
 			}
 		}
-		log.LLvl1(fmt.Sprintf("[skat_fed] manifest mode=%s P=%d genes=%d lanes=%d windows=%d padding=%d",
-			bucket.Mode, bucket.P, genes, bucket.L, len(bucket.Windows), padding))
+		log.LLvl1(fmt.Sprintf("[skat_fed] manifest mode=%s P=%d genes=%d lanes=%d windows=%d padding=%d transform_mib=%.1f",
+			bucket.Mode, bucket.P, genes, bucket.L, len(bucket.Windows), padding, float64(bucket.TransformBytes)/(1<<20)))
 	}
 	sizes := make([]int, 0, len(mHistogram))
 	for size := range mHistogram {
