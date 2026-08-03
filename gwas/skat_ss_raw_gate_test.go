@@ -164,7 +164,7 @@ func TestSKATPublicSSRawGate(t *testing.T) {
 	}
 
 	ast := prot.initSKAT()
-	publicSizes := ast.prepareGeneBatchManifest()
+	publicSizes := loadPublicGeneSizes(prot.config.GenoBlockSizeFile, prot.config.GenoNumBlocks)
 	null, X, y0 := ast.nullSetup()
 	runtime.GC()
 	networks := prot.mpcObj.GetNetworks()
