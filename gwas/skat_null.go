@@ -55,29 +55,38 @@ func localGenotypeContract(G, X *mat.Dense, y0 []float64) LocalContraction {
 
 type windowLocalContraction struct {
 	LocalContraction
-	Gamma *mat.Dense
+	Gamma   *mat.Dense
+	Private *privateGeneLocal
+}
+
+func normalizedGram(G *mat.Dense, invN float64) *mat.Dense {
+	var gamma mat.Dense
+	gamma.Mul(G.T(), G)
+	data := gamma.RawMatrix().Data
+	for i := range data {
+		data[i] *= invN
+	}
+	return &gamma
 }
 
 // computeWindowLocal contracts one manifest window without retaining its genotype matrices.
-func (ast *AssocTest) computeWindowLocal(window GeneBatchWindow, X *mat.Dense, y0 []float64) []windowLocalContraction {
+func (ast *AssocTest) computeWindowLocal(window GeneBatchWindow, X *mat.Dense, y0 []float64, privateOnly []*mat.Dense, privatePid int, needMoments bool) []windowLocalContraction {
 	local := make([]windowLocalContraction, len(window.Tiles))
-	if ast.general.mpcObj[0].GetPid() == 0 {
-		return local
-	}
+	pid := ast.general.mpcObj[0].GetPid()
 	invN := 1.0 / float64(ast.skatTotalNumInds())
 	for i, tile := range window.Tiles {
-		if tile.Variants == 0 {
-			continue
+		var G *mat.Dense
+		if pid > 0 && tile.Variants > 0 {
+			G = orientGenotypeLocal(ast.readGenoBlockLocal(tile.Gene))
+			local[i].LocalContraction = localGenotypeContract(G, X, y0)
+			local[i].Gamma = normalizedGram(G, invN)
 		}
-		G := orientGenotypeLocal(ast.readGenoBlockLocal(tile.Gene))
-		local[i].LocalContraction = localGenotypeContract(G, X, y0)
-		var gamma mat.Dense
-		gamma.Mul(G.T(), G)
-		data := gamma.RawMatrix().Data
-		for j := range data {
-			data[j] *= invN
+		var privateG *mat.Dense
+		if pid == privatePid && tile.Gene < len(privateOnly) {
+			privateG = orientedGenotypeLocalCopy(privateOnly[tile.Gene])
 		}
-		local[i].Gamma = &gamma
+		gl := &geneLocal{LocalContraction: local[i].LocalContraction, Gloc: G}
+		local[i].Private = ast.computePrivateGeneLocal(privateG, X, y0, gl, needMoments)
 	}
 	return local
 }

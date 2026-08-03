@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hhcho/sfgwas/mpc"
 	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 	"go.dedis.ch/onet/v3/log"
 )
@@ -138,6 +139,13 @@ func buildGeneBatchManifest(params ckks.Parameters, geneIDs []string, publicSize
 					galois[galEl] = true
 				}
 			}
+			if mode == geneBatchHutchinson && params.MaxLevel() >= pcmmInputLevel {
+				for _, galEl := range pcmmGaloisElements(params, bucket) {
+					if galEl != 1 {
+						galois[galEl] = true
+					}
+				}
+			}
 		}
 	}
 	for galEl := range galois {
@@ -183,9 +191,9 @@ func (manifest GeneBatchManifest) hash() [sha256.Size]byte {
 	return sha256.Sum256(b)
 }
 
-func (ast *AssocTest) syncGeneBatchManifest(hash [sha256.Size]byte) {
-	net := ast.general.mpcObj[0].Network
-	pid, hub := net.GetPid(), ast.general.mpcObj[0].GetHubPid()
+func syncGeneBatchManifest(mpcObj *mpc.MPC, hash [sha256.Size]byte) {
+	net := mpcObj.Network
+	pid, hub := net.GetPid(), mpcObj.GetHubPid()
 	words := make([]uint64, sha256.Size/8)
 	for i := range words {
 		words[i] = binary.LittleEndian.Uint64(hash[i*8 : (i+1)*8])
@@ -223,18 +231,18 @@ func (ast *AssocTest) syncGeneBatchManifest(hash [sha256.Size]byte) {
 	}
 }
 
-func (ast *AssocTest) prepareGeneBatchManifest() []int {
+func (ast *AssocTest) prepareGeneBatchManifest() (GeneBatchManifest, []int) {
 	mpcObj := ast.general.mpcObj[0]
 	n, pid, hub := ast.general.config.GenoNumBlocks, mpcObj.GetPid(), mpcObj.GetHubPid()
 	publicSizes := loadPublicGeneSizes(ast.general.config.GenoBlockSizeFile, n)
 	geneIDs := readPublicFields(ast.general.config.GeneIDFile, n)
 	manifest := buildGeneBatchManifest(ast.general.cps.Params, geneIDs, publicSizes, ast.general.config.SkatPValueProbes)
 	hash := manifest.hash()
-	ast.syncGeneBatchManifest(hash)
+	syncGeneBatchManifest(mpcObj, hash)
 	if pid == hub {
 		logGeneBatchManifest(manifest, hash)
 	}
-	return publicSizes
+	return manifest, publicSizes
 }
 
 func logGeneBatchManifest(manifest GeneBatchManifest, hash [sha256.Size]byte) {

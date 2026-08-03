@@ -280,6 +280,91 @@ func subMat(a, b mpc_core.RMat) mpc_core.RMat {
 	return out
 }
 
+type privateMomentTables struct {
+	psi1Diag, xi1Diag               []float64
+	psi2, xi2, pi0, pi1, pi2, psi1Z [][]float64
+	s1, s2, s3                      float64
+}
+
+func makePrivateMomentTables(priv *privateGeneLocal, m, c int, N float64, probes [][]float64) privateMomentTables {
+	var out privateMomentTables
+	if priv == nil || len(priv.Weight) == 0 {
+		return out
+	}
+	mp := len(priv.Weight)
+	dv2 := make([]float64, mp)
+	for k, w := range priv.Weight {
+		dv2[k] = w * w
+	}
+	if len(priv.Svv) != mp || (m > 0 && len(priv.A1) != m) {
+		panic("incomplete private gene cache")
+	}
+	uv := make([][]float64, c)
+	for l := 0; l < c; l++ {
+		uv[l] = make([]float64, mp)
+		for k := 0; k < mp; k++ {
+			uv[l][k] = priv.GtX.At(k, l) / N
+		}
+	}
+
+	dvSvv := make([][]float64, mp)
+	for k := 0; k < mp; k++ {
+		dvSvv[k] = make([]float64, mp)
+		for k2 := 0; k2 < mp; k2++ {
+			dvSvv[k][k2] = dv2[k] * priv.Svv[k][k2]
+		}
+	}
+	dvSvv2 := matMul(dvSvv, dvSvv)
+	out.s1 = matTrace(dvSvv)
+	out.s2 = matTrace(dvSvv2)
+	out.s3 = matTraceProduct(dvSvv2, dvSvv)
+
+	uvD2 := matMulD(uv, dv2)
+	out.pi0 = matMulT(uvD2, uv)
+	uvD2Svv := matMul(uvD2, priv.Svv)
+	uvD2SvvD2 := matMulD(uvD2Svv, dv2)
+	out.pi1 = matMulT(uvD2SvvD2, uv)
+	uvD2SvvD2Svv := matMul(uvD2SvvD2, priv.Svv)
+	out.pi2 = matMulT(matMulD(uvD2SvvD2Svv, dv2), uv)
+	if m == 0 {
+		return out
+	}
+
+	a1D2 := matMulD(priv.A1, dv2)
+	out.psi1Diag = make([]float64, m)
+	for j := 0; j < m; j++ {
+		for k := 0; k < mp; k++ {
+			out.psi1Diag[j] += a1D2[j][k] * priv.A1[j][k]
+		}
+	}
+	a1D2Svv := matMul(a1D2, priv.Svv)
+	a1B := matMulD(a1D2Svv, dv2)
+	out.xi1Diag = make([]float64, m)
+	for j := 0; j < m; j++ {
+		for k := 0; k < mp; k++ {
+			out.xi1Diag[j] += priv.A1[j][k] * a1B[j][k]
+		}
+	}
+	out.psi2 = matMulT(a1D2, uv)
+	out.xi2 = matMulT(a1B, uv)
+
+	a1T := make([][]float64, mp)
+	for k := 0; k < mp; k++ {
+		a1T[k] = make([]float64, m)
+		for j := 0; j < m; j++ {
+			a1T[k][j] = priv.A1[j][k]
+		}
+	}
+	a1tZ := matMul(a1T, probes)
+	for k := 0; k < mp; k++ {
+		for p := range a1tZ[k] {
+			a1tZ[k][p] *= dv2[k]
+		}
+	}
+	out.psi1Z = matMul(priv.A1, a1tZ)
+	return out
+}
+
 // skatMomentsSS returns the SKAT-kernel power sums S₁,S₂,S₃ = tr(Kᵏ) for one gene, K = ½D(GᵀPG/N)D,
 // over the public list (nsnps, both parties) plus party B's private variants (privG). The public
 // moment τ₁=tr(K_pp) is exact; τ₂,τ₃ use either an exact public basis (m<=requested probes) or
@@ -315,18 +400,6 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, priv *
 	}
 	ssMulM := func(a, bb mpc_core.RMat) mpc_core.RMat { return mpcObj.TruncMat(mpcObj.SSMultMat(a, bb), db, fb) }
 	elemMulM := func(a, bb mpc_core.RMat) mpc_core.RMat { return mpcObj.TruncMat(mpcObj.SSMultElemMat(a, bb), db, fb) }
-	transpose := func(a mpc_core.RMat) mpc_core.RMat {
-		if len(a) == 0 {
-			return a
-		}
-		out := mpc_core.InitRMat(rtype.Zero(), len(a[0]), len(a))
-		for i := range a {
-			for j := range a[i] {
-				out[j][i] = a[i][j]
-			}
-		}
-		return out
-	}
 	sumAllMat := func(a mpc_core.RMat) mpc_core.RElem {
 		acc := rtype.Zero()
 		for j := range a {
@@ -359,7 +432,7 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, priv *
 		if len(a) == 0 || len(bb) == 0 {
 			return rtype.Zero()
 		}
-		return sumAllMat(elemMulM(a, transpose(bb)))
+		return sumAllMat(elemMulM(a, transposeShares(rtype, bb)))
 	}
 	vdot := ast.ssDot
 	scaleRows := func(d mpc_core.RVec, M mpc_core.RMat) mpc_core.RMat { // row j × d[j]
@@ -387,11 +460,8 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, priv *
 		}
 		return out
 	}
-	shareScalar := func(v float64, have bool) mpc_core.RElem {
-		if have {
-			return rtype.FromFloat64(v, fb)
-		}
-		return rtype.Zero()
+	shareScalar := func(v float64) mpc_core.RElem {
+		return rtype.FromFloat64(v, fb)
 	}
 
 	// ---- public-block gram/coupling. gg=GᵀpubGpub stays local plaintext, while Up=GᵀpubX/N is
@@ -425,7 +495,7 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, priv *
 		Theta = ssMulM(Up, Omp)
 		Dp2 = ast.ssSquare(w)
 	}
-	upT := transpose(Up)
+	upT := transposeShares(rtype, Up)
 
 	// ---- τ₁ exact; τ₂,τ₃ exact-basis or Hutchinson over public probes (M_pp·A via chunked GᵀG). ----
 	// Hutchinson-only progress over secure M actions. Exact-basis mode forms K directly and skips this
@@ -556,92 +626,9 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, priv *
 	// shares them: diagonals of Ψ₁,Ξ₁ (length m), Ψ₂,Ξ₂ (m×c), Π₀,Π₁,Π₂ (c×c), scalars sₖ. The one m×m
 	// term tr(D_p²M_ppD_p²Ψ₁) uses the same exact/Hutchinson rule: B forms
 	// Ψ₁·u = A₁D_v²(A₁ᵀu) locally for public probes u. ----
-	// Party B's reduced tables (plaintext; nil on other parties → zero share).
-	var psi1diagv, xi1diagv []float64
-	var psi2v, xi2v, pi0v, pi1v, pi2v, psi1Uv [][]float64
-	var s1v, s2v, s3v float64
-	haveB := false
-	if pid > 0 && priv != nil {
-		mp := len(priv.Weight)
-		if mp > 0 {
-			haveB = true
-			wv := priv.Weight
-			dv2 := make([]float64, mp)
-			for k := range wv {
-				dv2[k] = wv[k] * wv[k]
-			}
-			// Reuse the cached /N contractions Svv=G_vᵀG_v/N and A₁=G_pᵀG_v/N.
-			svv := priv.Svv
-			if len(svv) != mp || (m > 0 && len(priv.A1) != m) {
-				panic("skatMomentsSS: incomplete private gene cache")
-			}
-			uv := make([][]float64, c)
-			for l := 0; l < c; l++ {
-				uv[l] = make([]float64, mp)
-				for k := 0; k < mp; k++ {
-					uv[l][k] = priv.GtX.At(k, l) / N
-				}
-			}
-			a1 := priv.A1
-			// s_k = tr((D_v² S_vv)^k)
-			dvSvv := make([][]float64, mp)
-			for k := 0; k < mp; k++ {
-				dvSvv[k] = make([]float64, mp)
-				for k2 := 0; k2 < mp; k2++ {
-					dvSvv[k][k2] = dv2[k] * svv[k][k2]
-				}
-			}
-			dvSvv2 := matMul(dvSvv, dvSvv)
-			s1v, s2v, s3v = matTrace(dvSvv), matTrace(dvSvv2), matTraceProduct(dvSvv2, dvSvv)
-			// Π₀,Π₁,Π₂ (c×c)
-			uvD2 := matMulD(uv, dv2)                       // Uv·D²
-			pi0v = matMulT(uvD2, uv)                       // Uv D² Uvᵀ
-			uvD2Svv := matMul(uvD2, svv)                   // Uv D² Svv
-			uvD2SvvD2 := matMulD(uvD2Svv, dv2)             // Uv D² Svv D²
-			pi1v = matMulT(uvD2SvvD2, uv)                  // Uv D² Svv D² Uvᵀ
-			uvD2SvvD2Svv := matMul(uvD2SvvD2, svv)         // Uv D² Svv D² Svv
-			pi2v = matMulT(matMulD(uvD2SvvD2Svv, dv2), uv) // ·D² Uvᵀ
-			if nsnps > 0 {
-				a1D2 := matMulD(a1, dv2) // A₁·D²
-				// diag(Ψ₁)[j] = Σ_k A₁[j][k]² D²[k]
-				psi1diagv = make([]float64, m)
-				for j := 0; j < m; j++ {
-					s := 0.0
-					for k := 0; k < mp; k++ {
-						s += a1D2[j][k] * a1[j][k]
-					}
-					psi1diagv[j] = s
-				}
-				// diag(Ξ₁)[j] = A₁[j]·(D² Svv D²)·A₁[j]ᵀ
-				a1D2Svv := matMul(a1D2, svv)
-				a1B := matMulD(a1D2Svv, dv2) // A₁ D² Svv D² (m×mp)
-				xi1diagv = make([]float64, m)
-				for j := 0; j < m; j++ {
-					s := 0.0
-					for k := 0; k < mp; k++ {
-						s += a1[j][k] * a1B[j][k]
-					}
-					xi1diagv[j] = s
-				}
-				psi2v = matMulT(a1D2, uv) // Ψ₂ = A₁ D² Uvᵀ (m×c)
-				xi2v = matMulT(a1B, uv)   // Ξ₂ = A₁ D² Svv D² Uvᵀ (m×c); reuse the matrix above
-				// Ψ₁·U = A₁ D²(A₁ᵀU) (m×R), computed in B's plaintext (A₁ᵀU is mp×R).
-				a1T := make([][]float64, mp)
-				for k := 0; k < mp; k++ {
-					a1T[k] = make([]float64, m)
-					for j := 0; j < m; j++ {
-						a1T[k][j] = a1[j][k]
-					}
-				}
-				a1tUd := matMul(a1T, psiProbe) // A₁ᵀU (mp×probeCount)
-				for k := 0; k < mp; k++ {
-					for p := 0; p < probeCount; p++ {
-						a1tUd[k][p] *= dv2[k]
-					}
-				}
-				psi1Uv = matMul(a1, a1tUd) // m×R
-			}
-		}
+	var privateTables privateMomentTables
+	if pid > 0 {
+		privateTables = makePrivateMomentTables(priv, m, c, N, psiProbe)
 	}
 	shareVec := func(vals []float64, n int) mpc_core.RVec {
 		out := mpc_core.InitRVec(rtype.Zero(), n)
@@ -652,17 +639,17 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, priv *
 		}
 		return out
 	}
-	Psi1diag := shareVec(psi1diagv, m)
-	Xi1diag := shareVec(xi1diagv, m)
-	Psi2 := shareMat(psi2v, m, c)
-	Xi2 := shareMat(xi2v, m, c)
-	Pi0 := shareMat(pi0v, c, c)
-	Pi1 := shareMat(pi1v, c, c)
-	Pi2 := shareMat(pi2v, c, c)
-	Psi1U := shareMat(psi1Uv, m, probeCount)
-	s1 := shareScalar(s1v, haveB)
-	s2 := shareScalar(s2v, haveB)
-	s3 := shareScalar(s3v, haveB)
+	Psi1diag := shareVec(privateTables.psi1Diag, m)
+	Xi1diag := shareVec(privateTables.xi1Diag, m)
+	Psi2 := shareMat(privateTables.psi2, m, c)
+	Xi2 := shareMat(privateTables.xi2, m, c)
+	Pi0 := shareMat(privateTables.pi0, c, c)
+	Pi1 := shareMat(privateTables.pi1, c, c)
+	Pi2 := shareMat(privateTables.pi2, c, c)
+	Psi1U := shareMat(privateTables.psi1Z, m, probeCount)
+	s1 := shareScalar(privateTables.s1)
+	s2 := shareScalar(privateTables.s2)
+	s3 := shareScalar(privateTables.s3)
 
 	// rowdot(A,B)[j] = Σ_l A[j][l]B[j][l]  (m×c inputs → m vector)
 	rowdot := func(A, B mpc_core.RMat) mpc_core.RVec {
@@ -772,7 +759,7 @@ func (ast *AssocTest) skatMomentsSS(b, nsnps, nProbes int, null skatNull, priv *
 		}
 		quadPsi2 := sumAllMat(elemMulM(Theta, DMV2))
 		// quad(Θ) = Θᵀ·D_p²M_ppD_p²·Θ (c×c); tr(quad(Θ)·Π₀)
-		quadTh := ssMulM(transpose(Theta), DMVt) // c×c
+		quadTh := ssMulM(transposeShares(rtype, Theta), DMVt) // c×c
 		trDp2MppDp2C = trPsi1.Sub(pmul(quadPsi2, 2.0)).Add(trProd(quadTh, Pi0))
 	}
 

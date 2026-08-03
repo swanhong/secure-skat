@@ -1,21 +1,17 @@
 package gwas
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
 	"time"
 
-	"go.dedis.ch/onet/v3/log"
-
-	"fmt"
-
 	mpc_core "github.com/hhcho/mpc-core"
-
-	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
-
 	"github.com/hhcho/sfgwas/crypto"
 	"github.com/hhcho/sfgwas/mpc"
+	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
+	"go.dedis.ch/onet/v3/log"
 	"gonum.org/v1/gonum/mat"
 )
 
@@ -26,7 +22,9 @@ type ProtocolInfo struct {
 
 	// Application-layer traffic used by collective HE key setup. The remaining
 	// pre-run communication is derived when skat_fed starts.
-	fedSetupComm mpc.CommunicationStats
+	fedSetupComm  mpc.CommunicationStats
+	skatManifest  GeneBatchManifest
+	skatGeneSizes []int
 
 	// Input files
 	genoBlocks     []*GenoFileStream
@@ -185,9 +183,6 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 	defer func() { fedTimings.initTotal = time.Since(tInit) }() // network + keygen + geno/cov load
 	var params ckks.Parameters
 	if !mpcOnly {
-		if config.CkksParams == crypto.CKKSParamsPN14QP436S45 {
-			panic("PN14QP436S45 requires the unavailable skat_fed packed-experimental backend")
-		}
 		paramsLiteral, err := crypto.ResolveCKKSParametersLiteral(config.CkksParams)
 		if err != nil {
 			panic(err)
@@ -223,10 +218,28 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 		mpcEnv[thread].SetDivSqrtMaxLen(config.DivSqrtMaxLen)
 	}
 
+	var galoisElements []uint64
+	var skatManifest GeneBatchManifest
+	var skatGeneSizes []int
+	if !mpcOnly && config.CkksParams == crypto.CKKSParamsPN14QP436S45 {
+		if os.Getenv("SFGWAS_MODE") != "skat_fed" {
+			panic("PN14QP436S45 is only available in skat_fed mode")
+		}
+		skatGeneSizes = loadPublicGeneSizes(config.GenoBlockSizeFile, config.GenoNumBlocks)
+		geneIDs := readPublicFields(config.GeneIDFile, config.GenoNumBlocks)
+		skatManifest = buildGeneBatchManifest(params, geneIDs, skatGeneSizes, config.SkatPValueProbes)
+		hash := skatManifest.hash()
+		syncGeneBatchManifest(mpcEnv[0], hash)
+		galoisElements = append([]uint64{}, skatManifest.GaloisElements...)
+		if pid == config.HubPartyId {
+			logGeneBatchManifest(skatManifest, hash)
+		}
+	}
+
 	var cps *crypto.CryptoParams
 	setupCommStart := networks.GetCommunicationStats()
 	if !mpcOnly {
-		cps = networks.CollectiveInit(&params, prec, config.RotKeyPow2Only)
+		cps = networks.CollectiveInit(&params, prec, config.RotKeyPow2Only, galoisElements)
 	}
 	fedSetupComm := networks.GetCommunicationStats().Sub(setupCommStart)
 
@@ -269,9 +282,11 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 	gwasParams := InitGWASParams(config.NumInds, config.NumSnps, config.NumCovs, config.NumPCs, config.SnpDistThres)
 
 	return &ProtocolInfo{
-		mpcObj:       mpcEnv, // One MPC object for each thread
-		cps:          cps,
-		fedSetupComm: fedSetupComm,
+		mpcObj:        mpcEnv, // One MPC object for each thread
+		cps:           cps,
+		fedSetupComm:  fedSetupComm,
+		skatManifest:  skatManifest,
+		skatGeneSizes: skatGeneSizes,
 
 		genoBlocks:     genofs,
 		genoBlockSizes: genoBlockSizes,
@@ -515,6 +530,9 @@ func logFedTimingTree(metrics *fedRunMetrics, secureRun time.Duration) {
 		"gene_burden_private_cross", "gene_burden_projection")
 	moments := metrics.sumDuration("gene_moments_setup_gtx", "gene_moments_public_trace_gtg_gtx",
 		"gene_moments_private_cross")
+	packedRaw := metrics.stageDuration("packed_raw_first_pass")
+	packedExact := metrics.stageDuration("packed_exact_first_pass")
+	packedHutch := metrics.stageDuration("packed_hutch_first_pass")
 	finalize := metrics.parentLeafDuration("post_block_finalize", "")
 	grand := fedTimings.initTotal + secureRun
 	for _, ln := range []string{
@@ -544,6 +562,9 @@ func logFedTimingTree(metrics *fedRunMetrics, secureRun time.Duration) {
 		fmt.Sprintf("  │    │    ├─ burden variance %v", ms(burden)),
 		fmt.Sprintf("  │    │    ├─ moments         %v", ms(moments)),
 		fmt.Sprintf("  │    │    └─ other overhead  %v", ms(metrics.stageDuration("gene_other"))),
+		fmt.Sprintf("  │    ├─ packed weights      %v", ms(metrics.stageDuration("packed_weights"))),
+		fmt.Sprintf("  │    ├─ packed first pass   %v  [raw %v | exact %v | hutch %v]", ms(packedRaw+packedExact+packedHutch), ms(packedRaw), ms(packedExact), ms(packedHutch)),
+		fmt.Sprintf("  │    ├─ packed wave 2       %v", ms(metrics.stageDuration("packed_hutch_wave2"))),
 		fmt.Sprintf("  │    └─ post-block finalize %v", ms(finalize)),
 		fmt.Sprintf("  ├─ decrypt                 %v", ms(metrics.stageDuration("decrypt_outputs"))),
 		fmt.Sprintf("  ├─ run overhead            %v", ms(metrics.stageDuration("run_other"))),

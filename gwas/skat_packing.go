@@ -98,22 +98,6 @@ func windowActiveMask(bucket GeneBatchBucket, window GeneBatchWindow, rhs int) [
 	return mask
 }
 
-func windowRowZeroMask(bucket GeneBatchBucket, window GeneBatchWindow, rhs int) []float64 {
-	slots := bucket.P * bucket.L
-	mask := make([]float64, windowGroupCount(window, rhs)*slots)
-	for _, tile := range window.Tiles {
-		if tile.Variants == 0 {
-			continue
-		}
-		for column := 0; column < rhs; column++ {
-			group := column / window.H
-			lane := tile.LaneBase + column%window.H
-			mask[group*slots+lane] = 1
-		}
-	}
-	return mask
-}
-
 func (ast *AssocTest) applyPackedMask(values crypto.CipherVector, mask []float64) crypto.CipherVector {
 	if len(mask) != len(values)*ast.general.cps.GetSlots() {
 		panic("packed mask size mismatch")
@@ -129,7 +113,7 @@ func (ast *AssocTest) maskWindowActive(bucket GeneBatchBucket, window GeneBatchW
 	return ast.applyPackedMask(values, windowActiveMask(bucket, window, rhs))
 }
 
-// sumWindowRows masks padding, sums P variant rows per lane, and keeps row 0.
+// sumWindowRows masks padding and sums P variant rows per lane.
 func (ast *AssocTest) sumWindowRows(bucket GeneBatchBucket, window GeneBatchWindow, values crypto.CipherVector, rhs int) crypto.CipherVector {
 	if ast.general.mpcObj[0].GetPid() == 0 {
 		return make(crypto.CipherVector, len(values))
@@ -147,7 +131,7 @@ func (ast *AssocTest) sumWindowRows(bucket GeneBatchBucket, window GeneBatchWind
 	}); err != nil {
 		panic(err)
 	}
-	return ast.applyPackedMask(out, windowRowZeroMask(bucket, window, rhs))
+	return out
 }
 
 func (ast *AssocTest) windowSharesToCiphertexts(bucket GeneBatchBucket, window GeneBatchWindow, tileValues []mpc_core.RMat, rhs int) crypto.CipherVector {

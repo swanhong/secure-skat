@@ -127,7 +127,7 @@ func (netObj *Network) aggregateKeySwitchShare(prot multiparty.KeySwitchProtocol
 // Package-level: a run has one CollectiveInit; not concurrency-safe (benchmark instrumentation).
 var SetupTiming struct{ PubKey, RelinKey, RotKey time.Duration }
 
-func (netObj ParallelNetworks) CollectiveInit(params *ckks.Parameters, prec uint, rotPow2Only bool) (cps *crypto.CryptoParams) {
+func (netObj ParallelNetworks) CollectiveInit(params *ckks.Parameters, prec uint, rotPow2Only bool, galoisElements []uint64) (cps *crypto.CryptoParams) {
 	log.LLvl1("CollectiveInit started")
 
 	kgen := ckks.NewKeyGenerator(*params)
@@ -157,8 +157,15 @@ func (netObj ParallelNetworks) CollectiveInit(params *ckks.Parameters, prec uint
 	if rotPow2Only { // config rotkey_pow2only → power-of-two rotation keys only (InnerSumAll)
 		smallDim, babyFlag = 0, false
 	}
-	log.LLvl1("RotKeyGen: shifts <=", smallDim, "babyFlag", babyFlag, "powers of two up to", cps.GetSlots())
+	if galoisElements == nil {
+		log.LLvl1("RotKeyGen: shifts <=", smallDim, "babyFlag", babyFlag, "powers of two up to", cps.GetSlots())
+	} else {
+		log.LLvl1("RotKeyGen: manifest Galois elements", len(galoisElements))
+	}
 	if strings.TrimSpace(os.Getenv("SFGWAS_SKIP_ROTKEYGEN")) != "" {
+		if len(galoisElements) > 0 {
+			panic("CollectiveInit: cannot skip manifest rotation keys")
+		}
 		log.LLvl1("CollectiveInit: skipping rotation-key generation because SFGWAS_SKIP_ROTKEYGEN is set")
 		log.LLvl1("CollectiveInit finished")
 		return
@@ -170,7 +177,12 @@ func (netObj ParallelNetworks) CollectiveInit(params *ckks.Parameters, prec uint
 		for i := range netObj {
 			crsVec[i] = netObj[i].sharedCRS()
 		}
-		rotKs := netObj.CollectiveRotKeyGen(params, skShard, crsVec, crypto.GenerateRotKeys(cps.GetSlots(), smallDim, babyFlag))
+		var rotKs []*rlwe.GaloisKey
+		if galoisElements == nil {
+			rotKs = netObj.CollectiveRotKeyGen(params, skShard, crsVec, crypto.GenerateRotKeys(cps.GetSlots(), smallDim, babyFlag))
+		} else {
+			rotKs = netObj.CollectiveGaloisKeyGen(params, skShard, crsVec, galoisElements)
+		}
 		cps.SetEvaluators(*params, rlk, rotKs)
 	}
 	SetupTiming.RotKey = time.Since(t)
@@ -447,11 +459,27 @@ func (netObj ParallelNetworks) CollectiveRotKeyGen(parameters *ckks.Parameters, 
 		shiftMap[shift] = true
 	}
 
-	gElems := make([]uint64, 0, len(shiftMap)+1)
+	gElems := make([]uint64, 0, len(shiftMap))
 	for k := range shiftMap {
 		gElems = append(gElems, parameters.GaloisElementForRotation(k))
 	}
 	gElems = append(gElems, parameters.GaloisElementForComplexConjugation())
+	return netObj.CollectiveGaloisKeyGen(parameters, skShard, crsVec, gElems)
+}
+
+func (netObj ParallelNetworks) CollectiveGaloisKeyGen(parameters *ckks.Parameters, skShard *rlwe.SecretKey,
+	crsVec []sampling.PRNG, requested []uint64) (rotKeys []*rlwe.GaloisKey) {
+
+	set := make(map[uint64]bool, len(requested))
+	for _, galEl := range requested {
+		if galEl != 1 {
+			set[galEl] = true
+		}
+	}
+	gElems := make([]uint64, 0, len(set))
+	for galEl := range set {
+		gElems = append(gElems, galEl)
+	}
 	sort.Slice(gElems, func(i, j int) bool { return gElems[i] < gElems[j] })
 
 	if strings.TrimSpace(os.Getenv("SFGWAS_SERIAL_ROTKEYGEN")) != "" {

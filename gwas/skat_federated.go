@@ -199,6 +199,9 @@ func blockSecStats(secs []float64) string {
 }
 
 func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, privatePid int) (skatStat, burdenSqrtT2Stat, skatZStat crypto.CipherVector) {
+	if ast.general.config.CkksParams == crypto.CKKSParamsPN14QP436S45 {
+		return ast.computePackedFederated(privateOnly, privatePid)
+	}
 	mpcObj := ast.general.mpcObj[0]
 	cps := ast.general.cps
 	rtype := mpcObj.GetRType()
@@ -209,7 +212,7 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 
 	tStart := time.Now()
 	manifestMark := ast.metricMark()
-	publicSizes := ast.prepareGeneBatchManifest()
+	_, publicSizes := ast.prepareGeneBatchManifest()
 	ast.metricEnd("manifest_sync", manifestMark)
 
 	tNull := time.Now()
