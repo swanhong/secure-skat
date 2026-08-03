@@ -1,11 +1,9 @@
 package gwas
 
 import (
-	"bufio"
 	"math"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"go.dedis.ch/onet/v3/log"
@@ -86,6 +84,7 @@ type Config struct {
 
 	GenoNumBlocks     int    `toml:"geno_num_blocks"`
 	GenoBlockSizeFile string `toml:"geno_block_size_file"`
+	GeneIDFile        string `toml:"gene_id_file"`
 
 	PhenoFile  string `toml:"pheno_file"`
 	CovFile    string `toml:"covar_file"`
@@ -242,32 +241,7 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 	genoBlockSizes = make([]int, config.GenoNumBlocks)
 
 	if pid > 0 {
-		// Read geno block size file
-		file, err := os.Open(config.GenoBlockSizeFile)
-
-		if err != nil {
-			log.Fatalf("failed to open: %v", config.GenoBlockSizeFile)
-		}
-		scanner := bufio.NewScanner(file)
-		scanner.Split(bufio.ScanLines)
-
-		for i := 0; i < config.GenoNumBlocks; i++ {
-			if !scanner.Scan() {
-				log.Fatalf("not enough lines in %v", config.GenoBlockSizeFile)
-			}
-
-			genoBlockSizes[i], err = strconv.Atoi(scanner.Text())
-			if err != nil {
-				log.Fatalf("parse error: %v", config.GenoBlockSizeFile)
-			}
-		}
-
-		if scanner.Scan() {
-			log.Fatalf("too many lines in %v", config.GenoBlockSizeFile)
-		}
-
-		file.Close()
-
+		genoBlockSizes = loadPublicGeneSizes(config.GenoBlockSizeFile, config.GenoNumBlocks)
 		totalSize := 0
 		for _, v := range genoBlockSizes {
 			totalSize += v
@@ -554,6 +528,7 @@ func logFedTimingTree(metrics *fedRunMetrics, secureRun time.Duration) {
 		fmt.Sprintf("  ├─ load privateOnly        %v", ms(metrics.stageDuration("load_private_only"))),
 		fmt.Sprintf("  ├─ assoc init              %v", ms(metrics.stageDuration("assoc_init"))),
 		fmt.Sprintf("  ├─ compute                 %v", ms(fedTimings.total)),
+		fmt.Sprintf("  │    ├─ manifest sync      %v", ms(metrics.stageDuration("manifest_sync"))),
 		fmt.Sprintf("  │    ├─ null model         %v", ms(fedTimings.nullTotal)),
 		fmt.Sprintf("  │    │    ├─ aggregate      %v", ms(nullAgg)),
 		fmt.Sprintf("  │    │    ├─ inverse        %v", ms(metrics.stageDuration("null_solve"))),
@@ -561,7 +536,6 @@ func logFedTimingTree(metrics *fedRunMetrics, secureRun time.Duration) {
 		fmt.Sprintf("  │    │    └─ RSS            %v", ms(metrics.stageDuration("null_rss"))),
 		fmt.Sprintf("  │    ├─ pre-block setup    %v", ms(metrics.stageDuration("pre_block_setup"))),
 		fmt.Sprintf("  │    ├─ blocks (%d)         %v  [per-block %s]", len(fedTimings.blockSecs), ms(fedTimings.blocks), blockSecStats(fedTimings.blockSecs)),
-		fmt.Sprintf("  │    │    ├─ shape sync      %v", ms(metrics.stageDuration("gene_shape_sync"))),
 		fmt.Sprintf("  │    │    ├─ local contract  %v", ms(metrics.stageDuration("gene_local_public_gtg_gtx_gty"))),
 		fmt.Sprintf("  │    │    ├─ public stat     %v", ms(public)),
 		fmt.Sprintf("  │    │    ├─ private total   %v", ms(privateLocal+privateShare)),

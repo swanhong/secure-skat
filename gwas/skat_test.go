@@ -1166,6 +1166,15 @@ func TestSKATFederatedPrivate(t *testing.T) {
 
 	prot.GetConfig().GenoNumBlocks = nGenes
 	prot.GetConfig().GenoFileFormat = "blocks"
+	manifestDir := t.TempDir()
+	prot.GetConfig().GenoBlockSizeFile = filepath.Join(manifestDir, "block_sizes.txt")
+	prot.GetConfig().GeneIDFile = filepath.Join(manifestDir, "genes.txt")
+	if err := os.WriteFile(prot.GetConfig().GenoBlockSizeFile, []byte("4\n4\n4\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(prot.GetConfig().GeneIDFile, []byte("gene0\ngene1\ngene2\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 	installPublicStreams := func() {
 		switch pid {
 		case 1:

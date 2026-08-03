@@ -198,6 +198,8 @@ ports = {{}}
     open(f"{cfg}/configGlobal.toml", "w").write(glob)
     for pid, sub in [(0, None), (1, "A"), (2, "B")]:
         loc = (f'shared_keys_path = "{keys_path}"\n'
+               f'geno_block_size_file = "{out_dir}/block_sizes.txt"\n'
+               f'gene_id_file = "{out_dir}/genes.txt"\n'
                f'output_dir = "{out_dir}/out/party{pid}"\n'
                f'cache_dir = "{out_dir}/cache/party{pid}"\n'
                f'local_num_threads = 4\nmemory_limit = 6000000000\n'
@@ -205,7 +207,6 @@ ports = {{}}
         if sub:  # data parties only
             loc += (f'geno_binary_file_prefix = "{out_dir}/{sub}/geno"\n'
                     f'geno_num_blocks = {n_blocks}\n'
-                    f'geno_block_size_file = "{out_dir}/block_sizes.txt"\n'
                     f'pheno_file = "{out_dir}/{sub}/pheno.txt"\n'
                     f'covar_file = "{out_dir}/{sub}/cov.txt"\n'
                     f'snp_position_file = "{out_dir}/pos.txt"\n')

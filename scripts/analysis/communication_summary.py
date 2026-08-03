@@ -44,7 +44,7 @@ MATH_OBJECTS = {
     "null_rss": "residual sum of squares",
     "null_other": "unclassified null-model overhead",
     "pre_block_setup": "per-run gene-output allocation and setup",
-    "gene_shape_sync": "m_pub shape metadata",
+    "manifest_sync": "public gene IDs, m_pub, bucket/lane manifest hash",
     "gene_local_public_gtg_gtx_gty": "G_pub^T G_pub; G_pub^T X; G_pub^T y; G_pub^T 1 (local)",
     "gene_public_score_gtx_gty": "G_pub^T y - G_pub^T X beta_hat",
     "gene_public_weight_dosage_maf": "G_pub^T 1 -> MAF -> w",
