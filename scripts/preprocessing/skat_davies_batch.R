@@ -1,7 +1,6 @@
 #!/usr/bin/env Rscript
 
-# Batched, fail-closed wrapper around the Davies/qfc routine bundled with R::SKAT.
-# Low-tail Ruben and closed-form cases are handled in Python before this helper is called.
+# Batched Davies and Liu p-values from the routines bundled with R::SKAT.
 
 suppressPackageStartupMessages(library(SKAT))
 
@@ -27,8 +26,9 @@ DAVIES_LIM <- 10000000L
 BASE_ACC <- max(requested_tol, 1e-10)
 DEEP_ACC <- max(min(BASE_ACC * 1e-3, 1e-13), .Machine$double.eps * 16)
 davies_fn <- get0("SKAT_davies", envir = asNamespace("SKAT"), inherits = FALSE)
-if (is.null(davies_fn)) {
-  stop("installed SKAT package does not provide the required SKAT_davies backend")
+liu_fn <- get0("SKAT_liu", envir = asNamespace("SKAT"), inherits = FALSE)
+if (is.null(davies_fn) || is.null(liu_fn)) {
+  stop("installed SKAT package does not provide the required p-value backends")
 }
 
 run_davies <- function(q, lambda, acc) {
@@ -48,6 +48,13 @@ for (i in seq_along(ids)) {
   rows <- rows[order(rows$eigen_index), ]
   q <- unique(rows$q)
   lambda <- rows$lambda
+  if (length(q) == 1L && q == 0 && length(lambda) == 1L && lambda == 0) {
+    result[[i]] <- data.frame(
+      case_id = id, davies = 1, liu = 1, davies_ifault = 0L,
+      acc_used = BASE_ACC, stringsAsFactors = FALSE
+    )
+    next
+  }
   if (length(q) != 1L || !is.finite(q) || q <= 0 ||
       any(!is.finite(lambda)) || any(lambda <= 0)) {
     stop(sprintf("invalid normalized mixture case %d", id))
@@ -82,8 +89,9 @@ for (i in seq_along(ids)) {
 
   result[[i]] <- data.frame(
     case_id = id,
-    pvalue = pvalue,
-    ifault = ifault,
+    davies = pvalue,
+    liu = liu_fn(q, lambda),
+    davies_ifault = ifault,
     acc_used = acc_used,
     stringsAsFactors = FALSE
   )

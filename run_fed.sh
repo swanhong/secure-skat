@@ -67,6 +67,11 @@ rm -f "$OUT/prep.log" "$OUT/compare.log" \
   "$OUT/party0.log" "$OUT/party1.log" "$OUT/party2.log" \
   "$OUT/communication_summary.csv"
 
+if [ "${FED_PROBES:-0}" -gt 0 ]; then
+  command -v Rscript >/dev/null || { echo "error: Rscript is required for SKAT p-value references" >&2; exit 1; }
+  Rscript -e 'library(SKAT)' >/dev/null
+fi
+
 now_ms() {
   python3 -c 'import time; print(time.monotonic_ns() // 1000000)' 2>/dev/null \
     || echo "$(($(date +%s) * 1000))"

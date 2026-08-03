@@ -10,7 +10,7 @@ build_party_blocks does the alignment (B -> public list, public_only cols = 0) +
 These mirror the secure path exactly; the secure SKAT is tested against them. No plink2/AoU here --
 fed_prep.py does the real genotype extraction and imports build_party_blocks from this module.
 A real federated==pooled check needs real cov/pheno; call verify_blocks with them.
-The core algebra uses NumPy; the exact general-rank Davies reference is batched through R::SKAT.
+The core algebra uses NumPy; Davies and Liu references are batched through R::SKAT.
 
     python3 skat_plain_local.py    # self-check (federated == pooled on a tiny fixed example)
 """
@@ -174,91 +174,8 @@ def pooled_skat_burden(union_blocks, XA, yA, XB, yB):
     return skat, burden, burden_p
 
 
-# --- SKAT p-value methods for Q ~ Σλχ²₁ from the kernel eigenvalues λ. WH is the secure path's
-# approximation; Liu is moment matching; the exact-mixture reference uses closed forms/a bounded
-# Ruben lower-tail series plus the actual batched R::SKAT Davies/qfc routine. ---
-_LANCZOS = [676.5203681218851, -1259.1392167224028, 771.32342877765313, -176.61502916214059,
-            12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7]
-
-
-def _gammln(x):
-    x -= 1.0
-    a, t = 0.99999999999980993, x + 7.5
-    for i, gi in enumerate(_LANCZOS):
-        a += gi / (x + i + 1)
-    return 0.5 * math.log(2 * math.pi) + (x + 0.5) * math.log(t) - t + math.log(a)
-
-
-def _gammq(a, x):  # regularized upper incomplete gamma Q(a,x) (Numerical Recipes)
-    if x <= 0:
-        return 1.0
-    if x < a + 1.0:
-        ap, s, d = a, 1.0 / a, 1.0 / a
-        for _ in range(2000):
-            ap += 1.0
-            d *= x / ap
-            s += d
-            if abs(d) < abs(s) * 1e-15:
-                break
-        else:
-            raise ArithmeticError("incomplete-gamma series did not converge")
-        return 1.0 - s * math.exp(-x + a * math.log(x) - _gammln(a))
-    b, c, d = x + 1.0 - a, 1e300, 0.0
-    d, h = 1.0 / b, 1.0 / b
-    for i in range(1, 2000):
-        an = -i * (i - a)
-        b += 2.0
-        d = an * d + b
-        d = 1e-300 if abs(d) < 1e-300 else d
-        c = b + an / c
-        c = 1e-300 if abs(c) < 1e-300 else c
-        d = 1.0 / d
-        delt = d * c
-        h *= delt
-        if abs(delt - 1.0) < 1e-15:
-            break
-    else:
-        raise ArithmeticError("incomplete-gamma continued fraction did not converge")
-    return math.exp(-x + a * math.log(x) - _gammln(a)) * h
-
-
-def _gammp(a, x):  # regularized lower incomplete gamma P(a,x)
-    if x <= 0:
-        return 0.0
-    if x >= a + 1.0:
-        return 1.0 - _gammq(a, x)
-    ap, s, d = a, 1.0 / a, 1.0 / a
-    for _ in range(2000):
-        ap += 1.0
-        d *= x / ap
-        s += d
-        if abs(d) < abs(s) * 1e-15:
-            break
-    else:
-        raise ArithmeticError("incomplete-gamma series did not converge")
-    return s * math.exp(-x + a * math.log(x) - _gammln(a))
-
-
-def _chi2_sf(x, df):
-    return _gammq(df / 2.0, x / 2.0)
-
-
-def _chi2_cdf(x, df):
-    return _gammp(df / 2.0, x / 2.0)
-
-
-def _ncx2_sf(x, df, nc):  # non-central chi² survival = Poisson-weighted central survivals
-    if nc <= 0:
-        return _chi2_sf(x, df)
-    lam, total, logw = nc / 2.0, 0.0, -nc / 2.0
-    for j in range(2000):
-        total += math.exp(logw) * _chi2_sf(x, df + 2 * j)
-        if j > lam and math.exp(logw) < 1e-17 * (total + 1e-300):
-            break
-        logw += math.log(lam) - math.log(j + 1)
-    return min(max(total, 0.0), 1.0)
-
-
+# --- SKAT p-values for Q ~ Σλχ²₁. WH mirrors the secure path; R::SKAT supplies the
+# Davies and Liu references for every non-degenerate gene. ---
 def skat_wh_p(lam, Q):
     """Wilson-Hilferty screening p — same formula as the secure path (from S1,S2,S3=tr(Kᵏ))."""
     lam = np.asarray(lam, float)
@@ -269,26 +186,6 @@ def skat_wh_p(lam, Q):
     h = 2 * S3**2 / (9 * S2**3)
     z = (np.cbrt(1 + u) - 1 + h) / math.sqrt(h)
     return 0.5 * math.erfc(z / math.sqrt(2))
-
-
-def skat_liu_p(lam, Q):
-    """Liu et al. (2009) moment-matching to a (non-central) chi-square (R::SKAT method='liu')."""
-    lam = np.asarray(lam, float)
-    c1, c2, c3, c4 = (float((lam**k).sum()) for k in (1, 2, 3, 4))
-    if c2 <= 0:
-        return 1.0
-    s1, s2 = c3 / c2**1.5, c4 / c2**2
-    if s1**2 > s2:
-        a = 1.0 / (s1 - math.sqrt(s1**2 - s2))
-        delta = s1 * a**3 - a**2
-        l = a**2 - 2 * delta
-    else:
-        a, delta = (1.0 / s1 if s1 > 0 else 0.0), 0.0
-        l = 1.0 / s2 if s2 > 0 else 0.0
-    if l <= 0:
-        return 1.0
-    q_norm = (Q - c1) / math.sqrt(2 * c2) * (math.sqrt(2.0) * a) + (l + delta)
-    return _ncx2_sf(q_norm, l, delta)
 
 
 def _positive_mixture_weights(lam):
@@ -309,86 +206,13 @@ def _positive_mixture_weights(lam):
     return lam[lam > 0.0]
 
 
-def _normalized_mixture_case(lam, Q):
-    if not math.isfinite(Q):
-        raise ValueError("SKAT statistic Q must be finite")
-    lam = _positive_mixture_weights(lam)
-    if lam.size == 0 or Q <= 0.0:
-        return lam, 0.0
-
-    scale = float(np.max(lam))
-    weights = lam / scale
-    q = float(Q / scale)
-    if not math.isfinite(q):
-        raise OverflowError("normalized SKAT statistic Q/lambda_max is not finite")
-    return weights, q
-
-
-def _ruben_lower_tail_p(weights, q, tol, max_terms=4096):
-    """Bounded lower-tail series for a positive central chi-square mixture.
-
-    With beta=min(lambda), Ruben's expansion has non-negative coefficients. After term k, the
-    omitted CDF is bounded by its remaining coefficient mass times the next chi-square CDF. This is
-    used only below the mixture mean, where it normally converges in a handful of terms; difficult
-    spectra return None and are delegated to Davies instead of returning an unchecked value.
-    """
-    beta = float(np.min(weights))
-    z = float(q / beta)
-    if beta <= 0.0 or not math.isfinite(z):
-        return None
-
-    gamma = 1.0 - beta / weights
-    log_d0 = 0.5 * float(np.log(beta / weights).sum())
-    if log_d0 < math.log(np.finfo(float).tiny):
-        return None
-
-    d0 = math.exp(log_d0)
-    coeffs = [d0]
-    mass = d0
-    cdf = d0 * _chi2_cdf(z, float(weights.size))
-    roundoff = 64.0 * np.finfo(float).eps
-
-    def finish():
-        pvalue = 1.0 - cdf
-        if not math.isfinite(pvalue) or pvalue < -tol or pvalue > 1.0 + tol:
-            return None
-        return min(max(pvalue, 0.0), 1.0)
-
-    next_cdf = _chi2_cdf(z, float(weights.size + 2))
-    if max(0.0, 1.0 - mass) * next_cdf + roundoff <= tol:
-        return finish()
-
-    gamma_power = np.ones_like(gamma)
-    b_terms = []
-    for k in range(1, max_terms + 1):
-        gamma_power *= gamma
-        b_terms.append(0.5 * float(gamma_power.sum()))
-        dk = float(np.dot(b_terms, coeffs[::-1])) / k
-        if not math.isfinite(dk) or dk < 0.0:
-            return None
-        coeffs.append(dk)
-        mass += dk
-        cdf += dk * _chi2_cdf(z, float(weights.size + 2 * k))
-        if mass > 1.0 + 1e-8 or cdf > 1.0 + 1e-8:
-            return None
-        next_cdf = _chi2_cdf(z, float(weights.size + 2 * (k + 1)))
-        error_bound = max(0.0, 1.0 - mass) * next_cdf + roundoff * (k + 1)
-        if error_bound <= tol:
-            return finish()
-    return None
-
-
-def _run_r_davies_batch(cases, tol, on_unresolved):
-    """Evaluate normalized general-rank cases in one R::SKAT qfc/Davies process."""
-    if not cases:
-        return []
+def _run_r_skat_batch(cases, tol=1e-10):
+    """Evaluate all non-degenerate cases with R::SKAT Davies and Liu."""
     rscript = os.environ.get("SKAT_RSCRIPT") or shutil.which("Rscript")
     helper = Path(__file__).with_name("skat_davies_batch.R")
     if not rscript:
-        if on_unresolved == "nan":
-            return [float("nan")] * len(cases)
         raise RuntimeError(
-            "Rscript with the R package SKAT is required for general-rank Davies p-values"
+            "Rscript with the R package SKAT is required for Davies and Liu p-values"
         )
     if not helper.is_file():
         raise RuntimeError(f"missing Davies helper: {helper}")
@@ -399,8 +223,16 @@ def _run_r_davies_batch(cases, tol, on_unresolved):
         with input_path.open("w", newline="") as handle:
             writer = csv.writer(handle)
             writer.writerow(("case_id", "eigen_index", "q", "lambda"))
-            for case_id, (weights, q) in enumerate(cases):
-                for eigen_index, value in enumerate(weights):
+            for case_id, (lam, Q) in enumerate(cases):
+                weights = _positive_mixture_weights(lam)
+                if not math.isfinite(Q):
+                    raise ValueError("SKAT statistic Q must be finite")
+                if weights.size == 0 or Q <= 0.0:
+                    writer.writerow((case_id, 0, 0, 0))
+                    continue
+                scale = float(np.max(weights))
+                q = float(Q / scale)
+                for eigen_index, value in enumerate(weights / scale):
                     writer.writerow((case_id, eigen_index, format(q, ".17g"),
                                      format(float(value), ".17g")))
 
@@ -409,108 +241,41 @@ def _run_r_davies_batch(cases, tol, on_unresolved):
                 [rscript, str(helper), str(input_path), str(output_path), format(tol, ".17g")],
                 text=True, capture_output=True, check=False, timeout=300)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise RuntimeError(f"could not run the R::SKAT Davies batch: {exc}") from exc
+            raise RuntimeError(f"could not run the R::SKAT p-value batch: {exc}") from exc
         if run.returncode != 0:
             detail = (run.stderr or run.stdout).strip().splitlines()
             suffix = f": {' | '.join(detail[-4:])}" if detail else ""
-            raise RuntimeError(f"R::SKAT Davies batch failed{suffix}")
+            raise RuntimeError(f"R::SKAT p-value batch failed{suffix}")
 
         with output_path.open(newline="") as handle:
             rows = list(csv.DictReader(handle))
 
     if len(rows) != len(cases):
         raise RuntimeError(
-            f"R::SKAT Davies returned {len(rows)} rows for {len(cases)} cases")
-    result = []
+            f"R::SKAT returned {len(rows)} rows for {len(cases)} cases")
+    liu, davies, unresolved = [], [], []
     for expected_id, row in enumerate(rows):
         case_id = int(row["case_id"])
-        pvalue = float(row["pvalue"])
-        ifault = int(row["ifault"])
-        acc_used = float(row["acc_used"])
         if case_id != expected_id:
-            raise RuntimeError("R::SKAT Davies returned cases out of order")
-        if ifault != 0 or not math.isfinite(pvalue) or pvalue <= 0.0 or pvalue > 1.0:
-            detail = f"case {case_id} (p={pvalue}, ifault={ifault}, acc={acc_used:g})"
-            if on_unresolved == "raise":
-                raise RuntimeError(f"R::SKAT Davies did not resolve {detail}")
-            result.append(float("nan"))
-        else:
-            result.append(pvalue)
-    return result
-
-
-def skat_davies_p_batch(cases, tol=1e-10, on_unresolved="raise"):
-    """Exact upper tails for multiple Q~sum(lambda_i*chi-square_1) cases.
-
-    Rank-one/equal spectra use their closed form, convergent lower tails use a bounded Ruben series,
-    and all remaining cases are evaluated together by the actual R::SKAT Davies/qfc routine. Invalid
-    qfc status and unresolved extreme tails are never clipped into 0, 0.5, or 1. By default they
-    raise; on_unresolved="nan" preserves the other batch results and emits a warning.
-    """
-    if not (1e-10 <= tol < 1.0):
-        raise ValueError("Davies tolerance must lie in [1e-10,1)")
-    if on_unresolved not in ("raise", "nan"):
-        raise ValueError("on_unresolved must be 'raise' or 'nan'")
-    cases = list(cases)
-    result = [None] * len(cases)
-    pending, pending_indices = [], []
-    for index, (lam, Q) in enumerate(cases):
-        weights, q = _normalized_mixture_case(lam, Q)
-        if weights.size == 0 or Q <= 0.0:
-            result[index] = 1.0
-            continue
-
-        # These are exact and avoid asking a general-purpose routine to resolve a special case. If
-        # their survival underflows (or the gamma iteration fails), delegate to qfc so the configured
-        # unresolved policy is applied instead of silently storing p=0.
-        if weights.size == 1:
-            try:
-                special = _chi2_sf(q / float(weights[0]), 1.0)
-            except ArithmeticError:
-                special = 0.0
-            if math.isfinite(special) and special > 0.0:
-                result[index] = special
-                continue
-        elif float(np.max(np.abs(weights - weights[0]))) <= 16.0 * np.finfo(float).eps:
-            try:
-                special = _chi2_sf(q / float(weights[0]), float(weights.size))
-            except ArithmeticError:
-                special = 0.0
-            if math.isfinite(special) and special > 0.0:
-                result[index] = special
-                continue
-
-        try:
-            ruben = _ruben_lower_tail_p(weights, q, tol) if q <= float(weights.sum()) else None
-        except ArithmeticError:
-            ruben = None
-        if ruben is not None:
-            result[index] = ruben
-        else:
-            pending_indices.append(index)
-            pending.append((weights, q))
-
-    unresolved_indices = []
-    for index, pvalue in zip(
-            pending_indices, _run_r_davies_batch(pending, tol, on_unresolved)):
-        result[index] = pvalue
-        if math.isnan(pvalue):
-            unresolved_indices.append(index)
-    if unresolved_indices:
-        preview = ", ".join(str(index) for index in unresolved_indices[:10])
-        suffix = ", ..." if len(unresolved_indices) > 10 else ""
+            raise RuntimeError("R::SKAT returned cases out of order")
+        liu_p = float(row["liu"])
+        davies_p = float(row["davies"])
+        ifault = int(row["davies_ifault"])
+        if not math.isfinite(liu_p) or liu_p < 0.0 or liu_p > 1.0:
+            raise RuntimeError(f"R::SKAT Liu returned invalid p-value for case {case_id}")
+        if ifault != 0 or not math.isfinite(davies_p) or davies_p <= 0.0 or davies_p > 1.0:
+            davies_p = float("nan")
+            unresolved.append(case_id)
+        liu.append(liu_p)
+        davies.append(davies_p)
+    if unresolved:
         warnings.warn(
-            f"R::SKAT Davies left {len(unresolved_indices)}/{len(cases)} cases unresolved "
-            f"(case indices: {preview}{suffix}); their reference p-values are NaN",
+            f"R::SKAT Davies left {len(unresolved)}/{len(cases)} cases unresolved; "
+            "their reference p-values are NaN",
             RuntimeWarning,
             stacklevel=2,
         )
-    return [float(value) for value in result]
-
-
-def skat_davies_p(lam, Q, tol=1e-10):
-    """Single-case wrapper around skat_davies_p_batch."""
-    return skat_davies_p_batch([(lam, Q)], tol=tol)[0]
+    return liu, davies
 
 
 def federated_skat_p_from_blocks(A_blocks, B_aligned, B_priv, XA, yA, XB, yB, ridge_rel=0.0):
@@ -521,7 +286,7 @@ def federated_skat_p_from_blocks(A_blocks, B_aligned, B_priv, XA, yA, XB, yB, ri
     nA, nB = len(yA), len(yB)
     X = np.vstack([XA, XB])
     r = np.concatenate([rA, rB])
-    wh, liu, davies_cases = [], [], []
+    wh, cases = [], []
     for g in range(len(A_blocks)):
         mpub, mpriv = A_blocks[g].shape[1], B_priv[g].shape[1]
         G = np.zeros((nA + nB, mpub + mpriv))          # union genotype: A private cols stay 0
@@ -536,11 +301,9 @@ def federated_skat_p_from_blocks(A_blocks, B_aligned, B_priv, XA, yA, XB, yB, ri
         M = G.T @ G - (G.T @ X) @ np.linalg.solve(X.T @ X, (X.T @ G))
         lam = np.linalg.eigvalsh(0.5 * (w[:, None] * M) * w[None, :])   # eig of K = ½ D M D
         wh.append(skat_wh_p(lam, Q))
-        liu.append(skat_liu_p(lam, Q))
-        davies_cases.append((lam, Q))
-    # A single unresolved extreme tail must not discard every other gene. Preserve it as NaN; summary
-    # metrics and plots exclude non-finite references and the batch emits an explicit warning.
-    return wh, liu, skat_davies_p_batch(davies_cases, on_unresolved="nan")
+        cases.append((lam, Q))
+    liu, davies = _run_r_skat_batch(cases)
+    return wh, liu, davies
 
 
 def verify_blocks(gene_keys, priv_keys, roles, A_geno, B_geno, keycol, XA, yA, XB, yB):
