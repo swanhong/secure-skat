@@ -31,25 +31,22 @@ finish() {
 }
 trap finish EXIT
 
-if [ "${FED_PROBES:-0}" -gt 0 ]; then
-  if ! command -v Rscript >/dev/null; then
-    APT=(apt-get)
-    [ "$(id -u)" -eq 0 ] || APT=(sudo apt-get)
-    "${APT[@]}" update
-    DEBIAN_FRONTEND=noninteractive "${APT[@]}" install -y --no-install-recommends \
-      r-base r-base-dev build-essential gfortran
-  fi
-  export R_LIBS_USER=/tmp/secure-skat-r-library
-  mkdir -p "$R_LIBS_USER"
-  Rscript -e 'if (!requireNamespace("SKAT", quietly=TRUE)) install.packages("SKAT", repos="https://cloud.r-project.org"); library(SKAT)'
-fi
-
 gsutil -u "$GOOGLE_CLOUD_PROJECT" cp "$CODE_BUNDLE_GCS" "$WORK/code.tar.gz"
 tar -xzf "$WORK/code.tar.gz" -C "$REPO"
 
 set -a
 . "$REPO/fed_aou.conf"
 set +a
+
+if [ "${FED_PROBES:-0}" -gt 0 ]; then
+  R_ENV=$WORK/skat-r
+  mkdir -p "$R_ENV"
+  gcloud storage cp --billing-project "$GOOGLE_CLOUD_PROJECT" \
+    "$FED_R_ENV_GCS" "$WORK/skat-r.tar.gz"
+  tar -xzf "$WORK/skat-r.tar.gz" -C "$R_ENV"
+  "$R_ENV/bin/conda-unpack"
+  export PATH="$R_ENV/bin:$PATH"
+fi
 
 gsutil -u "$GOOGLE_CLOUD_PROJECT" -m cp \
   "$GENO_GCS".pgen "$GENO_GCS".pvar "$GENO_GCS".psam \
