@@ -2,6 +2,8 @@ package mpc
 
 import (
 	crand "crypto/rand"
+	"fmt"
+	"math"
 	"math/big"
 
 	mpc_core "github.com/hhcho/mpc-core"
@@ -12,6 +14,68 @@ import (
 	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 	"github.com/tuneinsight/lattigo/v6/utils/sampling"
 )
+
+const (
+	conversionLambda       = 128
+	conversionHeadroomBits = 8
+	conversionNoise        = 19
+)
+
+func ceilLog2Int(x *big.Int) int {
+	if x.Sign() <= 0 {
+		return 0
+	}
+	return new(big.Int).Sub(x, big.NewInt(1)).BitLen()
+}
+
+func checkSSToCKKSHeadroom(params ckks.Parameters, rtype mpc_core.RElem, fracBits, nParty int, scale rlwe.Scale, level int) error {
+	dataParties := max(1, nParty-1)
+	encodedShares := new(big.Int).Rsh(rtype.Modulus(), 1)
+	encodedShares.Mul(encodedShares, scale.BigInt())
+	encodedShares.Mul(encodedShares, big.NewInt(int64(dataParties)))
+	encodedShares.Lsh(encodedShares, conversionHeadroomBits)
+
+	qHalf := new(big.Int).Rsh(new(big.Int).Set(params.RingQ().ModulusAtLevel[level]), 1)
+	fieldScale := new(big.Int).Lsh(big.NewInt(1), uint(fracBits))
+	if encodedShares.Cmp(new(big.Int).Mul(qHalf, fieldScale)) >= 0 {
+		required := ceilLog2Int(encodedShares) - fracBits
+		available := qHalf.BitLen() - 1
+		return fmt.Errorf("SS->CKKS: level=%d required_bits=%d available_bits=%d", level, required, available)
+	}
+	return nil
+}
+
+func checkCMatToSSAdmission(params ckks.Parameters, cm crypto.CipherMatrix, level, nParty, log2MaxMagnitude int) error {
+	dataParties := max(1, nParty-1)
+	q := params.RingQ().ModulusAtLevel[level]
+	maskRange := new(big.Int).Quo(new(big.Int).Set(q), big.NewInt(int64(2*dataParties)))
+	maskSupport := new(big.Int).Rsh(new(big.Int).Add(maskRange, big.NewInt(1)), 1)
+
+	scaleBits := 0
+	for i := range cm {
+		for j := range cm[i] {
+			scaleBits = max(scaleBits, int(math.Ceil(cm[i][j].Scale.Log2())))
+		}
+	}
+	messageBits := max(0, scaleBits+log2MaxMagnitude)
+	// Preserve the statistical target across all coefficients in one ciphertext.
+	required := messageBits + conversionLambda + params.LogN()
+	available := maskSupport.BitLen() - 1
+	if required > available {
+		return fmt.Errorf("CMatToSS: level=%d required_bits=%d available_bits=%d", level, required, available)
+	}
+
+	// Centered party masks occupy at most Q/4; keep the bounded message and
+	// conversion noise inside the remaining centered-Q headroom.
+	total := new(big.Int).Mul(maskSupport, big.NewInt(int64(dataParties)))
+	total.Add(total, new(big.Int).Lsh(big.NewInt(1), uint(messageBits)))
+	total.Add(total, big.NewInt(int64(conversionNoise*dataParties)))
+	qHalf := new(big.Int).Rsh(new(big.Int).Set(q), 1)
+	if total.Cmp(qHalf) >= 0 {
+		return fmt.Errorf("CMatToSS: level=%d required_bits=%d available_bits=%d", level, ceilLog2Int(total), qHalf.BitLen()-1)
+	}
+	return nil
+}
 
 func plaintextFromPoly(cryptoParams *crypto.CryptoParams, poly ring.Poly, src *rlwe.Ciphertext, level int) *rlwe.Plaintext {
 	pt := ckks.NewPlaintext(cryptoParams.Params, level)
@@ -210,6 +274,9 @@ func (mpcObj *MPC) decodePlainToElemSlots(cryptoParams *crypto.CryptoParams, rty
 // party masks its share, only x - Sum(mask_i) is revealed, and per-party encryptions of
 // the masked share are summed to Enc(x). No party observes x.
 func (mpcObj *MPC) SSToCMat(cryptoParams *crypto.CryptoParams, rm mpc_core.RMat) (cm crypto.CipherMatrix) {
+	if err := checkSSToCKKSHeadroom(cryptoParams.Params, mpcObj.GetRType(), mpcObj.GetFracBits(), mpcObj.GetNParty(), cryptoParams.Params.DefaultScale(), cryptoParams.Params.MaxLevel()); err != nil {
+		panic(err)
+	}
 	if mpcObj.GetPid() == 0 {
 		cm = make(crypto.CipherMatrix, 1)
 		cm[0] = make(crypto.CipherVector, 1)
@@ -255,7 +322,7 @@ func (mpcObj *MPC) SStoCiphertext(cryptoParams *crypto.CryptoParams, rv mpc_core
 	return mpcObj.SSToCVec(cryptoParams, rv)[0]
 }
 
-func (mpcObj *MPC) CMatToSS(cryptoParams *crypto.CryptoParams, rtype mpc_core.RElem, cm crypto.CipherMatrix, sourcePid, numCtxRow, numCtxCol, nElemRow int) (rm mpc_core.RMat) {
+func (mpcObj *MPC) CMatToSS(cryptoParams *crypto.CryptoParams, rtype mpc_core.RElem, cm crypto.CipherMatrix, sourcePid, numCtxRow, numCtxCol, nElemRow int, maxMagnitudeBits ...int) (rm mpc_core.RMat) {
 	rm = mpc_core.InitRMat(rtype.Zero(), numCtxRow, nElemRow)
 	if mpcObj.GetPid() == 0 {
 		return
@@ -269,6 +336,13 @@ func (mpcObj *MPC) CMatToSS(cryptoParams *crypto.CryptoParams, rtype mpc_core.RE
 	}
 
 	cm, level := crypto.FlattenLevels(cryptoParams, cm)
+	magnitudeBits := mpcObj.GetDataBits() - mpcObj.GetFracBits()
+	if len(maxMagnitudeBits) > 0 {
+		magnitudeBits = maxMagnitudeBits[0]
+	}
+	if err := checkCMatToSSAdmission(cryptoParams.Params, cm, level, mpcObj.GetNParty(), magnitudeBits); err != nil {
+		panic(err)
+	}
 
 	ringQ := cryptoParams.Params.RingQ().AtLevel(level)
 	nCoeffs := cryptoParams.Params.N()
@@ -277,9 +351,6 @@ func (mpcObj *MPC) CMatToSS(cryptoParams *crypto.CryptoParams, rtype mpc_core.RE
 	// v2 mask bound = (product of active Q moduli) / (2 * #data-parties).
 	bound := new(big.Int).Set(cryptoParams.Params.RingQ().ModulusAtLevel[level])
 	bound.Quo(bound, big.NewInt(int64(2*(nParty-1))))
-	if bound.Sign() <= 0 {
-		panic("CMatToSS: ciphertext level too low to mask securely")
-	}
 	boundHalf := new(big.Int).Rsh(bound, 1)
 
 	// Private smudge sampler (independent PRNG, never the shared CRS).
@@ -366,10 +437,10 @@ func (mpcObj *MPC) CMatToSS(cryptoParams *crypto.CryptoParams, rtype mpc_core.RE
 	return
 }
 
-func (mpcObj *MPC) CVecToSS(cryptoParams *crypto.CryptoParams, rtype mpc_core.RElem, cv crypto.CipherVector, sourcePid, numCtx, nElem int) (rm mpc_core.RVec) {
-	return mpcObj.CMatToSS(cryptoParams, rtype, crypto.CipherMatrix{cv}, sourcePid, 1, numCtx, nElem)[0]
+func (mpcObj *MPC) CVecToSS(cryptoParams *crypto.CryptoParams, rtype mpc_core.RElem, cv crypto.CipherVector, sourcePid, numCtx, nElem int, maxMagnitudeBits ...int) (rm mpc_core.RVec) {
+	return mpcObj.CMatToSS(cryptoParams, rtype, crypto.CipherMatrix{cv}, sourcePid, 1, numCtx, nElem, maxMagnitudeBits...)[0]
 }
 
-func (mpcObj *MPC) CiphertextToSS(cryptoParams *crypto.CryptoParams, rtype mpc_core.RElem, ct *rlwe.Ciphertext, sourcePid, n int) (rv mpc_core.RVec) {
-	return mpcObj.CVecToSS(cryptoParams, rtype, crypto.CipherVector{ct}, sourcePid, 1, n)
+func (mpcObj *MPC) CiphertextToSS(cryptoParams *crypto.CryptoParams, rtype mpc_core.RElem, ct *rlwe.Ciphertext, sourcePid, n int, maxMagnitudeBits ...int) (rv mpc_core.RVec) {
+	return mpcObj.CVecToSS(cryptoParams, rtype, crypto.CipherVector{ct}, sourcePid, 1, n, maxMagnitudeBits...)
 }
