@@ -53,6 +53,35 @@ func localGenotypeContract(G, X *mat.Dense, y0 []float64) LocalContraction {
 	}
 }
 
+type windowLocalContraction struct {
+	LocalContraction
+	Gamma *mat.Dense
+}
+
+// computeWindowLocal contracts one manifest window without retaining its genotype matrices.
+func (ast *AssocTest) computeWindowLocal(window GeneBatchWindow, X *mat.Dense, y0 []float64) []windowLocalContraction {
+	local := make([]windowLocalContraction, len(window.Tiles))
+	if ast.general.mpcObj[0].GetPid() == 0 {
+		return local
+	}
+	invN := 1.0 / float64(ast.skatTotalNumInds())
+	for i, tile := range window.Tiles {
+		if tile.Variants == 0 {
+			continue
+		}
+		G := orientGenotypeLocal(ast.readGenoBlockLocal(tile.Gene))
+		local[i].LocalContraction = localGenotypeContract(G, X, y0)
+		var gamma mat.Dense
+		gamma.Mul(G.T(), G)
+		data := gamma.RawMatrix().Data
+		for j := range data {
+			data[j] *= invN
+		}
+		local[i].Gamma = &gamma
+	}
+	return local
+}
+
 type geneLocal struct {
 	LocalContraction            // the n-free aggregates (GᵀX, Gᵀy0, dosage), promoted for direct access
 	Gloc             *mat.Dense // this party's aligned public genotype block (n×m — the n-dim data LocalContraction never holds)
