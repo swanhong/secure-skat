@@ -385,6 +385,8 @@ def _run_r_davies_batch(cases, tol, on_unresolved):
     rscript = os.environ.get("SKAT_RSCRIPT") or shutil.which("Rscript")
     helper = Path(__file__).with_name("skat_davies_batch.R")
     if not rscript:
+        if on_unresolved == "nan":
+            return [float("nan")] * len(cases)
         raise RuntimeError(
             "Rscript with the R package SKAT is required for general-rank Davies p-values"
         )
