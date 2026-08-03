@@ -29,6 +29,26 @@ func sortInt(a, b int) (int, int) {
 	return b, a
 }
 
+func readSharedPRGKey(sharedKeysPath, name string) ([]byte, error) {
+	keyPath := path.Join(sharedKeysPath, name)
+	key, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("read shared PRG key %s: %w", keyPath, err)
+	}
+	if len(key) != chacha.KeySize {
+		return nil, fmt.Errorf("shared PRG key %s has %d bytes, want exactly %d", keyPath, len(key), chacha.KeySize)
+	}
+	return key, nil
+}
+
+func mustReadSharedPRGKey(sharedKeysPath, name string) []byte {
+	key, err := readSharedPRGKey(sharedKeysPath, name)
+	if err != nil {
+		panic(err)
+	}
+	return key
+}
+
 func InitializePRG(pid int, NumParties int, sharedKeysPath string) *Random {
 	prgTable := make(map[int]*frand.RNG)
 
@@ -39,11 +59,7 @@ func InitializePRG(pid int, NumParties int, sharedKeysPath string) *Random {
 	// Globally shared PRG
 	seed := make([]byte, chacha.KeySize)
 	if sharedKeysPath != "" {
-		key, err := os.ReadFile(path.Join(sharedKeysPath, "shared_key_global.bin"))
-		if err != nil {
-			panic(err)
-		}
-		copy(seed, key)
+		copy(seed, mustReadSharedPRGKey(sharedKeysPath, "shared_key_global.bin"))
 	}
 	prgTable[-1] = frand.NewCustom(seed, bufferSize, 20)
 
@@ -58,11 +74,7 @@ func InitializePRG(pid int, NumParties int, sharedKeysPath string) *Random {
 			seed[0] = byte(a)
 			seed[1] = byte(b)
 		} else {
-			key, err := os.ReadFile(path.Join(sharedKeysPath, fmt.Sprintf("shared_key_%d_%d.bin", a, b)))
-			if err != nil {
-				panic(err)
-			}
-			copy(seed, key)
+			copy(seed, mustReadSharedPRGKey(sharedKeysPath, fmt.Sprintf("shared_key_%d_%d.bin", a, b)))
 		}
 
 		prgTable[i] = frand.NewCustom(seed, bufferSize, 20)

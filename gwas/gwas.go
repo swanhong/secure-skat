@@ -491,6 +491,7 @@ func (g *ProtocolInfo) runFederatedPrivate() (skatOut, burdenPOut, skatPOut []fl
 		privateOnly = blocks
 		metrics.end("load_private_only", loadMark)
 	} else if pid == privatePid {
+		privateOnly = make([]*mat.Dense, g.config.GenoNumBlocks)
 		log.LLvl1("[skat_fed] WARNING: private_pid set but private_only_prefix empty -> PART B (private variants) is EMPTY")
 	}
 

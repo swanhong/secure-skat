@@ -139,10 +139,16 @@ func (ast *AssocTest) computePrivateGeneLocal(G, X *mat.Dense, y0 []float64, gl 
 func (ast *AssocTest) privateRawStats(pl *privateGeneLocal, null skatNull) (skat, burdenLin crypto.CipherVector) {
 	cps := ast.general.cps
 
+	// Empty genes use one zero lane through the same score, weight, Q, and L path.
 	if len(pl.Weight) == 0 {
-		z, _ := crypto.EncryptFloatVector(cps, []float64{0})
-		zb, _ := crypto.EncryptFloatVector(cps, []float64{0})
-		return z, zb
+		pl = &privateGeneLocal{
+			LocalContraction: LocalContraction{
+				GtX:       mat.NewDense(1, null.c, nil),
+				Gty0:      []float64{0},
+				DosageSum: []float64{0},
+			},
+			Weight: skatBetaWeight([]float64{0}, ast.skatTotalNumInds()),
+		}
 	}
 
 	s := ast.scoreHE(pl.GtX, pl.Gty0, null)
@@ -196,6 +202,10 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	mpcObj := ast.general.mpcObj[0]
 	cps := ast.general.cps
 	rtype := mpcObj.GetRType()
+	nB := ast.general.config.GenoNumBlocks
+	if mpcObj.GetPid() == privatePid && len(privateOnly) != nB {
+		panic(fmt.Sprintf("ComputeSKATFederatedPrivate: privateOnly has %d blocks, want %d", len(privateOnly), nB))
+	}
 
 	tStart := time.Now()
 	null, X, y0 := ast.nullSetup()
@@ -205,10 +215,6 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	ast.fedMetrics.addDurationCount("null_other", nonNegativeDuration(fedTimings.nullTotal-nullClassified), 1)
 	log.LLvl1(fmt.Sprintf("[skat_fed] null model: %v", fedTimings.nullTotal.Round(time.Millisecond)))
 
-	nB := ast.general.config.GenoNumBlocks
-	if mpcObj.GetPid() == privatePid && privateOnly != nil && len(privateOnly) != nB {
-		panic(fmt.Sprintf("ComputeSKATFederatedPrivate: privateOnly has %d blocks, want %d", len(privateOnly), nB))
-	}
 	skatBlockSS := mpc_core.InitRVec(rtype.Zero(), nB) // Σw²s² (SKAT raw, per gene)
 	bLinBlockSS := mpc_core.InitRVec(rtype.Zero(), nB) // Σw·s  (Burden linear term, per gene)
 	zpzBlockSS := mpc_core.InitRVec(rtype.Zero(), nB)  // zᵀPz     (Burden variance, per gene; unscaled)
