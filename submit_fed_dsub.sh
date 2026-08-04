@@ -30,7 +30,19 @@ gcloud storage cp "$TMP/code.tar.gz" "$CODE_GCS"
 # Per-run inputs kept out of the code bundle: the annotation table is VAT-derived (Controlled Tier)
 # and can be hundreds of MB, so it goes to the same in-project bucket as everything else here.
 EXTRA_ENV=()
-if [ -n "${FED_ANNOT:-}" ]; then
+if [ -n "${FED_CHRS:-}" ]; then
+  : "${FED_ANNOT_DIR:?FED_ANNOT_DIR is required with FED_CHRS}"
+  IFS=, read -ra CHRS <<< "$FED_CHRS"
+  ANNOT_GCS_LIST=
+  for chr in "${CHRS[@]}"; do
+    annot="$FED_ANNOT_DIR/${chr}_annotation.tsv"
+    [ -f "$annot" ] || { echo "missing annotation: $annot" >&2; exit 1; }
+    annot_gcs="$RUN_GCS/${chr}_annotation.tsv"
+    gcloud storage cp "$annot" "$annot_gcs"
+    ANNOT_GCS_LIST="${ANNOT_GCS_LIST:+$ANNOT_GCS_LIST,}$annot_gcs"
+  done
+  EXTRA_ENV+=("ANNOT_GCS_LIST=$ANNOT_GCS_LIST")
+elif [ -n "${FED_ANNOT:-}" ]; then
   gcloud storage cp "$FED_ANNOT" "$RUN_GCS/$(basename "$FED_ANNOT")"
   EXTRA_ENV+=("ANNOT_GCS=$RUN_GCS/$(basename "$FED_ANNOT")")
 fi
@@ -43,7 +55,7 @@ fi
 
 # Forward every FED_* the caller set so fed_aou.conf's defaults can be overridden per run.
 for v in $(compgen -v FED_); do
-  case $v in FED_ANNOT|FED_GENES) continue ;; esac
+  case $v in FED_ANNOT|FED_ANNOT_DIR|FED_GENES) continue ;; esac
   [ -n "${!v}" ] && EXTRA_ENV+=("$v=${!v}")
 done
 

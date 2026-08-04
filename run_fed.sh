@@ -317,7 +317,9 @@ finish_step compare
 echo "  [4/4] compare done: $(duration_s "$T_COMPARE_MS")"
 
 echo "=== [plot] fed_plot (Manhattan + secure-vs-plain scatter) ==="
-if [ -f "$OUT/fed_results.csv" ]; then
+if [ -n "${FED_SKIP_PLOT:-}" ]; then
+  echo "  [plot] deferred to combined multi-chromosome output"
+elif [ -f "$OUT/fed_results.csv" ]; then
   python3 "$REPO/scripts/analysis/fed_plot.py" "$OUT/fed_results.csv" "$OUT" \
     && echo "  [plot] PNGs -> $OUT" || echo "  [plot] fed_plot failed (skipped)"
 else

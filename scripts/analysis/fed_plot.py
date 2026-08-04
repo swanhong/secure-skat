@@ -21,6 +21,7 @@ d = np.genfromtxt(csv, delimiter=",", names=True)
 chrom = np.atleast_1d(d["chrom"]).astype(int)
 pos = np.atleast_1d(d["pos"]).astype(float)
 ng = len(chrom)
+chromosomes = np.unique(chrom)
 mlog = lambda p: -np.log10(np.clip(p, 1e-300, 1.0))
 order = np.lexsort((pos, chrom))  # genes sorted by (chrom, pos)
 thr = 0.05 / ng  # Bonferroni
@@ -31,8 +32,8 @@ def manhattan(psec, label, out):
     ax.scatter(np.arange(ng), mlog(psec)[order],
                c=["#1f77b4" if c % 2 == 0 else "#ff7f0e" for c in chrom[order]], s=18)
     ax.axhline(mlog(thr), ls="--", c="red", lw=1, label=f"Bonferroni 0.05/{ng}")
-    ax.set_xticks([np.where(chrom[order] == c)[0].mean() for c in np.unique(chrom)])
-    ax.set_xticklabels([f"chr{c}" for c in np.unique(chrom)])
+    ax.set_xticks([np.where(chrom[order] == c)[0].mean() for c in chromosomes])
+    ax.set_xticklabels([f"chr{c}" for c in chromosomes])
     ax.set_ylabel(f"-log10(secure {label} p)")
     ax.set_title(f"Secure federated {label} p-value")
     ax.legend()
@@ -42,6 +43,7 @@ def manhattan(psec, label, out):
 
 
 def scatter(psec, pref, label, out, reference_label="plaintext"):
+    total = len(psec)
     valid = (np.isfinite(psec) & np.isfinite(pref) &
              (psec > 0.0) & (psec <= 1.0) & (pref > 0.0) & (pref <= 1.0))
     if not np.any(valid):
@@ -61,12 +63,24 @@ def scatter(psec, pref, label, out, reference_label="plaintext"):
     ax.set_ylim(0, hi)
     ax.set_xlabel(f"-log10({reference_label} {label} p)")
     ax.set_ylabel(f"-log10(secure {label} p)")
-    ax.set_title(f"{label} p-value: secure vs {reference_label} (n={len(xs)}/{ng})")
+    ax.set_title(f"{label} p-value: secure vs {reference_label} (n={len(xs)}/{total})")
     ax.legend()
     fig.tight_layout()
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return True
+
+
+def scatter_outputs(psec, pref, label, tag, reference_label):
+    outputs = []
+    if scatter(psec, pref, label, f"{outdir}/scatter_{tag}.png", reference_label):
+        outputs.append(f"scatter_{tag}.png")
+    for c in chromosomes if len(chromosomes) > 1 else []:
+        keep = chrom == c
+        name = f"scatter_{tag}_chr{c}.png"
+        if scatter(psec[keep], pref[keep], label, f"{outdir}/{name}", reference_label):
+            outputs.append(name)
+    return outputs
 
 
 # One (manhattan, scatter) pair per p-value the CSV carries. Burden is always present; SKAT p appears
@@ -81,8 +95,7 @@ for label, sec_col, plain_col, tag, reference_label in stats:
     pplain = np.atleast_1d(d[plain_col]).astype(float)
     manhattan(psec, label, f"{outdir}/manhattan_{tag}.png")
     written.append(f"manhattan_{tag}.png")
-    if scatter(psec, pplain, label, f"{outdir}/scatter_{tag}.png", reference_label):
-        written.append(f"scatter_{tag}.png")
+    written.extend(scatter_outputs(psec, pplain, label, tag, reference_label))
 
 # The secure SKAT output is Wilson-Hilferty. This additional plot measures the
 # approximation against the same-kernel exact Davies reference rather than merely
@@ -90,7 +103,6 @@ for label, sec_col, plain_col, tag, reference_label in stats:
 if "skat_p_secure" in d.dtype.names and "skat_p_davies" in d.dtype.names:
     psec = np.atleast_1d(d["skat_p_secure"]).astype(float)
     pdavies = np.atleast_1d(d["skat_p_davies"]).astype(float)
-    if scatter(psec, pdavies, "SKAT", f"{outdir}/scatter_skat_davies.png", "Davies"):
-        written.append("scatter_skat_davies.png")
+    written.extend(scatter_outputs(psec, pdavies, "SKAT", "skat_davies", "Davies"))
 
 print(f"wrote {', '.join(written)} in {outdir}  ({ng} genes)")

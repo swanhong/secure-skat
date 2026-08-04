@@ -48,17 +48,11 @@ if [ "${FED_PROBES:-0}" -gt 0 ]; then
   export PATH="$R_ENV/bin:$PATH"
 fi
 
-gsutil -u "$GOOGLE_CLOUD_PROJECT" -m cp \
-  "$GENO_GCS".pgen "$GENO_GCS".pvar "$GENO_GCS".psam \
-  "$COV_GCS" "$PHENO_GCS" "$INPUT/"
+gsutil -u "$GOOGLE_CLOUD_PROJECT" -m cp "$COV_GCS" "$PHENO_GCS" "$INPUT/"
 
 # Per-run inputs uploaded by submit_fed_dsub.sh.
 # gcloud storage, not gsutil: a >150 MB upload lands as a COMPOSITE object, and gsutil refuses to
 # download those unless crcmod's C extension is installed -- which it is not on the runner image.
-if [ -n "${ANNOT_GCS:-}" ]; then
-  gcloud storage cp --billing-project "$GOOGLE_CLOUD_PROJECT" "$ANNOT_GCS" "$INPUT/annotation.tsv"
-  export FED_ANNOT="$INPUT/annotation.tsv"
-fi
 if [ -n "${GENES_GCS:-}" ]; then
   gcloud storage cp --billing-project "$GOOGLE_CLOUD_PROJECT" "$GENES_GCS" "$INPUT/genes.txt"
   export FED_GENES="$INPUT/genes.txt"
@@ -67,20 +61,64 @@ fi
 # plink2 ships in the bundle (the runner image has no plink2).
 chmod +x "$REPO/plink2"
 export PLINK2="$REPO/plink2"
-export FED_PGEN="$INPUT/$(basename "$GENO_GCS")"
 export FED_ANCESTRY="$INPUT/$(basename "$COV_GCS")"
 export FED_PHENO="$INPUT/$(basename "$PHENO_GCS")"
-export FED_OUT=$RUN
 export FED_KEYS=$REPO/example_data/keys
 export SKIP_BUILD=1
-echo ">>> setup done (plink2=$PLINK2) — launching run_fed.sh"
 
-if [ "$DIAG" = 1 ]; then
-  export FED_SPLIT_ANCESTRY=0 FED_ANCESTRY_GROUP=EUR
-  export FED_NGENES=1 FED_NSUB=1000 FED_PROBES=1   # fast smoke; for full-n validation run normally with FED_NGENES=1
-  timeout 480 bash "$REPO/run_fed.sh"
-else
+run_chromosome() {
+  local chr=$1 annot_gcs=$2 chr_input=$INPUT/$1
+  local chr_geno_gcs=${GENO_GCS%.*}.$chr
+  mkdir -p "$chr_input"
+  gsutil -u "$GOOGLE_CLOUD_PROJECT" -m cp \
+    "$chr_geno_gcs".pgen "$chr_geno_gcs".pvar "$chr_geno_gcs".psam "$chr_input/"
+  if [ -n "$annot_gcs" ]; then
+    gcloud storage cp --billing-project "$GOOGLE_CLOUD_PROJECT" \
+      "$annot_gcs" "$chr_input/annotation.tsv"
+    export FED_ANNOT="$chr_input/annotation.tsv"
+  fi
+  export FED_CHR=$chr
+  export FED_PGEN="$chr_input/$(basename "$chr_geno_gcs")"
+  export FED_OUT=$RUN/$chr
+  echo ">>> launching $chr (out=$FED_OUT)"
   bash "$REPO/run_fed.sh"
+}
+
+if [ -n "${FED_CHRS:-}" ]; then
+  IFS=, read -ra CHRS <<< "$FED_CHRS"
+  IFS=, read -ra ANNOTS <<< "${ANNOT_GCS_LIST:-}"
+  [ "${#CHRS[@]}" -eq "${#ANNOTS[@]}" ] || {
+    echo "FED_CHRS and uploaded annotations do not match" >&2
+    exit 1
+  }
+  export FED_SKIP_PLOT=1
+  CSV_FILES=()
+  for i in "${!CHRS[@]}"; do
+    run_chromosome "${CHRS[$i]}" "${ANNOTS[$i]}"
+    CSV_FILES+=("$RUN/${CHRS[$i]}/fed_results.csv")
+  done
+  unset FED_SKIP_PLOT
+  awk -F, 'BEGIN { OFS=","; gene=-1 } NR==1 { print; next } FNR==1 { next } { $1=++gene; print }' \
+    "${CSV_FILES[@]}" > "$RUN/fed_results.csv"
+  python3 "$REPO/scripts/analysis/fed_plot.py" "$RUN/fed_results.csv" "$RUN"
+else
+  gsutil -u "$GOOGLE_CLOUD_PROJECT" -m cp \
+    "$GENO_GCS".pgen "$GENO_GCS".pvar "$GENO_GCS".psam "$INPUT/"
+  if [ -n "${ANNOT_GCS:-}" ]; then
+    gcloud storage cp --billing-project "$GOOGLE_CLOUD_PROJECT" \
+      "$ANNOT_GCS" "$INPUT/annotation.tsv"
+    export FED_ANNOT="$INPUT/annotation.tsv"
+  fi
+  export FED_PGEN="$INPUT/$(basename "$GENO_GCS")"
+  export FED_OUT=$RUN
+  echo ">>> setup done (plink2=$PLINK2) — launching run_fed.sh"
+  if [ "$DIAG" = 1 ]; then
+    export FED_SPLIT_ANCESTRY=0 FED_ANCESTRY_GROUP=EUR
+    export FED_NGENES=1 FED_NSUB=1000 FED_PROBES=1 FED_DATABITS=70
+    timeout 480 bash "$REPO/run_fed.sh"
+  else
+    bash "$REPO/run_fed.sh"
+  fi
 fi
 
 # Aggregate result files leave the Batch VM here; diagnostic logs (prep/party) also
