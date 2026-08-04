@@ -23,8 +23,8 @@ if (!all(required %in% names(cases))) {
 }
 
 DAVIES_LIM <- 10000000L
-BASE_ACC <- max(requested_tol, 1e-10)
-DEEP_ACC <- max(min(BASE_ACC * 1e-3, 1e-13), .Machine$double.eps * 16)
+BASE_ACC <- max(requested_tol, 1e-6)
+TAIL_ACC <- max(min(requested_tol, 1e-10), .Machine$double.eps * 16)
 davies_fn <- get0("SKAT_davies", envir = asNamespace("SKAT"), inherits = FALSE)
 liu_fn <- get0("SKAT_liu", envir = asNamespace("SKAT"), inherits = FALSE)
 if (is.null(davies_fn) || is.null(liu_fn)) {
@@ -65,25 +65,20 @@ for (i in seq_along(ids)) {
   ifault <- fit$ifault
   acc_used <- BASE_ACC
 
-  # qfc's requested accuracy is absolute. Re-evaluate small tails more tightly; a value is accepted
-  # only when it is separated from zero by at least ten requested error units.
-  needs_deep <- (
-    ifault != 0L || length(pvalue) != 1L || !is.finite(pvalue) ||
-    pvalue <= 10 * BASE_ACC || pvalue > 1
-  )
-  if (needs_deep) {
-    strict_fit <- run_davies(q, lambda, DEEP_ACC)
-    strict_p <- strict_fit$Qq
-    if (strict_fit$ifault == 0L && length(strict_p) == 1L && is.finite(strict_p) &&
-        strict_p > 10 * DEEP_ACC && strict_p <= 1) {
-      fit <- strict_fit
-      pvalue <- strict_p
-      ifault <- strict_fit$ifault
-      acc_used <- DEEP_ACC
+  # Match R::SKAT's regular accuracy, and only ask for more precision in a resolved small tail.
+  if (ifault == 0L && length(pvalue) == 1L && is.finite(pvalue) &&
+      pvalue > 0 && pvalue <= 10 * BASE_ACC) {
+    tail_fit <- run_davies(q, lambda, TAIL_ACC)
+    tail_p <- tail_fit$Qq
+    if (tail_fit$ifault == 0L && length(tail_p) == 1L && is.finite(tail_p) &&
+        tail_p > 10 * TAIL_ACC && tail_p <= 1) {
+      pvalue <- tail_p
+      ifault <- tail_fit$ifault
+      acc_used <- TAIL_ACC
     } else {
-      pvalue <- strict_p
-      ifault <- if (strict_fit$ifault == 0L) 9L else strict_fit$ifault
-      acc_used <- DEEP_ACC
+      pvalue <- tail_p
+      ifault <- if (tail_fit$ifault == 0L) 9L else tail_fit$ifault
+      acc_used <- TAIL_ACC
     }
   }
 
