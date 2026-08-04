@@ -101,6 +101,21 @@ if [ -n "${FED_CHRS:-}" ]; then
   awk -F, 'BEGIN { OFS=","; gene=-1 } NR==1 { print; next } FNR==1 { next } { $1=++gene; print }' \
     "${CSV_FILES[@]}" > "$RUN/fed_results.csv"
   python3 "$REPO/scripts/analysis/fed_plot.py" "$RUN/fed_results.csv" "$RUN"
+  echo "=== MULTI-CHROMOSOME COST ==="
+  printf '  %-6s %10s %10s %10s %10s %10s %12s\n' chromosome prep build secure compare total network_MiB
+  for chr in "${CHRS[@]}"; do
+    network_bytes=$(awk -F, '$2=="protocol_total" && $7=="network_total" { print $8; exit }' \
+      "$RUN/$chr/communication_summary.csv")
+    awk -F, -v chr="$chr" -v bytes="${network_bytes:-0}" '
+      $7=="step" && $1=="prep"    { prep=$3 }
+      $7=="step" && $1=="build"   { build=$3 }
+      $7=="step" && $1=="secure"  { secure=$3 }
+      $7=="step" && $1=="compare" { compare=$3 }
+      $7=="step" && $1=="total"   { total=$3 }
+      END { printf "  %-6s %9.3fs %9.3fs %9.3fs %9.3fs %9.3fs %12.3f\n",
+                   chr, prep/1000, build/1000, secure/1000, compare/1000, total/1000, bytes/1048576 }
+    ' "$RUN/$chr/timing_steps.csv"
+  done
 else
   gsutil -u "$GOOGLE_CLOUD_PROJECT" -m cp \
     "$GENO_GCS".pgen "$GENO_GCS".pvar "$GENO_GCS".psam "$INPUT/"
