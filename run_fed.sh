@@ -163,6 +163,55 @@ cleanup_party_processes() {
   PARTY_PIDS=()
 }
 
+slack_accuracy() {
+  local csv=$OUT/phenotype_metrics.csv
+  [ -r "$csv" ] || return 0
+  awk -F, '
+    function fmt(v) { return (v ~ /^-?[0-9]/) ? sprintf("%.4f", v) : (v == "" ? "-" : v) }
+    NR == 1 { for (i = 1; i <= NF; i++) col[$i] = i; next }
+    {
+      name = $(col["phenotype"]); what = $(col["comparison"]); r2 = $(col["r2"])
+      if (!(name in seen)) { seen[name] = ++n; order[n] = name }
+      if (what == "Burden p-value") burden[name] = r2
+      else if (what == "SKAT p: secure WH vs Davies") { skat[name] = r2; davies = 1 }
+      else if (what == "SKAT (Q)" && !(name in skat)) skat[name] = r2
+    }
+    END {
+      if (n == 0) exit
+      printf "R2 vs plaintext  |  burden p  |  SKAT %s\n", davies ? "WH vs Davies (R::SKAT)" : "Q"
+      for (i = 1; i <= n; i++)
+        printf "  %-56s %8s %10s\n", order[i], fmt(burden[order[i]]), fmt(skat[order[i]])
+    }
+  ' "$csv"
+}
+
+slack_notify() {
+  local hook=${SLACK_WEBHOOK_URL:-}
+  local hook_file=${SLACK_WEBHOOK_FILE:-$HOME/.slack_webhook}
+  if [ -z "$hook" ] && [ -r "$hook_file" ]; then
+    hook=$(tr -d '[:space:]' < "$hook_file")
+  fi
+  [ -n "$hook" ] || return 0
+  local exit_code=$1
+  local total_ms=$((T_PREP_MS + T_BUILD_MS + T_SECURE_MS + T_COMPARE_MS))
+  local mark="✅ done" ; [ "$exit_code" -eq 0 ] || mark="❌ failed (exit $exit_code)"
+  local text="run_fed $mark on $(hostname -s)
+dir: $OUT
+total: $(duration_s "$total_ms") | prep $S_PREP, build $S_BUILD, secure $S_SECURE, compare $S_COMPARE"
+  local accuracy
+  accuracy=$(slack_accuracy)
+  [ -n "$accuracy" ] && text="$text
+$accuracy"
+  python3 - "$hook" "$text" <<'PY' 2>/dev/null || echo "warning: slack notify failed" >&2
+import json, sys, urllib.request
+url, text = sys.argv[1], sys.argv[2]
+req = urllib.request.Request(url, data=json.dumps({"text": text}).encode(),
+                             headers={"Content-Type": "application/json"})
+body = urllib.request.urlopen(req, timeout=10).read()
+sys.exit(0 if body.startswith(b"ok") else 1)  # a wrong URL 200s with HTML
+PY
+}
+
 on_exit() {
   local exit_code=$1
   trap - EXIT INT TERM
@@ -173,6 +222,7 @@ on_exit() {
     fi
     write_timing_summary "$exit_code"
   fi
+  slack_notify "$exit_code"
   exit "$exit_code"
 }
 trap 'on_exit $?' EXIT

@@ -59,6 +59,8 @@ for v in $(compgen -v FED_); do
   [ -n "${!v}" ] && EXTRA_ENV+=("$v=${!v}")
 done
 
+[ -n "${SLACK_WEBHOOK_URL:-}" ] && EXTRA_ENV+=("SLACK_WEBHOOK_URL=$SLACK_WEBHOOK_URL")
+
 dsub \
   --provider google-batch \
   --project "$GOOGLE_CLOUD_PROJECT" --location "$BATCH_REGION" \
