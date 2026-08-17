@@ -6,6 +6,7 @@
 #   FED_NSUB=38000 FED_DATABITS=100 bash run_fed.sh                       # scale n (needs more fixed-point range)
 #   FED_PREP_SRC=$HOME/fed_prep_out SKIP_PREP=1 SKIP_BUILD=1 bash run_fed.sh   # reuse a prior prep, archive results in a fresh dir
 #   FED_OUT=$HOME/runs/out260712202430 SKIP_PREP=1 SKIP_BUILD=1 bash run_fed.sh # re-run in an existing archived dir
+#   FED_MULTI_PHENO=1 bash run_fed.sh                                          # one packed run, five lipid phenotypes
 #
 # Each run lands in its own timestamped dir ($HOME/runs/out<YYMMDDHHMMSS>) unless FED_OUT is set, so past
 # results are kept: fed_in (blocks/config) + fed_out (secure out/, logs, fed_results.csv) live together.
@@ -231,8 +232,15 @@ fi
 if [ -f "$CFG/configGlobal.toml" ]; then
   {
     echo "=== resolved params (n=num_inds, m=num_snps, c=num_covs; from $CFG) ==="
-    grep -E '^(num_inds|num_snps|num_covs|geno_num_blocks|ckks_params|mpc_data_bits|mpc_frac_bits|rotkey_pow2only|private_pid)\b' "$CFG/configGlobal.toml" | sed 's/^/  /'
+    grep -E '^(num_inds|num_snps|num_covs|num_phenos|geno_num_blocks|ckks_params|mpc_data_bits|mpc_frac_bits|rotkey_pow2only|private_pid)\b' "$CFG/configGlobal.toml" | sed 's/^/  /'
   } | tee -a "$OUT/parameter.txt"
+fi
+
+if [ "${FED_MULTI_PHENO:-0}" = "1" ]; then
+  grep -q '^ckks_params = "PN14QP436S45"' "$CFG/configGlobal.toml" \
+    || { echo "error: FED_MULTI_PHENO=1 requires packed ckks_params PN14QP436S45" >&2; exit 1; }
+  grep -q '^num_phenos = 5$' "$CFG/configGlobal.toml" \
+    || { echo "error: FED_MULTI_PHENO=1 requires a freshly prepared five-column phenotype matrix" >&2; exit 1; }
 fi
 
 echo "=== [3/4] secure skat_fed (3 parties) ==="
@@ -319,6 +327,8 @@ echo "  [4/4] compare done: $(duration_s "$T_COMPARE_MS")"
 echo "=== [plot] fed_plot (Manhattan + secure-vs-plain scatter) ==="
 if [ -n "${FED_SKIP_PLOT:-}" ]; then
   echo "  [plot] deferred to combined multi-chromosome output"
+elif [ "${FED_MULTI_PHENO:-0}" = "1" ]; then
+  echo "  [plot] multi-phenotype output is gene-major g*q+t; use fed_results.csv directly"
 elif [ -f "$OUT/fed_results.csv" ]; then
   python3 "$REPO/scripts/analysis/fed_plot.py" "$OUT/fed_results.csv" "$OUT" \
     && echo "  [plot] PNGs -> $OUT" || echo "  [plot] fed_plot failed (skipped)"

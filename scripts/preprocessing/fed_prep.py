@@ -8,17 +8,18 @@ shared/public_only/private. Writes the int8 blocks the Go `skat_fed` mode reads:
     B/geno.<g>.bin    cohort B, public list ALIGNED (public_only cols = 0)  [PART A]
     B/priv.<g>.bin    cohort B, private variants                            [PART B]
     {A,B}/cov.txt     covariates = first N_PCS AoU ancestry PCs, geno-row order
-    {A,B}/pheno.txt   phenotype (LDL), geno-row order
+    {A,B}/pheno.txt   n x q phenotype matrix, geno-row order
     manifest.json     per-gene m (public/private)
 
 Block = row-major n*m int8 (dosage 0/1/2, missing<0 -> Go reads 0), same layout as
-plinkBedToBinary.py. Samples = geno ∩ pheno(LDL) ∩ ancestry(PC, optional group), join key person_id==research_id.
+plinkBedToBinary.py. Samples = geno ∩ complete phenotypes ∩ ancestry(PC, optional group), join key person_id==research_id.
 Key = chr:pos:ref:alt / GRCh38 / biallelic / PASS (see .local/warning.md). Secure SKAT is
 n-independent, so N_SUB subsamples to keep blocks small while m stays realistic. Block
 assembly/alignment lives in skat_plain_local.py.
 
     python3 fed_prep.py    # real prep on the workbench (needs plink2 + AoU pgen)
 """
+import csv
 import json
 import math
 import os
@@ -40,10 +41,19 @@ ANCESTRY_GROUP = os.environ.get("FED_ANCESTRY_GROUP", "").strip().lower()
 PHENO_CSV = os.path.expanduser(os.environ.get("FED_PHENO",
     "~/workspace/gwas-data-wgs/pheno/v9_final_lipid_med_corrected_short_read_tot.csv"))
 PHENO_COL = os.environ.get("FED_PHENO_COL", "LDLC_final_mgdl_6sd_masked")  # LDL (mg/dL), continuous
+LIPID_PHENO_COLS = (
+    "LDLC_final_mgdl_6sd_masked",
+    "HDLC_mgdl_6sd_masked",
+    "TotChol_corrected_mvp_explicit_duration_mgdl_6sd_masked",
+    "ln_Trig_6sd_masked",
+    "nonHDL_corrected_mvp_explicit_duration_mgdl_6sd_masked",
+)
+MULTI_PHENO = os.environ.get("FED_MULTI_PHENO", "0") == "1"
+PHENO_COLS = LIPID_PHENO_COLS if MULTI_PHENO else (PHENO_COL,)
 OUT_DIR = os.path.expanduser(os.environ.get("FED_OUT", "~/fed_prep_out"))
 KEYS_PATH = os.path.expanduser(os.environ.get("FED_KEYS", "~/secure-skat/example_data/keys"))  # MPC PRG seeds (data-independent, reusable)
 PORT_BASE = int(os.environ.get("FED_PORT_BASE", "22000"))  # avoid Dataproc/Hadoop ports (8020=HDFS, 8030s=YARN, ...)
-CKKS_PARAMS = os.environ.get("FED_CKKS", "PN14QP438")  # PN13QP218 = ~half RAM (slots 4096 > max gene m); on RAM-tight boxes
+CKKS_PARAMS = os.environ.get("FED_CKKS", "PN14QP436S45" if MULTI_PHENO else "PN14QP438")
 DATA_BITS = int(os.environ.get("FED_DATABITS", "60"))  # MPC fixed-point total bits; raise if large-n aggregates overflow
 FRAC_BITS = int(os.environ.get("FED_FRACBITS", "30"))  # fractional bits (integer range = DATA_BITS-FRAC_BITS)
 N_PCS = int(os.environ.get("FED_NPCS", "5"))     # first N PCs from ancestry_preds as covariates (age/sex deferred)
@@ -96,6 +106,7 @@ def write_blocks(gene_keys, priv_keys, roles, A_geno, B_geno, keycol, out_dir, g
     priv_m = [b.shape[1] for b in B_priv]
     json.dump({"ancestry_group": ANCESTRY_GROUP or "all",
                "n_genes": len(gene_keys),
+               "phenotypes": list(PHENO_COLS),
                "gene_symbols": gene_names or [],  # block order; [] on older runs
                "pub_m": [len(k) for k in gene_keys],  # public list = shared + public_only
                "priv_m": priv_m,
@@ -173,6 +184,7 @@ mpc_boolean_shares = true
 num_inds = [0, {n_a}, {n_b}]
 num_snps = {num_snps}
 num_covs = {N_PCS}
+num_phenos = {len(PHENO_COLS)}
 cov_all_ones = false
 geno_file_format = "blocks"
 geno_num_blocks = {n_blocks}
@@ -216,26 +228,29 @@ ports = {{}}
     print(f"  config -> {cfg}  (run: SFGWAS_MODE=skat_fed SFGWAS_CONFIG_PATH={cfg})")
 
 
-def load_pheno(path, col):
-    """person_id -> phenotype value (csv col); skips blank/NA/non-finite. person_id == research_id."""
-    ph = {}
-    with open(path) as f:
-        header = f.readline().rstrip("\n").split(",")
-        pid, pc = header.index("person_id"), header.index(col)
-        for ln in f:
-            x = ln.rstrip("\n").split(",")
-            v = x[pc].strip()
-            if not v or v.upper() in ("NA", "NAN"):
+def load_phenos(path, columns):
+    """person_id -> ordered phenotype row; retain only complete finite rows."""
+    phenos = {}
+    with open(path, newline="") as f:
+        rows = csv.DictReader(f)
+        missing = [column for column in columns if column not in (rows.fieldnames or ())]
+        if missing:
+            raise ValueError(f"phenotype CSV is missing columns: {missing}")
+        if "person_id" not in (rows.fieldnames or ()):
+            raise ValueError("phenotype CSV is missing person_id")
+        for row in rows:
+            try:
+                values = [float(row[column]) for column in columns]
+            except (TypeError, ValueError):
                 continue
-            fv = float(v)
-            if math.isfinite(fv):  # drop nan/inf so they can't poison the null model
-                ph[x[pid]] = fv
-    return ph
+            if all(math.isfinite(value) for value in values):
+                phenos[row["person_id"]] = values
+    return phenos
 
 
 def write_pheno(fam_ids, pheno, out_path):
-    """n-vector phenotype in geno (.fam) row order. Eligible filter guarantees presence."""
-    np.savetxt(out_path, np.asarray([pheno[sid] for sid in fam_ids]))
+    """Write n x q phenotypes in genotype-row and PHENO_COLS order."""
+    np.savetxt(out_path, np.asarray([pheno[sid] for sid in fam_ids]), delimiter="\t")
 
 
 def plink_extract_to_int8(pgen, keep_file, keys_file, n, out_prefix):
@@ -260,6 +275,8 @@ def plink_extract_to_int8(pgen, keep_file, keys_file, n, out_prefix):
 
 def run():
     """Real prep on the workbench. Reads AoU pgen, splits into 2 cohorts, writes genotype blocks."""
+    if MULTI_PHENO and CKKS_PARAMS != "PN14QP436S45":
+        raise SystemExit("FED_MULTI_PHENO=1 requires FED_CKKS=PN14QP436S45 (packed path)")
     run_started = time.perf_counter()
     sample_rng = np.random.default_rng(SEED)
     role_rng = np.random.default_rng(SEED + 1)
@@ -280,9 +297,9 @@ def run():
     print(f"  genes: {len(genes)} selected -> {len(gene_names)} with variants "
           f"(FED_GENES={GENE_LIST or 'stride'})")
 
-    # (3) eligible = geno ∩ pheno(LDL) ∩ ancestry(PC); split into cohort A/B; per-gene role split
+    # (3) eligible = geno ∩ complete phenotypes ∩ ancestry(PC); one shared A/B split
     pcs = load_ancestry_pcs(ANCESTRY, N_PCS, ANCESTRY_GROUP)
-    pheno = load_pheno(PHENO_CSV, PHENO_COL)
+    pheno = load_phenos(PHENO_CSV, PHENO_COLS)
     psam = [ln.split()[0] for ln in open(f"{PGEN}.psam") if not ln.startswith("#")]  # samples unchanged by keying
     gset = set(psam)
     eligible = [s for s in psam if s in pheno and s in pcs]
@@ -329,7 +346,7 @@ def run():
     for pub, priv in zip(gene_keys, priv_keys):
         assert not (set(pub) & set(priv)), "public-list and private variant sets overlap -> Q double-count"
 
-    # (5) write genotype blocks + real covariates (5 PCs) + real LDL phenotype, all geno-row order
+    # (5) write genotype blocks + covariates + common-row phenotype matrix, all geno-row order
     print("run (real AoU pgen):")
     write_blocks(gene_keys, priv_keys, roles_all, A_geno, B_geno, keycol, OUT_DIR, gene_names)
     write_lines(f"{OUT_DIR}/genes.txt", gene_names)  # block index -> symbol; the join key for external tables
@@ -339,7 +356,7 @@ def run():
     write_cov(Bfam, pcs, f"{OUT_DIR}/B/cov.txt")
     write_pheno(Afam, pheno, f"{OUT_DIR}/A/pheno.txt")
     write_pheno(Bfam, pheno, f"{OUT_DIR}/B/pheno.txt")
-    print(f"  wrote cov ({N_PCS} PCs) + pheno (LDL) -> {OUT_DIR}/{{A,B}}/")
+    print(f"  wrote cov ({N_PCS} PCs) + pheno (q={len(PHENO_COLS)}) -> {OUT_DIR}/{{A,B}}/")
     tmr["write"] = time.perf_counter() - t
     desc = {"keying": "plink2 set-var-ids + biallelic pvar",
             "setup": "gene map + eligible ∩ + role split",

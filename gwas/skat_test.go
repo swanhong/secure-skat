@@ -19,6 +19,10 @@ import (
 
 // InitProtocolForTest initializes the GWAS protocol using the config files.
 func InitProtocolForTest(t *testing.T) *ProtocolInfo {
+	return InitProtocolForTestWithConfig(t, nil)
+}
+
+func InitProtocolForTestWithConfig(t *testing.T, mutate func(*Config, int)) *ProtocolInfo {
 	pidStr := os.Getenv("PID")
 	if pidStr == "" {
 		t.Skip("PID environment variable not set. Skipping test.")
@@ -52,6 +56,9 @@ func InitProtocolForTest(t *testing.T) *ProtocolInfo {
 	// run.sh can do plain-vs-secure per-block comparison without editing the config.
 	if os.Getenv("SFGWAS_DEBUG") != "" {
 		config.Debug = true
+	}
+	if mutate != nil {
+		mutate(config, pid)
 	}
 
 	// Create cache/output directories

@@ -49,6 +49,7 @@ type Config struct {
 	NumInds    []int `toml:"num_inds"`
 	NumSnps    int   `toml:"num_snps"`
 	NumCovs    int   `toml:"num_covs"`
+	NumPhenos  int   `toml:"num_phenos"` // q marginal phenotypes; packed output index = gene*q+phenotype
 	CovAllOnes bool  `toml:"cov_all_ones"`
 
 	ItersPerEval  int `toml:"iter_per_eigenval"`
@@ -275,6 +276,13 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 		tab := '\t'
 		pheno = LoadMatrixFromFile(config.PhenoFile, tab)
 		cov = LoadMatrixFromFile(config.CovFile, tab)
+		_, phenoCols := pheno.Dims()
+		if config.NumPhenos == 0 {
+			config.NumPhenos = 1
+		}
+		if phenoCols != config.NumPhenos {
+			panic(fmt.Sprintf("phenotype file has %d columns, config num_phenos=%d", phenoCols, config.NumPhenos))
+		}
 		pos = LoadSNPPositionFile(config.SnpPosFile, tab)
 		log.LLvl1(time.Now().Format(time.RFC3339), "First few SNP positions:", pos[:5])
 	}
@@ -487,13 +495,21 @@ func (g *ProtocolInfo) runFederatedPrivate() (skatOut, burdenPOut, skatPOut []fl
 		return nil, nil, nil
 	}
 	nB := g.config.GenoNumBlocks
+	q := g.config.NumPhenos
+	if q == 0 {
+		q = 1
+	}
+	nOut := nB
+	if g.config.CkksParams == crypto.CKKSParamsPN14QP436S45 {
+		nOut *= q
+	}
 	// Q_skat is nil in SKAT-p mode (only the equivalent z is released) → skip its decrypt.
 	if len(skat) > 0 {
-		skatOut = g.decryptBlocks(skat, nB)
+		skatOut = g.decryptBlocks(skat, nOut)
 	}
-	sqrtT2 := g.decryptBlocks(sqrtT2Enc, nB)
-	burdenPOut = make([]float64, nB)
-	for b := 0; b < nB; b++ {
+	sqrtT2 := g.decryptBlocks(sqrtT2Enc, nOut)
+	burdenPOut = make([]float64, nOut)
+	for b := 0; b < nOut; b++ {
 		burdenPOut[b] = 1.0 // p=1 at √(T/2)≤0 (CKKS noise on a ~0 statistic); erfc(0)=1
 		if sqrtT2[b] > 0 {
 			burdenPOut[b] = math.Erfc(sqrtT2[b]) // ∈(0,1)
@@ -501,9 +517,9 @@ func (g *ProtocolInfo) runFederatedPrivate() (skatOut, burdenPOut, skatPOut []fl
 	}
 	// SKAT p-value (screening): only z is revealed; p = ½erfc(z/√2). nil if SKAT p disabled (no probes).
 	if len(skatZEnc) > 0 {
-		z := g.decryptBlocks(skatZEnc, nB)
-		skatPOut = make([]float64, nB)
-		for b := 0; b < nB; b++ {
+		z := g.decryptBlocks(skatZEnc, nOut)
+		skatPOut = make([]float64, nOut)
+		for b := 0; b < nOut; b++ {
 			skatPOut[b] = 0.5 * math.Erfc(z[b]/math.Sqrt2)
 		}
 	}
@@ -653,11 +669,19 @@ func (g *ProtocolInfo) decryptBlocks(enc crypto.CipherVector, nB int) []float64 
 // rareVariantScaleShares returns the shared 1/(2σ̂²) = (dof/2)/RSS scale factor (dof = N−c),
 // and false if RSS/dof is unavailable. RSS stays secret-shared from the null solve through division.
 func (g *ProtocolInfo) rareVariantScaleShares(rssSS mpc_core.RElem) (mpc_core.RVec, bool) {
+	if rssSS == nil {
+		return mpc_core.InitRVec(g.mpcObj[0].GetRType().Zero(), 1), false
+	}
+	return g.rareVariantScaleVectorShares(mpc_core.RVec{rssSS})
+}
+
+// rareVariantScaleVectorShares evaluates all phenotype scales in one vector division.
+func (g *ProtocolInfo) rareVariantScaleVectorShares(rssSS mpc_core.RVec) (mpc_core.RVec, bool) {
 	mpcObj := g.mpcObj[0]
 	pid := mpcObj.GetPid()
 	rtype := mpcObj.GetRType()
-	scaleSS := mpc_core.InitRVec(rtype.Zero(), 1)
-	if rssSS == nil {
+	scaleSS := mpc_core.InitRVec(rtype.Zero(), len(rssSS))
+	if len(rssSS) == 0 {
 		return scaleSS, false
 	}
 
@@ -670,11 +694,14 @@ func (g *ProtocolInfo) rareVariantScaleShares(rssSS mpc_core.RElem) (mpc_core.RV
 		return scaleSS, false
 	}
 
-	numerSS := mpc_core.InitRVec(rtype.Zero(), 1)
+	numerSS := mpc_core.InitRVec(rtype.Zero(), len(rssSS))
 	if pid == mpcObj.GetHubPid() {
-		numerSS[0] = rtype.FromFloat64(float64(dof)/2.0, mpcObj.GetFracBits())
+		numer := rtype.FromFloat64(float64(dof)/2.0, mpcObj.GetFracBits())
+		for i := range numerSS {
+			numerSS[i] = numer
+		}
 	}
-	return mpcObj.Divide(numerSS, mpc_core.RVec{rssSS}, false), true
+	return mpcObj.Divide(numerSS, rssSS, false), true
 }
 
 // scaleRareVariantShareStat multiplies a shared statistic by the shared scale and truncates.
@@ -684,6 +711,22 @@ func (g *ProtocolInfo) scaleRareVariantShareStat(stat, scale mpc_core.RVec) mpc_
 	}
 	mpcObj := g.mpcObj[0]
 	return mpcObj.TruncVec(mpcObj.SSMultElemVecScalar(stat, scale[0]), mpcObj.GetDataBits(), mpcObj.GetFracBits())
+}
+
+// scaleRareVariantShareStats applies one phenotype scale to every matching gene-major entry.
+func (g *ProtocolInfo) scaleRareVariantShareStats(stat, scale mpc_core.RVec) mpc_core.RVec {
+	if len(stat) == 0 || len(scale) == 0 {
+		return stat
+	}
+	if len(stat)%len(scale) != 0 {
+		panic("statistic length is not divisible by phenotype count")
+	}
+	repeated := make(mpc_core.RVec, len(stat))
+	for i := range repeated {
+		repeated[i] = scale[i%len(scale)]
+	}
+	mpcObj := g.mpcObj[0]
+	return mpcObj.TruncVec(mpcObj.SSMultElemVec(stat, repeated), mpcObj.GetDataBits(), mpcObj.GetFracBits())
 }
 
 func (g *ProtocolInfo) CZeroTest() {

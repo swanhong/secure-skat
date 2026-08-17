@@ -41,6 +41,7 @@ func skatBetaWeight(dosageSum []float64, totalInds int) []float64 {
 // private-variant count through an MPC message shape.
 type privateGeneLocal struct {
 	LocalContraction
+	Gty0All     *mat.Dense
 	Weight      []float64
 	BurdenZZ    float64     // w_vᵀG_vᵀG_vw_v/N
 	BurdenCross []float64   // G_pᵀG_vw_v/N (m_p), empty when m_p=0
@@ -49,7 +50,7 @@ type privateGeneLocal struct {
 	A1          [][]float64 // G_pᵀG_v/N (m_p×m_v), built only for trace moments
 }
 
-func (ast *AssocTest) computePrivateGeneLocal(G, X *mat.Dense, y0 []float64, gl *geneLocal, needMoments bool) *privateGeneLocal {
+func (ast *AssocTest) computePrivateGeneLocalMulti(G, X, y0 *mat.Dense, gl *geneLocal, needMoments bool) *privateGeneLocal {
 	pl := &privateGeneLocal{}
 	if G == nil {
 		return pl
@@ -58,7 +59,7 @@ func (ast *AssocTest) computePrivateGeneLocal(G, X *mat.Dense, y0 []float64, gl 
 	if m == 0 {
 		return pl
 	}
-	pl.LocalContraction = localGenotypeContract(G, X, y0)
+	pl.LocalContraction, pl.Gty0All = localGenotypeTerms(G, X, y0)
 	totalInds := ast.skatTotalNumInds()
 	pl.Weight = skatBetaWeight(pl.DosageSum, totalInds)
 	N := float64(totalInds)
@@ -133,6 +134,18 @@ func (ast *AssocTest) computePrivateGeneLocal(G, X *mat.Dense, y0 []float64, gl 
 	return pl
 }
 
+func (ast *AssocTest) computePrivateGeneLocal(G, X *mat.Dense, y0 []float64, gl *geneLocal, needMoments bool) *privateGeneLocal {
+	var y0Matrix *mat.Dense
+	if y0 != nil {
+		y0Matrix = mat.NewDense(len(y0), 1, append([]float64(nil), y0...))
+	}
+	pl := ast.computePrivateGeneLocalMulti(G, X, y0Matrix, gl, needMoments)
+	if pl.Gty0All != nil {
+		pl.Gty0 = mat.Col(nil, 0, pl.Gty0All)
+	}
+	return pl
+}
+
 // privateRawStats returns the private party's local raw SKAT = Σw²s² and Burden linear term Σw·s.
 // G is already locally minor-oriented, so no signed weight or comparison is needed. The private
 // variant count remains hidden: only the two scalar ciphertexts leave the owner.
@@ -202,6 +215,9 @@ func blockSecStats(secs []float64) string {
 func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, privatePid int) (skatStat, burdenSqrtT2Stat, skatZStat crypto.CipherVector) {
 	if ast.general.config.CkksParams == crypto.CKKSParamsPN14QP436S45 {
 		return ast.computePackedFederated(privateOnly, privatePid)
+	}
+	if ast.general.config.NumPhenos > 1 {
+		panic("multiple phenotypes require packed CKKS parameters PN14QP436S45")
 	}
 	mpcObj := ast.general.mpcObj[0]
 	cps := ast.general.cps

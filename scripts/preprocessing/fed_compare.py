@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Compare the secure skat_fed per-gene SKAT (Q) and Burden p-value against the plaintext
-federated_skat_burden_from_blocks on the SAME fed_prep blocks. Run on the workbench after the secure run.
+"""Compare secure gene-by-phenotype outputs with independent q=1 plaintext calls on the
+same fed_prep blocks. Run on the workbench after the secure run.
 
     python3 fed_compare.py        # reads $FED_OUT (default ~/fed_prep_out)
 
@@ -41,45 +41,62 @@ def load_blocks(sub, kind, n, ng):
 def load_xy(sub, n):
     y = np.loadtxt(f"{OUT}/{sub}/pheno.txt")
     cov = np.loadtxt(f"{OUT}/{sub}/cov.txt")
+    if y.ndim == 1:
+        y = y.reshape(n, 1)
     if cov.ndim == 1:
         cov = cov.reshape(n, -1)
     return np.column_stack([np.ones(n), cov]), y  # X = [1 | PCs]
 
 
-def compare(name, secure, plain, ng, thres=THRES, atol=1.0):
+def compare(name, secure, plain, ng, phenotypes, thres=THRES, atol=1.0):
     """Per-gene secure-vs-plaintext table for one statistic. The 'within' column is O when the
     relative gap is <= thres (X otherwise). atol guards near-zero genes for large-magnitude stats
     (SKAT/Burden); pass atol=0 for O(1) stats like the p-value. Returns the count within thres."""
     secure, plain = np.atleast_1d(secure), np.asarray(plain, float)
     print(f"\n=== {name}  (threshold rel = {thres}) ===")
-    print(f"{'gene':>4} {'secure':>16} {'plain':>16} {'rel':>10}  within")
+    q = len(phenotypes)
+    total = ng * q
+    if len(secure) != total or len(plain) != total:
+        raise ValueError(f"{name}: secure/plain lengths {len(secure)}/{len(plain)}, expected {total}")
+    print(f"{'gene':>4} {'pheno':>5} {'secure':>16} {'plain':>16} {'rel':>10}  within")
     n_within = 0
-    for b in range(ng):
-        d = abs(secure[b] - plain[b])
-        rel = d / max(abs(plain[b]), 1e-9)
+    for index in range(total):
+        gene, phenotype = divmod(index, q)
+        d = abs(secure[index] - plain[index])
+        rel = d / max(abs(plain[index]), 1e-9)
         # atol guards near-zero genes (rel meaningless); rtol=thres covers CKKS precision at scale.
-        within = d <= atol + thres * abs(plain[b])
+        within = d <= atol + thres * abs(plain[index])
         n_within += within
-        print(f"{b:>4} {secure[b]:>16.4f} {plain[b]:>16.4f} {rel:>10.2e}  {'O' if within else 'X'}")
-    ss_tot = float(np.sum((plain[:ng] - plain[:ng].mean()) ** 2))
-    r2 = 1 - float(np.sum((secure[:ng] - plain[:ng]) ** 2)) / ss_tot if ss_tot > 0 else float("nan")
-    maxrel = max(abs(secure[b] - plain[b]) / max(abs(plain[b]), 1e-9) for b in range(ng))
-    print(f"R^2 (secure vs plaintext) = {r2:.6f}   |   max rel = {maxrel:.2e}   |   within: {n_within}/{ng}")
+        print(f"{gene:>4} {phenotype:>5} {secure[index]:>16.4f} {plain[index]:>16.4f} "
+              f"{rel:>10.2e}  {'O' if within else 'X'}")
+    ss_tot = float(np.sum((plain - plain.mean()) ** 2))
+    r2 = 1 - float(np.sum((secure - plain) ** 2)) / ss_tot if ss_tot > 0 else float("nan")
+    maxrel = max(abs(secure[i] - plain[i]) / max(abs(plain[i]), 1e-9) for i in range(total))
+    print(f"R^2 (secure vs plaintext) = {r2:.6f}   |   max rel = {maxrel:.2e}   |   within: {n_within}/{total}")
     return n_within
 
 
 compare_started = time.perf_counter()
 phase_started = time.perf_counter()
-ng = json.load(open(f"{OUT}/manifest.json"))["n_genes"]
-nA = len(np.loadtxt(f"{OUT}/A/pheno.txt"))
-nB = len(np.loadtxt(f"{OUT}/B/pheno.txt"))
+manifest = json.load(open(f"{OUT}/manifest.json"))
+ng = manifest["n_genes"]
+phenotypes = manifest.get("phenotypes", ["phenotype"])
+q = len(phenotypes)
+nA = np.loadtxt(f"{OUT}/A/pheno.txt", ndmin=2).shape[0]
+nB = np.loadtxt(f"{OUT}/B/pheno.txt", ndmin=2).shape[0]
 XA, yA = load_xy("A", nA)
 XB, yB = load_xy("B", nB)
+if yA.shape[1] != q or yB.shape[1] != q:
+    raise ValueError(f"phenotype matrix columns A/B={yA.shape[1]}/{yB.shape[1]}, manifest={q}")
 emit_timing("compare.load_inputs", 1000.0 * (time.perf_counter() - phase_started))
 t0 = time.perf_counter()
-Splain, _, Pplain = federated_skat_burden_from_blocks(
-    load_blocks("A", "geno", nA, ng), load_blocks("B", "geno", nB, ng),
-    load_blocks("B", "priv", nB, ng), XA, yA, XB, yB, ridge_rel=RIDGE_REL)
+aB = load_blocks("A", "geno", nA, ng)
+bB = load_blocks("B", "geno", nB, ng)
+pB = load_blocks("B", "priv", nB, ng)
+plain = [federated_skat_burden_from_blocks(
+    aB, bB, pB, XA, yA[:, t], XB, yB[:, t], ridge_rel=RIDGE_REL) for t in range(q)]
+Splain = np.column_stack([result[0] for result in plain]).reshape(-1)
+Pplain = np.column_stack([result[2] for result in plain]).reshape(-1)
 plain_skat_burden_ms = 1000.0 * (time.perf_counter() - t0)
 print(f"  plaintext federated SKAT+Burden-p: {plain_skat_burden_ms / 1000.0:.2f}s")
 emit_timing("compare.plain_skat_burden", plain_skat_burden_ms)
@@ -107,23 +124,24 @@ def _erfcinv(y):
     return 0.5 * (lo + hi)
 
 
-print(f"  nA={nA} nB={nB} genes={ng}")
+print(f"  nA={nA} nB={nB} genes={ng} phenotypes={q} output_order=g*q+t")
 if Ssec is not None:  # SKAT statistic Q — only revealed when skat_pvalue_probes=0 (else Q is hidden)
-    skat_within = compare("SKAT (Q)", Ssec, Splain, ng)
+    skat_within = compare("SKAT (Q)", Ssec, Splain, ng, phenotypes)
 else:
     skat_within = None
     print("\n  SKAT statistic Q not released (skat_pvalue_probes>0 → only the WH pivot z leaves)")
-burdenp_within = compare("Burden p-value", Psec, Pplain, ng, atol=0.0)
+burdenp_within = compare("Burden p-value", Psec, Pplain, ng, phenotypes, atol=0.0)
 # Burden T = 2·(√(T/2))² = 2·erfcinv(p)²: the χ²₁ statistic behind the Burden p. Derived from the
 # revealed p (T ↔ p bijective), so no new information leaves; shown for interpretability.
 Tsec = np.array([2 * _erfcinv(p) ** 2 for p in np.atleast_1d(Psec)])
 Tplain = np.array([2 * _erfcinv(p) ** 2 for p in np.atleast_1d(Pplain)])
 # atol=0.02: T=2·erfcinv(p)² amplifies the relative error at high p (T→0), so a small-T gene can miss
 # a pure-rel threshold while its authoritative Burden p is within — the absolute floor absorbs that.
-burdenT_within = compare("Burden T (=2·erfcinv(p)²)", Tsec, Tplain, ng, atol=0.02)
+burdenT_within = compare("Burden T (=2·erfcinv(p)²)", Tsec, Tplain, ng, phenotypes, atol=0.02)
+total = ng * q
 summary = f"\nwithin threshold ({THRES}):  "
-summary += f"SKAT Q {skat_within}/{ng},  " if skat_within is not None else ""
-summary += f"Burden p {burdenp_within}/{ng},  Burden T {burdenT_within}/{ng}"
+summary += f"SKAT Q {skat_within}/{total},  " if skat_within is not None else ""
+summary += f"Burden p {burdenp_within}/{total},  Burden T {burdenT_within}/{total}"
 
 # SKAT p-value (only if the secure run was configured with skat_pvalue_probes > 0). The secure output
 # is the Wilson-Hilferty screening p; the plaintext oracle also computes Liu and an exact Davies
@@ -132,19 +150,21 @@ SkatPsec = SkatPplain = LiuPlain = DaviesPlain = None
 skat_p_file = f"{OUT}/out/party2/skat_fed_skat_p_out.txt"
 if os.path.exists(skat_p_file):
     skat_p_started = time.perf_counter()
-    aB = load_blocks("A", "geno", nA, ng)
-    bB = load_blocks("B", "geno", nB, ng)
-    pB = load_blocks("B", "priv", nB, ng)
-    WHplain, LiuPlain, DaviesPlain = (np.asarray(x, float)
-                                      for x in federated_skat_p_from_blocks(aB, bB, pB, XA, yA, XB, yB, ridge_rel=RIDGE_REL))
+    references = [federated_skat_p_from_blocks(
+        aB, bB, pB, XA, yA[:, t], XB, yB[:, t], ridge_rel=RIDGE_REL) for t in range(q)]
+    WHplain = np.column_stack([result[0] for result in references]).reshape(-1)
+    LiuPlain = np.column_stack([result[1] for result in references]).reshape(-1)
+    DaviesPlain = np.column_stack([result[2] for result in references]).reshape(-1)
     emit_timing("compare.plain_skat_p_refs", 1000.0 * (time.perf_counter() - skat_p_started))
     SkatPsec = np.atleast_1d(np.loadtxt(skat_p_file))  # secure Wilson-Hilferty p
     SkatPplain = WHplain  # plain WH — the CSV/scatter reference for the secure output
 
     print("\n=== SKAT p-value: secure WH vs plaintext references (Liu, Davies) ===")
-    print(f"{'gene':>4} {'secure_WH':>12} {'plain_WH':>12} {'Liu':>12} {'Davies':>12}")
-    for b in range(ng):
-        print(f"{b:>4} {SkatPsec[b]:>12.4e} {WHplain[b]:>12.4e} {LiuPlain[b]:>12.4e} {DaviesPlain[b]:>12.4e}")
+    print(f"{'gene':>4} {'pheno':>5} {'secure_WH':>12} {'plain_WH':>12} {'Liu':>12} {'Davies':>12}")
+    for index in range(total):
+        gene, phenotype = divmod(index, q)
+        print(f"{gene:>4} {phenotype:>5} {SkatPsec[index]:>12.4e} {WHplain[index]:>12.4e} "
+              f"{LiuPlain[index]:>12.4e} {DaviesPlain[index]:>12.4e}")
 
     def _paired(a, ref):
         keep = np.isfinite(a) & np.isfinite(ref)
@@ -210,19 +230,27 @@ if os.environ.get("FED_CSV"):
         raise SystemExit(f"genes.txt has {len(symbols)} rows but manifest says n_genes={ng}")
     csv_path = f"{OUT}/fed_results.csv"
     with open(csv_path, "w") as f:
-        header = "gene,gene_symbol,chrom,pos,burden_p_secure,burden_p_plain"
+        header = "gene,gene_symbol,chrom,pos"
+        if q > 1:
+            header += ",phenotype_index,phenotype"
+        header += ",burden_p_secure,burden_p_plain"
         if has_skatp:
             # Keep skat_p_plain as the historical plaintext-WH column, and preserve the
             # additional plaintext references so plots can distinguish implementation
             # agreement (secure WH vs plain WH) from approximation error (secure WH vs Davies).
             header += ",skat_p_secure,skat_p_plain,skat_p_liu,skat_p_davies"
         f.write(header + "\n")
-        for b in range(ng):
-            row = f"{b},{symbols[b] if symbols else ''},{chrom[b]},{pos[b]},{Psec[b]:.6e},{Pplain[b]:.6e}"
-            if has_skatp:
-                row += (f",{SkatPsec[b]:.6e},{SkatPplain[b]:.6e}"
-                        f",{LiuPlain[b]:.6e},{DaviesPlain[b]:.6e}")
-            f.write(row + "\n")
+        for gene in range(ng):
+            for phenotype, phenotype_name in enumerate(phenotypes):
+                index = gene * q + phenotype
+                row = f"{gene},{symbols[gene] if symbols else ''},{chrom[gene]},{pos[gene]}"
+                if q > 1:
+                    row += f",{phenotype},{phenotype_name}"
+                row += f",{Psec[index]:.6e},{Pplain[index]:.6e}"
+                if has_skatp:
+                    row += (f",{SkatPsec[index]:.6e},{SkatPplain[index]:.6e}"
+                            f",{LiuPlain[index]:.6e},{DaviesPlain[index]:.6e}")
+                f.write(row + "\n")
     print(f"  FED_CSV: wrote {csv_path}  ({'burden+skat p' if has_skatp else 'burden p'})")
     emit_timing("compare.result_csv_write", 1000.0 * (time.perf_counter() - csv_started))
 else:

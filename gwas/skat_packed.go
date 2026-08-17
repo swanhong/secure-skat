@@ -106,8 +106,7 @@ func (ast *AssocTest) packedWindowScore(bucket GeneBatchBucket, window GeneBatch
 	return mpcObj.Network.AggregateCVec(ast.general.cps, score)
 }
 
-// packedWindowQL computes normalized Q=sum(x^2) and L=sum(x), x=w*s/sqrt(N).
-func (ast *AssocTest) packedWindowQL(bucket GeneBatchBucket, window GeneBatchWindow, score crypto.CipherVector, weights []mpc_core.RVec) (q, l mpc_core.RVec) {
+func (ast *AssocTest) packedWindowWeight(bucket GeneBatchBucket, window GeneBatchWindow, weights []mpc_core.RVec) crypto.CipherVector {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
 	tileWeights := make([]mpc_core.RMat, len(weights))
@@ -119,7 +118,6 @@ func (ast *AssocTest) packedWindowQL(bucket GeneBatchBucket, window GeneBatchWin
 	}
 
 	weightEnc := ast.windowSharesToCiphertexts(bucket, window, tileWeights, 1)
-	xEnc := make(crypto.CipherVector, 1)
 	if mpcObj.GetPid() > 0 {
 		normalizedMask := windowActiveMask(bucket, window, 1)
 		invSqrtN := 1.0 / math.Sqrt(float64(ast.skatTotalNumInds()))
@@ -127,6 +125,16 @@ func (ast *AssocTest) packedWindowQL(bucket GeneBatchBucket, window GeneBatchWin
 			normalizedMask[i] *= invSqrtN
 		}
 		weightEnc = ast.applyPackedMask(weightEnc, normalizedMask)
+	}
+	return weightEnc
+}
+
+// packedWindowQL computes normalized Q=sum(x^2) and L=sum(x), x=w*s/sqrt(N).
+func (ast *AssocTest) packedWindowQL(bucket GeneBatchBucket, window GeneBatchWindow, score, weightEnc crypto.CipherVector) (q, l mpc_core.RVec) {
+	mpcObj := ast.general.mpcObj[0]
+	rtype := mpcObj.GetRType()
+	xEnc := make(crypto.CipherVector, 1)
+	if mpcObj.GetPid() > 0 {
 		score, weightEnc = alignCipherVectorLevels(ast.general.cps, score, weightEnc)
 		xEnc = crypto.CMult(ast.general.cps, score, weightEnc)
 	}
@@ -201,17 +209,56 @@ func (ast *AssocTest) packedWindowTheta(u []mpc_core.RMat, null skatNull) []mpc_
 	return theta
 }
 
+type privateQLBase struct {
+	h, M mpc_core.RMat // phenotype-independent weighted GᵀX contractions
+}
+
 type privateQLInput struct {
-	a, ell mpc_core.RVec
-	vh, M  mpc_core.RMat
+	a, ell mpc_core.RVec // phenotype-specific weighted Gᵀy contractions
+	v      mpc_core.RMat
+}
+
+func newPrivateQLBase(rtype mpc_core.RElem, nGenes, c int) privateQLBase {
+	return privateQLBase{
+		h: mpc_core.InitRMat(rtype.Zero(), nGenes, c),
+		M: mpc_core.InitRMat(rtype.Zero(), nGenes*c, c),
+	}
 }
 
 func newPrivateQLInput(rtype mpc_core.RElem, nGenes, c int) privateQLInput {
 	return privateQLInput{
 		a:   mpc_core.InitRVec(rtype.Zero(), nGenes),
 		ell: mpc_core.InitRVec(rtype.Zero(), nGenes),
-		vh:  mpc_core.InitRMat(rtype.Zero(), 2*nGenes, c),
-		M:   mpc_core.InitRMat(rtype.Zero(), nGenes*c, c),
+		v:   mpc_core.InitRMat(rtype.Zero(), nGenes, c),
+	}
+}
+
+func (ast *AssocTest) addPrivateQLBase(input *privateQLBase, gene int, local *privateGeneLocal) {
+	if local == nil || len(local.Weight) == 0 {
+		return
+	}
+	mpcObj := ast.general.mpcObj[0]
+	N := float64(ast.skatTotalNumInds())
+	invN, invSqrtN := 1.0/N, 1.0/math.Sqrt(N)
+	c := len(input.h[gene])
+	h := make([]float64, c)
+	M := make([]float64, c*c)
+	for j, w := range local.Weight {
+		for k := 0; k < c; k++ {
+			wh := w * local.GtX.At(j, k)
+			h[k] += wh * invSqrtN
+			for k2 := 0; k2 < c; k2++ {
+				M[k*c+k2] += wh * w * local.GtX.At(j, k2) * invN
+			}
+		}
+	}
+	fb := mpcObj.GetFracBits()
+	rtype := mpcObj.GetRType()
+	for k := 0; k < c; k++ {
+		input.h[gene][k] = rtype.FromFloat64(h[k], fb)
+		for k2 := 0; k2 < c; k2++ {
+			input.M[gene*c+k][k2] = rtype.FromFloat64(M[k*c+k2], fb)
+		}
 	}
 }
 
@@ -222,21 +269,15 @@ func (ast *AssocTest) addPrivateQL(input *privateQLInput, gene int, local *priva
 	mpcObj := ast.general.mpcObj[0]
 	N := float64(ast.skatTotalNumInds())
 	invN, invSqrtN := 1.0/N, 1.0/math.Sqrt(N)
-	c := len(input.vh[gene])
+	c := len(input.v[gene])
+	v := make([]float64, c)
 	a, ell := 0.0, 0.0
-	v, h := make([]float64, c), make([]float64, c)
-	M := make([]float64, c*c)
 	for j, w := range local.Weight {
 		wa := w * local.Gty0[j]
 		a += wa * wa * invN
 		ell += wa * invSqrtN
 		for k := 0; k < c; k++ {
-			wh := w * local.GtX.At(j, k)
-			v[k] += wh * wa * invN
-			h[k] += wh * invSqrtN
-			for k2 := 0; k2 < c; k2++ {
-				M[k*c+k2] += wh * w * local.GtX.At(j, k2) * invN
-			}
+			v[k] += w * local.GtX.At(j, k) * wa * invN
 		}
 	}
 	fb := mpcObj.GetFracBits()
@@ -244,23 +285,22 @@ func (ast *AssocTest) addPrivateQL(input *privateQLInput, gene int, local *priva
 	input.a[gene] = rtype.FromFloat64(a, fb)
 	input.ell[gene] = rtype.FromFloat64(ell, fb)
 	for k := 0; k < c; k++ {
-		input.vh[gene][k] = rtype.FromFloat64(v[k], fb)
-		input.vh[len(input.a)+gene][k] = rtype.FromFloat64(h[k], fb)
-		for k2 := 0; k2 < c; k2++ {
-			input.M[gene*c+k][k2] = rtype.FromFloat64(M[k*c+k2], fb)
-		}
+		input.v[gene][k] = rtype.FromFloat64(v[k], fb)
 	}
 }
 
 // packedPrivateQL evaluates one public window of private genes from fixed-shape shares.
-func (ast *AssocTest) packedPrivateQL(input privateQLInput, null skatNull) (q, l mpc_core.RVec) {
+func (ast *AssocTest) packedPrivateQL(base privateQLBase, input privateQLInput, null skatNull) (q, l mpc_core.RVec) {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
 	nGenes, c := len(input.a), null.c
 
 	beta := asCol(null.betaSS)
-	vhBeta := mpcObj.TruncVec(col0(mpcObj.SSMultMat(input.vh, beta)), mpcObj.GetDataBits(), mpcObj.GetFracBits())
-	mBeta := mpcObj.TruncVec(col0(mpcObj.SSMultMat(input.M, beta)), mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	vh := make(mpc_core.RMat, 0, 2*nGenes)
+	vh = append(vh, input.v...)
+	vh = append(vh, base.h...)
+	vhBeta := mpcObj.TruncVec(col0(mpcObj.SSMultMat(vh, beta)), mpcObj.GetDataBits(), mpcObj.GetFracBits())
+	mBeta := mpcObj.TruncVec(col0(mpcObj.SSMultMat(base.M, beta)), mpcObj.GetDataBits(), mpcObj.GetFracBits())
 	betaRep := make(mpc_core.RVec, nGenes*c)
 	for gene := 0; gene < nGenes; gene++ {
 		copy(betaRep[gene*c:(gene+1)*c], null.betaSS)
@@ -293,7 +333,8 @@ func (ast *AssocTest) computePackedFederated(privateOnly []*mat.Dense, privatePi
 		panic("packed gene manifest unavailable")
 	}
 	nullStarted := time.Now()
-	null, X, y0 := ast.nullSetup()
+	nulls, X, y0 := ast.nullSetupMulti()
+	qCount := len(nulls)
 	fedTimings.nullTotal = time.Since(nullStarted)
 	nullClassified := ast.fedMetrics.parentLeafDuration("null_model", "null_other")
 	ast.fedMetrics.addDurationCount("null_other", nonNegativeDuration(fedTimings.nullTotal-nullClassified), 1)
@@ -311,8 +352,12 @@ func (ast *AssocTest) computePackedFederated(privateOnly []*mat.Dense, privatePi
 	ast.metricEnd("packed_weights", weightMark)
 
 	rtype := ast.general.mpcObj[0].GetRType()
-	q := mpc_core.InitRVec(rtype.Zero(), len(publicSizes))
-	l := mpc_core.InitRVec(rtype.Zero(), len(publicSizes))
+	q := make([]mpc_core.RVec, qCount)
+	l := make([]mpc_core.RVec, qCount)
+	for phenotype := 0; phenotype < qCount; phenotype++ {
+		q[phenotype] = mpc_core.InitRVec(rtype.Zero(), len(publicSizes))
+		l[phenotype] = mpc_core.InitRVec(rtype.Zero(), len(publicSizes))
+	}
 	zpz := mpc_core.InitRVec(rtype.Zero(), len(publicSizes))
 	probes := ast.general.config.SkatPValueProbes
 	var moments []packedMomentGene
@@ -326,18 +371,17 @@ func (ast *AssocTest) computePackedFederated(privateOnly []*mat.Dense, privatePi
 		for _, window := range bucket.Windows {
 			windowMark := ast.metricMark()
 			local := ast.computeWindowLocal(window, X, y0, privateOnly, privatePid, probes > 0)
-			score := ast.packedWindowScore(bucket, window, local, null)
 			windowWeights := make([]mpc_core.RVec, len(window.Tiles))
 			for tile, entry := range window.Tiles {
 				windowWeights[tile] = weights[entry.Gene]
 			}
-			windowQ, windowL := ast.packedWindowQL(bucket, window, score, windowWeights)
-			states := ast.preparePackedMomentGenes(window, local, windowWeights, null, probes)
+			windowWeight := ast.packedWindowWeight(bucket, window, windowWeights)
+			states := ast.preparePackedMomentGenes(window, local, windowWeights, nulls[0], probes)
 
 			var gammaW []mpc_core.RVec
 			if bucket.Mode == geneBatchHutchinson {
 				hasHutchinson = true
-				gammaW = ast.packedHutchinsonWave1(bucket, window, local, states, null.c)
+				gammaW = ast.packedHutchinsonWave1(bucket, window, local, states, nulls[0].c)
 			} else {
 				if bucket.Mode == geneBatchRaw {
 					gammaW = ast.rawGammaWeights(window, local, windowWeights)
@@ -355,20 +399,31 @@ func (ast *AssocTest) computePackedFederated(privateOnly []*mat.Dense, privatePi
 					ast.packedExactMoments(states, gamma)
 				}
 			}
-			windowZpz := ast.packedBurdenVariance(states, gammaW, local, null)
+			windowZpz := ast.packedBurdenVariance(states, gammaW, local, nulls[0])
 			if probes > 0 {
-				ast.packedMomentCorrections(states, null)
+				ast.packedMomentCorrections(states, nulls[0])
 			}
-			private := newPrivateQLInput(rtype, len(window.Tiles), null.c)
+			privateBase := newPrivateQLBase(rtype, len(window.Tiles), nulls[0].c)
 			for tile := range window.Tiles {
-				ast.addPrivateQL(&private, tile, local[tile].Private)
+				ast.addPrivateQLBase(&privateBase, tile, local[tile].Private)
 			}
-			privateQ, privateL := ast.packedPrivateQL(private, null)
-			windowQ.Add(privateQ)
-			windowL.Add(privateL)
+			for phenotype, null := range nulls {
+				phenotypeLocal := phenotypeWindowLocal(local, phenotype)
+				score := ast.packedWindowScore(bucket, window, phenotypeLocal, null)
+				windowQ, windowL := ast.packedWindowQL(bucket, window, score, windowWeight)
+				private := newPrivateQLInput(rtype, len(window.Tiles), null.c)
+				for tile := range window.Tiles {
+					ast.addPrivateQL(&private, tile, phenotypeLocal[tile].Private)
+				}
+				privateQ, privateL := ast.packedPrivateQL(privateBase, private, null)
+				windowQ.Add(privateQ)
+				windowL.Add(privateL)
+				for tile, entry := range window.Tiles {
+					q[phenotype][entry.Gene] = windowQ[tile]
+					l[phenotype][entry.Gene] = windowL[tile]
+				}
+			}
 			for tile, entry := range window.Tiles {
-				q[entry.Gene] = windowQ[tile]
-				l[entry.Gene] = windowL[tile]
 				zpz[entry.Gene] = windowZpz[tile]
 				if probes > 0 {
 					moments[entry.Gene] = states[tile]
@@ -394,8 +449,8 @@ func (ast *AssocTest) computePackedFederated(privateOnly []*mat.Dense, privatePi
 			for _, window := range bucket.Windows {
 				wave2Mark := ast.metricMark()
 				// Recompute local Gram instead of retaining every window across the barrier.
-				local := ast.computeWindowLocal(window, X, y0, nil, -1, false)
-				u := ast.packedWindowU(window, local, null.c)
+				local := ast.computeWindowLocal(window, X, nil, nil, -1, false)
+				u := ast.packedWindowU(window, local, nulls[0].c)
 				states := make([]packedMomentGene, len(window.Tiles))
 				for tile, entry := range window.Tiles {
 					states[tile] = moments[entry.Gene]
@@ -412,41 +467,79 @@ func (ast *AssocTest) computePackedFederated(privateOnly []*mat.Dense, privatePi
 	fedTimings.blockSecs = blockSecs
 
 	finalMark := ast.metricMark()
-	skatStat, burdenStat, skatZStat = ast.finalizePackedFederated(q, l, zpz, moments, null)
+	skatStat, burdenStat, skatZStat = ast.finalizePackedFederated(q, l, zpz, moments, nulls)
 	ast.metricEnd("packed_finalize", finalMark)
 	fedTimings.total = time.Since(started)
 	return
 }
 
-func (ast *AssocTest) finalizePackedFederated(q, l, zpz mpc_core.RVec, moments []packedMomentGene, null skatNull) (skatStat, burdenStat, skatZStat crypto.CipherVector) {
+func flattenGenePhenotypes(rtype mpc_core.RElem, values []mpc_core.RVec) mpc_core.RVec {
+	if len(values) == 0 {
+		return nil
+	}
+	genes := len(values[0])
+	out := mpc_core.InitRVec(rtype.Zero(), genes*len(values))
+	for phenotype := range values {
+		if len(values[phenotype]) != genes {
+			panic("phenotype statistic gene count mismatch")
+		}
+		for gene := 0; gene < genes; gene++ {
+			out[gene*len(values)+phenotype] = values[phenotype][gene]
+		}
+	}
+	return out
+}
+
+func repeatGenes(rtype mpc_core.RElem, values mpc_core.RVec, q int) mpc_core.RVec {
+	out := mpc_core.InitRVec(rtype.Zero(), len(values)*q)
+	for gene := range values {
+		for phenotype := 0; phenotype < q; phenotype++ {
+			out[gene*q+phenotype] = values[gene]
+		}
+	}
+	return out
+}
+
+func (ast *AssocTest) finalizePackedFederated(qByPhenotype, lByPhenotype []mpc_core.RVec, zpz mpc_core.RVec, moments []packedMomentGene, nulls []skatNull) (skatStat, burdenStat, skatZStat crypto.CipherVector) {
 	mpcObj := ast.general.mpcObj[0]
 	rtype := mpcObj.GetRType()
-	scale, ok := ast.general.rareVariantScaleShares(null.rssSS)
+	qCount := len(nulls)
+	rss := make(mpc_core.RVec, qCount)
+	for phenotype := range nulls {
+		rss[phenotype] = nulls[phenotype].rssSS
+	}
+	scale, ok := ast.general.rareVariantScaleVectorShares(rss)
 	if !ok {
 		panic("packed SKAT requires more samples than covariates")
 	}
+	q := flattenGenePhenotypes(rtype, qByPhenotype)
+	l := flattenGenePhenotypes(rtype, lByPhenotype)
+	zpzFlat := repeatGenes(rtype, zpz, qCount)
 
-	burden := ast.general.scaleRareVariantShareStat(ast.ssSquare(l), scale)
+	burden := ast.general.scaleRareVariantShareStats(ast.ssSquare(l), scale)
 	sqrtBurden, _ := mpcObj.SqrtAndSqrtInverse(burden, false)
-	_, invSqrtZpz := mpcObj.SqrtAndSqrtInverse(zpz, false)
+	_, invSqrtZpz := mpcObj.SqrtAndSqrtInverse(zpzFlat, false)
 	burdenStat = ast.maskPackedOutputTail(mpcObj.SSToCVec(ast.general.cps, ast.ssMul(sqrtBurden, invSqrtZpz)), len(q))
 
 	if ast.general.config.SkatPValueProbes == 0 {
 		q.MulScalar(rtype.FromInt(ast.skatTotalNumInds()))
-		q = ast.general.scaleRareVariantShareStat(q, scale)
+		q = ast.general.scaleRareVariantShareStats(q, scale)
 		skatStat = ast.maskPackedOutputTail(mpcObj.SSToCVec(ast.general.cps, q), len(q))
 		return
 	}
 
-	q = ast.general.scaleRareVariantShareStat(q, scale)
-	s1 := mpc_core.InitRVec(rtype.Zero(), len(moments))
-	s2 := mpc_core.InitRVec(rtype.Zero(), len(moments))
-	s3 := mpc_core.InitRVec(rtype.Zero(), len(moments))
+	q = ast.general.scaleRareVariantShareStats(q, scale)
+	s1Gene := mpc_core.InitRVec(rtype.Zero(), len(moments))
+	s2Gene := mpc_core.InitRVec(rtype.Zero(), len(moments))
+	s3Gene := mpc_core.InitRVec(rtype.Zero(), len(moments))
 	for gene := range moments {
-		s1[gene] = moments[gene].tau1.Add(moments[gene].delta1)
-		s2[gene] = moments[gene].tau2.Add(moments[gene].delta2)
-		s3[gene] = moments[gene].tau3.Add(moments[gene].delta3)
+		s1Gene[gene] = moments[gene].tau1.Add(moments[gene].delta1)
+		s2Gene[gene] = moments[gene].tau2.Add(moments[gene].delta2)
+		s3Gene[gene] = moments[gene].tau3.Add(moments[gene].delta3)
 	}
+	s1 := repeatGenes(rtype, s1Gene, qCount)
+	s2 := repeatGenes(rtype, s2Gene, qCount)
+	s3 := repeatGenes(rtype, s3Gene, qCount)
 	skatZStat = ast.maskPackedOutputTail(mpcObj.SSToCVec(ast.general.cps, ast.skatZSSVec(q, s1, s2, s3)), len(q))
 	return
 }

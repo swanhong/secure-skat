@@ -53,8 +53,34 @@ func localGenotypeContract(G, X *mat.Dense, y0 []float64) LocalContraction {
 	}
 }
 
+func localGenotypeTerms(G, X, y0 *mat.Dense) (LocalContraction, *mat.Dense) {
+	n, _ := X.Dims()
+	gn, m := G.Dims()
+	if gn != n {
+		panic(fmt.Sprintf("localGenotypeTerms: G/X rows differ (%d/%d)", gn, n))
+	}
+	var gtx mat.Dense
+	gtx.Mul(G.T(), X)
+	dosage := make([]float64, m)
+	for j := range dosage {
+		dosage[j] = gtx.At(j, 0)
+	}
+	terms := LocalContraction{GtX: &gtx, DosageSum: dosage}
+	if y0 == nil {
+		return terms, nil
+	}
+	yn, _ := y0.Dims()
+	if yn != n {
+		panic(fmt.Sprintf("localGenotypeTerms: G/Y0 rows differ (%d/%d)", gn, yn))
+	}
+	var gty mat.Dense
+	gty.Mul(G.T(), y0)
+	return terms, &gty
+}
+
 type windowLocalContraction struct {
 	LocalContraction
+	Gty0All *mat.Dense // m×q, selected one column at a time during the phenotype pass
 	Gamma   *mat.Dense
 	Private *privateGeneLocal
 }
@@ -70,7 +96,7 @@ func normalizedGram(G *mat.Dense, invN float64) *mat.Dense {
 }
 
 // computeWindowLocal contracts one manifest window without retaining its genotype matrices.
-func (ast *AssocTest) computeWindowLocal(window GeneBatchWindow, X *mat.Dense, y0 []float64, privateOnly []*mat.Dense, privatePid int, needMoments bool) []windowLocalContraction {
+func (ast *AssocTest) computeWindowLocal(window GeneBatchWindow, X, y0 *mat.Dense, privateOnly []*mat.Dense, privatePid int, needMoments bool) []windowLocalContraction {
 	local := make([]windowLocalContraction, len(window.Tiles))
 	pid := ast.general.mpcObj[0].GetPid()
 	invN := 1.0 / float64(ast.skatTotalNumInds())
@@ -78,7 +104,7 @@ func (ast *AssocTest) computeWindowLocal(window GeneBatchWindow, X *mat.Dense, y
 		var G *mat.Dense
 		if pid > 0 && tile.Variants > 0 {
 			G = orientGenotypeLocal(ast.readGenoBlockLocal(tile.Gene))
-			local[i].LocalContraction = localGenotypeContract(G, X, y0)
+			local[i].LocalContraction, local[i].Gty0All = localGenotypeTerms(G, X, y0)
 			local[i].Gamma = normalizedGram(G, invN)
 		}
 		var privateG *mat.Dense
@@ -86,9 +112,27 @@ func (ast *AssocTest) computeWindowLocal(window GeneBatchWindow, X *mat.Dense, y
 			privateG = orientedGenotypeLocalCopy(privateOnly[tile.Gene])
 		}
 		gl := &geneLocal{LocalContraction: local[i].LocalContraction, Gloc: G}
-		local[i].Private = ast.computePrivateGeneLocal(privateG, X, y0, gl, needMoments)
+		local[i].Private = ast.computePrivateGeneLocalMulti(privateG, X, y0, gl, needMoments)
 	}
 	return local
+}
+
+func phenotypeWindowLocal(local []windowLocalContraction, phenotype int) []windowLocalContraction {
+	out := make([]windowLocalContraction, len(local))
+	for i := range local {
+		out[i] = local[i]
+		if local[i].Gty0All != nil {
+			out[i].Gty0 = mat.Col(nil, phenotype, local[i].Gty0All)
+		}
+		if local[i].Private != nil {
+			private := *local[i].Private
+			if private.Gty0All != nil {
+				private.Gty0 = mat.Col(nil, phenotype, private.Gty0All)
+			}
+			out[i].Private = &private
+		}
+	}
+	return out
 }
 
 type geneLocal struct {
@@ -115,6 +159,62 @@ type localNull struct {
 	XtX   *mat.Dense
 	Xty0  []float64
 	Y0ty0 float64
+}
+
+type localMultiNull struct {
+	X    *mat.Dense // n×c
+	Y0   *mat.Dense // n×q
+	XtX  *mat.Dense // c×c
+	Xty0 *mat.Dense // c×q
+	Yty0 []float64  // q
+}
+
+func localMultiNullEquations(cov, pheno *mat.Dense, center float64, q int) localMultiNull {
+	if cov == nil || pheno == nil {
+		if cov != nil || pheno != nil {
+			panic("localMultiNullEquations: covariates and phenotype must both be present")
+		}
+		return localMultiNull{}
+	}
+	cn, ncov := cov.Dims()
+	pn, pc := pheno.Dims()
+	if cn != pn || pc != q || q < 1 {
+		panic(fmt.Sprintf("localMultiNullEquations: covariate/phenotype dimensions differ (%dx%d/%dx%d, q=%d)", cn, ncov, pn, pc, q))
+	}
+
+	X := mat.NewDense(cn, ncov+1, nil)
+	Y0 := mat.NewDense(cn, q, nil)
+	for i := 0; i < cn; i++ {
+		X.Set(i, 0, 1)
+		for j := 0; j < ncov; j++ {
+			X.Set(i, j+1, cov.At(i, j))
+		}
+		for t := 0; t < q; t++ {
+			Y0.Set(i, t, pheno.At(i, t)-center)
+		}
+	}
+	var xtx, xty mat.Dense
+	xtx.Mul(X.T(), X)
+	xty.Mul(X.T(), Y0)
+	yty := make([]float64, q)
+	for t := 0; t < q; t++ {
+		column := mat.Col(nil, t, Y0)
+		yty[t] = mat.Dot(mat.NewVecDense(cn, column), mat.NewVecDense(cn, column))
+	}
+	return localMultiNull{X: X, Y0: Y0, XtX: &xtx, Xty0: &xty, Yty0: yty}
+}
+
+func denseRows(matrix *mat.Dense, rows, columns int) [][]float64 {
+	out := make([][]float64, rows)
+	for i := 0; i < rows; i++ {
+		out[i] = make([]float64, columns)
+		if matrix != nil {
+			for j := 0; j < columns; j++ {
+				out[i][j] = matrix.At(i, j)
+			}
+		}
+	}
+	return out
 }
 
 // localNullEquations builds this party's X=[1|cov], centered y0, and XᵀX/Xᵀy₀/y₀ᵀy₀.
@@ -255,17 +355,20 @@ func (ast *AssocTest) choleskySolveMat(L mpc_core.RMat, dInv mpc_core.RVec, B mp
 	return X
 }
 
-// nullSetup solves the cross-party c-dimensional normal equations and returns the local X/y₀
-// alongside the secure result so per-gene work can reuse them without rebuilding XᵀX.
-func (ast *AssocTest) nullSetup() (null skatNull, X *mat.Dense, y0 []float64) {
+// nullSetupMulti factors pooled XᵀX once and solves all phenotype RHS columns together.
+func (ast *AssocTest) nullSetupMulti() (nulls []skatNull, X, y0 *mat.Dense) {
 	cps := ast.general.cps
 	mpcObj := ast.general.mpcObj[0]
 	pid := mpcObj.GetPid()
 	rtype := mpcObj.GetRType()
 
 	c := ast.general.gwasParams.NumCov() + 1
+	q := ast.general.config.NumPhenos
+	if q == 0 {
+		q = 1
+	}
 	if c > cps.GetSlots() {
-		panic(fmt.Sprintf("nullSetup: c=%d exceeds slots=%d", c, cps.GetSlots()))
+		panic(fmt.Sprintf("nullSetupMulti: c=%d exceeds slots=%d", c, cps.GetSlots()))
 	}
 
 	center := 0.0
@@ -273,8 +376,11 @@ func (ast *AssocTest) nullSetup() (null skatNull, X *mat.Dense, y0 []float64) {
 		center = 0.5 // binary {0,1} phenotype; absorbed by the intercept (Q-invariant)
 	}
 	localMark := ast.metricMark()
-	ln := localNullEquations(ast.general.cov, ast.general.pheno, center)
-	xtxLocal, xtyLocal, y0ty0Local := ln.matrices(c)
+	ln := localMultiNullEquations(ast.general.cov, ast.general.pheno, center, q)
+	xtxLocal := denseRows(ln.XtX, c, c)
+	xtyLocal := denseRows(ln.Xty0, c, q)
+	ytyLocal := make([]float64, q)
+	copy(ytyLocal, ln.Yty0)
 
 	if pid > 0 {
 		var trace float64
@@ -303,78 +409,112 @@ func (ast *AssocTest) nullSetup() (null skatNull, X *mat.Dense, y0 []float64) {
 	xtxDuration := ast.metricEnd("null_aggregate_xtx", xtxMark)
 
 	xtyMark := ast.metricMark()
-	xtyEnc, _ := crypto.EncryptFloatVector(cps, xtyLocal)
-	xtyEnc = aggVec(xtyEnc)
+	xtyEnc, _, _, err := crypto.EncryptFloatMatrixRow(cps, xtyLocal)
+	if err != nil {
+		panic(err)
+	}
+	xtyEnc = mpcObj.Network.AggregateCMat(cps, xtyEnc)
 	xtyDuration := ast.metricEnd("null_aggregate_xty", xtyMark)
 
 	ytyMark := ast.metricMark()
-	y0ty0Enc, _ := crypto.EncryptFloatVector(cps, []float64{y0ty0Local})
-	y0ty0Enc = aggVec(y0ty0Enc)
+	ytyEnc, _ := crypto.EncryptFloatVector(cps, ytyLocal)
+	ytyEnc = aggVec(ytyEnc)
 	ytyDuration := ast.metricEnd("null_aggregate_yty", ytyMark)
 	nullAgg := xtxDuration + xtyDuration + ytyDuration
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: encrypt+AggregateCMat(XtX,Xty,y0ty0) %v", nullAgg.Round(time.Millisecond)))
 	solveMark := ast.metricMark()
 
 	xtxSS := mpcObj.CMatToSS(cps, rtype, xtxEnc, -1, c, 1, c)
-	xtySS := mpcObj.CiphertextToSS(cps, rtype, firstCt(xtyEnc), mpcObj.GetHubPid(), c)
+	xtySS := mpcObj.CMatToSS(cps, rtype, xtyEnc, -1, c, 1, q)
 	xtxL, xtxDinv := ast.choleskyFactor(xtxSS)
-	// Solve [β̂ | Ω']=(XᵀX)⁻¹[Xᵀy₀ | N·I] as one batched RHS and reuse
-	// Ω'=N(XᵀX)⁻¹ for every gene.
-	rhs := mpc_core.InitRMat(rtype.Zero(), c, c+1)
+	// Solve [β̂₀..β̂q₋₁ | Ω']=(XᵀX)⁻¹[XᵀY₀ | N·I] in one factorization.
+	rhs := mpc_core.InitRMat(rtype.Zero(), c, q+c)
 	for i := 0; i < c; i++ {
-		rhs[i][0] = xtySS[i]
+		copy(rhs[i][:q], xtySS[i])
 	}
 	if pid == mpcObj.GetHubPid() {
 		nE := rtype.FromFloat64(float64(ast.skatTotalNumInds()), mpcObj.GetFracBits())
 		for j := 0; j < c; j++ {
-			rhs[j][j+1] = nE
+			rhs[j][q+j] = nE
 		}
 	}
 	solvedNull := ast.choleskySolveMat(xtxL, xtxDinv, rhs)
-	betaSS := make(mpc_core.RVec, c)
+	betas := make([]mpc_core.RVec, q)
+	for t := range betas {
+		betas[t] = make(mpc_core.RVec, c)
+	}
 	omp := mpc_core.InitRMat(rtype.Zero(), c, c)
 	for i := 0; i < c; i++ {
-		betaSS[i] = solvedNull[i][0]
-		copy(omp[i], solvedNull[i][1:])
+		for t := 0; t < q; t++ {
+			betas[t][i] = solvedNull[i][t]
+		}
+		copy(omp[i], solvedNull[i][q:])
 	}
 	solveDuration := ast.metricEnd("null_solve", solveMark)
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: XtX->SS + Cholesky solve %v", solveDuration.Round(time.Millisecond)))
 	betaMark := ast.metricMark()
 
-	// betaRep[ℓ] = β̂_ℓ replicated in every slot for the score's CPMult.
-	// Convert all c rows in one masked SS→CKKS schedule.
+	// Convert all q*c replicated coefficients in one masked SS→CKKS schedule.
 	var betaRepSS mpc_core.RMat
-	if pid > 0 { // pid 0 sits out SSToCMat and needs no c×slots temporary
+	if pid > 0 {
 		slots := cps.GetSlots()
-		betaRepSS = make(mpc_core.RMat, c)
-		for j := 0; j < c; j++ {
-			betaRepSS[j] = mpc_core.InitRVec(betaSS[j], slots)
+		betaRepSS = make(mpc_core.RMat, q*c)
+		for t := 0; t < q; t++ {
+			for j := 0; j < c; j++ {
+				betaRepSS[t*c+j] = mpc_core.InitRVec(betas[t][j], slots)
+			}
 		}
 	}
-	betaRep := make(crypto.CipherVector, c)
+	betaReps := make([]crypto.CipherVector, q)
+	for t := range betaReps {
+		betaReps[t] = make(crypto.CipherVector, c)
+	}
 	if betaRepCM := mpcObj.SSToCMat(cps, betaRepSS); pid > 0 {
-		for j := 0; j < c; j++ {
-			betaRep[j] = betaRepCM[j][0]
+		for t := 0; t < q; t++ {
+			for j := 0; j < c; j++ {
+				betaReps[t][j] = betaRepCM[t*c+j][0]
+			}
 		}
 	}
 	betaDuration := ast.metricEnd("null_beta_pack", betaMark)
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: betaRep SS->CKKS %v", betaDuration.Round(time.Millisecond)))
 	rssMark := ast.metricMark()
 
-	// Residual-norm RSS (robust σ̂²): RSS = y₀ᵀy₀ − 2·(Xᵀy₀·β̂) + β̂ᵀ(XᵀX)β̂, 2nd-order in the β̂ error
-	// (the plain identity y₀ᵀy₀ − Xᵀy₀·β̂ is 1st-order). All from the c-dim SS aggregates.
+	// Residual RSS for every phenotype; pooled XᵀX and its factorization are shared.
 	db, fb := mpcObj.GetDataBits(), mpcObj.GetFracBits()
-	xtxBeta := mpcObj.TruncVec(ast.ssMatVec(xtxSS, betaSS), db, fb) // (XᵀX)·β̂
-	xtyBeta := ast.ssDot(xtySS, betaSS)
-	betaXtxBeta := ast.ssDot(betaSS, xtxBeta)
-	y0ty0SS := mpcObj.CiphertextToSS(cps, rtype, firstCt(y0ty0Enc), mpcObj.GetHubPid(), 1)[0]
-	rssSS := y0ty0SS.Sub(xtyBeta).Sub(xtyBeta).Add(betaXtxBeta)
+	ytySS := mpcObj.CVecToSS(cps, rtype, ytyEnc, -1, len(ytyEnc), q, 1)
+	rss := make(mpc_core.RVec, q)
+	for t := 0; t < q; t++ {
+		xtyColumn := make(mpc_core.RVec, c)
+		for i := 0; i < c; i++ {
+			xtyColumn[i] = xtySS[i][t]
+		}
+		xtxBeta := mpcObj.TruncVec(ast.ssMatVec(xtxSS, betas[t]), db, fb)
+		xtyBeta := ast.ssDot(xtyColumn, betas[t])
+		betaXtxBeta := ast.ssDot(betas[t], xtxBeta)
+		rss[t] = ytySS[t].Sub(xtyBeta).Sub(xtyBeta).Add(betaXtxBeta)
+	}
 	rssDuration := ast.metricEnd("null_rss", rssMark)
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: RSS %v", rssDuration.Round(time.Millisecond)))
 
-	null = skatNull{betaRep: betaRep, betaSS: betaSS, omp: omp, rssSS: rssSS, c: c}
+	nulls = make([]skatNull, q)
+	for t := 0; t < q; t++ {
+		nulls[t] = skatNull{betaRep: betaReps[t], betaSS: betas[t], omp: omp, rssSS: rss[t], c: c}
+	}
 	if ln.X != nil {
 		X, y0 = ln.X, ln.Y0
 	}
 	return
+}
+
+// nullSetup preserves the scalar API for the ordinary q=1 implementation.
+func (ast *AssocTest) nullSetup() (null skatNull, X *mat.Dense, y0 []float64) {
+	nulls, X, Y0 := ast.nullSetupMulti()
+	if len(nulls) != 1 {
+		panic("ordinary SKAT path supports exactly one phenotype")
+	}
+	if Y0 != nil {
+		y0 = mat.Col(nil, 0, Y0)
+	}
+	return nulls[0], X, y0
 }
