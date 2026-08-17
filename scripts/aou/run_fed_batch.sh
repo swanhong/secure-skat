@@ -91,29 +91,68 @@ if [ -n "${FED_CHRS:-}" ]; then
     echo "FED_CHRS and uploaded annotations do not match" >&2
     exit 1
   }
+  if [ "${FED_SPLIT_ANCESTRY:-0}" = "1" ]; then
+    GROUPS=(EUR AFR AMR)
+  else
+    GROUPS=("")
+  fi
+
   export FED_SKIP_PLOT=1
-  CSV_FILES=()
   for i in "${!CHRS[@]}"; do
     run_chromosome "${CHRS[$i]}" "${ANNOTS[$i]}"
-    CSV_FILES+=("$RUN/${CHRS[$i]}/fed_results.csv")
   done
   unset FED_SKIP_PLOT
-  awk -F, 'BEGIN { OFS=","; gene=-1 } NR==1 { print; next } FNR==1 { next } { $1=++gene; print }' \
-    "${CSV_FILES[@]}" > "$RUN/fed_results.csv"
-  python3 "$REPO/scripts/analysis/fed_plot.py" "$RUN/fed_results.csv" "$RUN"
+
+  for group in "${GROUPS[@]}"; do
+    CSV_FILES=()
+    for chr in "${CHRS[@]}"; do
+      csv=$RUN/$chr${group:+/$group}/fed_results.csv
+      [ -f "$csv" ] && CSV_FILES+=("$csv")
+    done
+    if [ "${#CSV_FILES[@]}" -eq 0 ]; then
+      echo "=== ${group:-combined}: no fed_results.csv to combine (FED_CSV=0, or every chromosome failed) ==="
+      continue
+    fi
+
+    combined=$RUN${group:+/$group}
+    mkdir -p "$combined"
+    # Column 1 is the gene index and repeats q times per gene (gene-major g*q+t), so rebase
+    # per file on the gene value rather than counting rows.
+    awk -F, '
+      BEGIN { OFS = ","; offset = 0; maxgene = -1 }
+      NR == 1 { print; next }
+      FNR == 1 { offset = maxgene + 1; next }
+      { $1 += offset; if ($1 > maxgene) maxgene = $1; print }
+    ' "${CSV_FILES[@]}" > "$combined/fed_results.csv"
+    echo "=== ${group:-combined}: ${#CSV_FILES[@]}/${#CHRS[@]} chromosomes -> $combined/fed_results.csv ==="
+
+    # Mirror run_fed.sh: multi-phenotype output is gene-major and has no single-track plot.
+    # A plotting failure must never discard a finished run, so it is reported, not fatal.
+    if [ "${FED_MULTI_PHENO:-0}" = "1" ]; then
+      echo "  [plot] multi-phenotype output is gene-major g*q+t; use fed_results.csv directly"
+    else
+      python3 "$REPO/scripts/analysis/fed_plot.py" "$combined/fed_results.csv" "$combined" \
+        || echo "  [plot] fed_plot failed (skipped)"
+    fi
+  done
+
   echo "=== MULTI-CHROMOSOME COST ==="
-  printf '  %-6s %10s %10s %10s %10s %12s\n' chromosome prep secure compare total network_MiB
-  for chr in "${CHRS[@]}"; do
-    network_bytes=$(awk -F, '$2=="protocol_total" && $7=="network_total" { print $8; exit }' \
-      "$RUN/$chr/communication_summary.csv")
-    awk -F, -v chr="$chr" -v bytes="${network_bytes:-0}" '
-      $7=="step" && $1=="prep"    { prep=$3 }
-      $7=="step" && $1=="secure"  { secure=$3 }
-      $7=="step" && $1=="compare" { compare=$3 }
-      $7=="step" && $1=="total"   { total=$3 }
-      END { printf "  %-6s %9.3fs %9.3fs %9.3fs %9.3fs %12.3f\n",
-                   chr, prep/1000, secure/1000, compare/1000, total/1000, bytes/1048576 }
-    ' "$RUN/$chr/timing_steps.csv"
+  printf '  %-10s %-6s %10s %10s %10s %10s %12s\n' ancestry chromosome prep secure compare total network_MiB
+  for group in "${GROUPS[@]}"; do
+    for chr in "${CHRS[@]}"; do
+      chr_dir=$RUN/$chr${group:+/$group}
+      [ -f "$chr_dir/timing_steps.csv" ] || continue
+      network_bytes=$(awk -F, '$2=="protocol_total" && $7=="network_total" { print $8; exit }' \
+        "$chr_dir/communication_summary.csv" 2>/dev/null)
+      awk -F, -v grp="${group:-all}" -v chr="$chr" -v bytes="${network_bytes:-0}" '
+        $7=="step" && $1=="prep"    { prep=$3 }
+        $7=="step" && $1=="secure"  { secure=$3 }
+        $7=="step" && $1=="compare" { compare=$3 }
+        $7=="step" && $1=="total"   { total=$3 }
+        END { printf "  %-10s %-6s %9.3fs %9.3fs %9.3fs %9.3fs %12.3f\n",
+                     grp, chr, prep/1000, secure/1000, compare/1000, total/1000, bytes/1048576 }
+      ' "$chr_dir/timing_steps.csv"
+    done
   done
 else
   gsutil -u "$GOOGLE_CLOUD_PROJECT" -m cp \
