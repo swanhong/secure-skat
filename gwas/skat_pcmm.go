@@ -11,7 +11,7 @@ import (
 	"go.dedis.ch/onet/v3/log"
 )
 
-const pcmmInputLevel = 5
+const pcmmInputLevel = 7
 
 // pcmmWindowBytes is the encoded transform plus the raw diagonals alive during encoding.
 func pcmmWindowBytes(params ckks.Parameters, bucket GeneBatchBucket) uint64 {

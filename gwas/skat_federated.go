@@ -220,11 +220,11 @@ func blockSecStats(secs []float64) string {
 }
 
 func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, privatePid int) (skatStat, burdenSqrtT2Stat, skatZStat crypto.CipherVector) {
-	if ast.general.config.CkksParams == crypto.CKKSParamsPN14QP436S45 {
+	if crypto.IsPackedSKATParameters(ast.general.config.CkksParams) {
 		return ast.computePackedFederated(privateOnly, privatePid)
 	}
 	if ast.general.config.NumPhenos > 1 {
-		panic("multiple phenotypes require packed CKKS parameters PN14QP436S45")
+		panic("multiple phenotypes require packed SKAT CKKS parameters")
 	}
 	mpcObj := ast.general.mpcObj[0]
 	cps := ast.general.cps

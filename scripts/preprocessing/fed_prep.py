@@ -53,7 +53,7 @@ PHENO_COLS = LIPID_PHENO_COLS if MULTI_PHENO else (PHENO_COL,)
 OUT_DIR = os.path.expanduser(os.environ.get("FED_OUT", "~/fed_prep_out"))
 KEYS_PATH = os.path.expanduser(os.environ.get("FED_KEYS", "~/secure-skat/example_data/keys"))  # MPC PRG seeds (data-independent, reusable)
 PORT_BASE = int(os.environ.get("FED_PORT_BASE", "22000"))  # avoid Dataproc/Hadoop ports (8020=HDFS, 8030s=YARN, ...)
-CKKS_PARAMS = os.environ.get("FED_CKKS", "PN14QP436S45" if MULTI_PHENO else "PN14QP438")
+CKKS_PARAMS = os.environ.get("FED_CKKS", "PN14QP427S38" if MULTI_PHENO else "PN14QP438")
 DATA_BITS = int(os.environ.get("FED_DATABITS", "60"))  # MPC fixed-point total bits; raise if large-n aggregates overflow
 FRAC_BITS = int(os.environ.get("FED_FRACBITS", "30"))  # fractional bits (integer range = DATA_BITS-FRAC_BITS)
 N_PCS = int(os.environ.get("FED_NPCS", "5"))     # first N PCs from ancestry_preds as covariates (age/sex deferred)
@@ -275,8 +275,8 @@ def plink_extract_to_int8(pgen, keep_file, keys_file, n, out_prefix):
 
 def run():
     """Real prep on the workbench. Reads AoU pgen, splits into 2 cohorts, writes genotype blocks."""
-    if MULTI_PHENO and CKKS_PARAMS != "PN14QP436S45":
-        raise SystemExit("FED_MULTI_PHENO=1 requires FED_CKKS=PN14QP436S45 (packed path)")
+    if MULTI_PHENO and CKKS_PARAMS != "PN14QP427S38":
+        raise SystemExit("FED_MULTI_PHENO=1 requires FED_CKKS=PN14QP427S38 (packed path)")
     run_started = time.perf_counter()
     sample_rng = np.random.default_rng(SEED)
     role_rng = np.random.default_rng(SEED + 1)

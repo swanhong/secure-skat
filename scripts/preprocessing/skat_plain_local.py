@@ -232,7 +232,9 @@ def _run_r_skat_batch(cases, tol=1e-10):
                     continue
                 scale = float(np.max(weights))
                 q = float(Q / scale)
-                for eigen_index, value in enumerate(weights / scale):
+                normalized = weights / scale
+                normalized = normalized[normalized > 0.0]
+                for eigen_index, value in enumerate(normalized):
                     writer.writerow((case_id, eigen_index, format(q, ".17g"),
                                      format(float(value), ".17g")))
 

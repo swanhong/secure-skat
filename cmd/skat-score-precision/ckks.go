@@ -38,7 +38,7 @@ type heEngine struct {
 }
 
 func diagnosticOnlyParameter(name string) bool {
-	return name == "PN14QP431S40" || name == "PN14QP436S45"
+	return name == "PN14QP427S38" || name == "PN14QP431S40" || name == "PN14QP436S45"
 }
 
 func parameterLiteral(name string) (ckks.ParametersLiteral, error) {

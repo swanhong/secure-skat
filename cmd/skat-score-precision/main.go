@@ -57,7 +57,7 @@ func expandHome(path string) string {
 func parseOptions() options {
 	var o options
 	flag.StringVar(&o.Root, "out", defaultRoot(), "fed_prep output directory (default $FED_OUT or ~/fed_prep_out)")
-	flag.StringVar(&o.CKKS, "ckks", "auto", "CKKS parameters: auto, PN13QP218, PN14QP438, PN14QP431S40, PN14QP436S45, PN15QP880, or PN16QP1761")
+	flag.StringVar(&o.CKKS, "ckks", "auto", "CKKS parameters: auto, PN13QP218, PN14QP427S38, PN14QP438, PN14QP431S40, PN14QP436S45, PN15QP880, or PN16QP1761")
 	flag.IntVar(&o.FracBits, "frac-bits", -1, "quantize beta to this many fractional bits; -1 reads config")
 	flag.IntVar(&o.MaxGenes, "max-genes", 0, "evenly sample this many genes; 0 means all")
 	flag.StringVar(&o.CSV, "csv", "auto", "per-gene aggregate CSV path; auto writes under --out")

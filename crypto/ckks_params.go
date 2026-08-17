@@ -7,7 +7,14 @@ import (
 	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 )
 
-const CKKSParamsPN14QP436S45 = "PN14QP436S45"
+const (
+	CKKSParamsPN14QP427S38 = "PN14QP427S38"
+	CKKSParamsPN14QP436S45 = "PN14QP436S45"
+)
+
+func IsPackedSKATParameters(name string) bool {
+	return name == CKKSParamsPN14QP427S38 || name == CKKSParamsPN14QP436S45
+}
 
 // ResolveCKKSParametersLiteral is the shared source for supported CKKS profiles.
 func ResolveCKKSParametersLiteral(name string) (ckks.ParametersLiteral, error) {
@@ -18,6 +25,13 @@ func ResolveCKKSParametersLiteral(name string) (ckks.ParametersLiteral, error) {
 		return examples.CKKSComplexParamsN13QP218, nil
 	case "PN14QP438":
 		return examples.CKKSComplexParamsN14QP438, nil
+	case CKKSParamsPN14QP427S38:
+		return ckks.ParametersLiteral{
+			LogN:            14,
+			LogQ:            []int{40, 39, 38, 38, 38, 38, 38, 38},
+			LogP:            []int{40, 40, 40},
+			LogDefaultScale: 38,
+		}, nil
 	case CKKSParamsPN14QP436S45:
 		return ckks.ParametersLiteral{
 			LogN:            14,

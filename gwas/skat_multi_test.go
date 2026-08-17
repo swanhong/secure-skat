@@ -118,7 +118,7 @@ func TestPackedMultiPhenotypeEqualsIndependentQ1(t *testing.T) {
 
 	prot := InitProtocolForTestWithConfig(t, func(config *Config, pid int) {
 		root := t.TempDir()
-		config.CkksParams = crypto.CKKSParamsPN14QP436S45
+		config.CkksParams = crypto.CKKSParamsPN14QP427S38
 		config.NumInds = append([]int(nil), nByParty...)
 		config.NumSnps = genes * variants
 		config.NumCovs = 1

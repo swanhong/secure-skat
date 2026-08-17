@@ -46,6 +46,7 @@ would cause scale growth after multiplication and is not an equivalent test.
 
 | Profile | Default scale | Maximum level | Nominal logQP | Purpose |
 | --- | ---: | ---: | ---: | --- |
+| `PN14QP427S38` | 38 bits | 7 | 427 | N14 Category-128 candidate from Table 5.7 totals |
 | `PN14QP438` | 34 bits | 9 | 438 | existing baseline |
 | `PN14QP431S40` | 40 bits | 7 | 431 | N14 with PN15-like scale |
 | `PN14QP436S45` | 45 bits | 6 | 436 | N14 with PN16-like scale |

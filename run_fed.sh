@@ -238,8 +238,8 @@ if [ -f "$CFG/configGlobal.toml" ]; then
 fi
 
 if [ "${FED_MULTI_PHENO:-0}" = "1" ]; then
-  grep -q '^ckks_params = "PN14QP436S45"' "$CFG/configGlobal.toml" \
-    || { echo "error: FED_MULTI_PHENO=1 requires packed ckks_params PN14QP436S45" >&2; exit 1; }
+  grep -q '^ckks_params = "PN14QP427S38"' "$CFG/configGlobal.toml" \
+    || { echo "error: FED_MULTI_PHENO=1 requires packed ckks_params PN14QP427S38" >&2; exit 1; }
   grep -q '^num_phenos = 5$' "$CFG/configGlobal.toml" \
     || { echo "error: FED_MULTI_PHENO=1 requires a freshly prepared five-column phenotype matrix" >&2; exit 1; }
 fi

@@ -6,6 +6,8 @@ import (
 	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 )
 
+const packedMagnitudeBits = 40
+
 func windowGroupCount(window GeneBatchWindow, rhs int) int {
 	if rhs <= 0 {
 		panic("window RHS count must be positive")
@@ -124,7 +126,7 @@ func (ast *AssocTest) windowCiphertextsToShares(bucket GeneBatchBucket, window G
 		panic("window ciphertext count mismatch")
 	}
 	slots := bucket.P * bucket.L
-	packed := mpcObj.CVecToSS(ast.general.cps, mpcObj.GetRType(), values, -1, len(values), len(values)*slots)
+	packed := mpcObj.CVecToSS(ast.general.cps, mpcObj.GetRType(), values, -1, len(values), len(values)*slots, packedMagnitudeBits)
 	return scatterWindowShares(mpcObj.GetRType(), bucket, window, packed, rhs)
 }
 
@@ -138,7 +140,7 @@ func (ast *AssocTest) windowSumsToShares(bucket GeneBatchBucket, window GeneBatc
 	for group, ct := range values {
 		cm[group] = crypto.CipherVector{ct}
 	}
-	packed := mpcObj.CMatToSS(ast.general.cps, mpcObj.GetRType(), cm, -1, len(values), 1, bucket.L)
+	packed := mpcObj.CMatToSS(ast.general.cps, mpcObj.GetRType(), cm, -1, len(values), 1, bucket.L, packedMagnitudeBits)
 	out := make([]mpc_core.RVec, len(window.Tiles))
 	for tileIndex, tile := range window.Tiles {
 		out[tileIndex] = mpc_core.InitRVec(mpcObj.GetRType().Zero(), rhs)

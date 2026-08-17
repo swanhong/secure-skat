@@ -98,7 +98,6 @@ type Config struct {
 	// Zero disables the SKAT p-value path.
 	// The private-variant moment contribution is block-contracted (no padding, count hidden).
 	SkatPValueProbes int `toml:"skat_pvalue_probes"`
-
 	// RotKeyPow2Only generates only power-of-two rotation keys (InnerSumAll), skipping the
 	// baby-step-giant-step/matmul keys — ~8× less rot-key RAM. Safe for skat_fed (no matmul/PCA).
 	RotKeyPow2Only bool `toml:"rotkey_pow2only"`
@@ -222,9 +221,9 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 	var galoisElements []uint64
 	var skatManifest GeneBatchManifest
 	var skatGeneSizes []int
-	if !mpcOnly && config.CkksParams == crypto.CKKSParamsPN14QP436S45 {
+	if !mpcOnly && crypto.IsPackedSKATParameters(config.CkksParams) {
 		if os.Getenv("SFGWAS_MODE") != "skat_fed" {
-			panic("PN14QP436S45 is only available in skat_fed mode")
+			panic("packed SKAT CKKS parameters are only available in skat_fed mode")
 		}
 		skatGeneSizes = loadPublicGeneSizes(config.GenoBlockSizeFile, config.GenoNumBlocks)
 		geneIDs := readPublicFields(config.GeneIDFile, config.GenoNumBlocks)
@@ -500,7 +499,7 @@ func (g *ProtocolInfo) runFederatedPrivate() (skatOut, burdenPOut, skatPOut []fl
 		q = 1
 	}
 	nOut := nB
-	if g.config.CkksParams == crypto.CKKSParamsPN14QP436S45 {
+	if crypto.IsPackedSKATParameters(g.config.CkksParams) {
 		nOut *= q
 	}
 	// Q_skat is nil in SKAT-p mode (only the equivalent z is released) → skip its decrypt.

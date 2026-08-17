@@ -266,7 +266,7 @@ func TestPackedCKKSScoreMatchesSameBetaPlaintext(t *testing.T) {
 	gty2 := []float64{2, 5, -1, -0.75}
 	gtx1 := [][]float64{{4, 2, 7, 1}, {1, -2, 3, 4}}
 	gtx2 := [][]float64{{3, 1, 0, 2}, {-1, 5, 2, -3}}
-	for _, profile := range []string{"PN14QP438", "PN14QP431S40", "PN14QP436S45"} {
+	for _, profile := range []string{"PN14QP438", "PN14QP427S38", "PN14QP431S40", "PN14QP436S45"} {
 		t.Run(profile, func(t *testing.T) {
 			engine, err := newHEEngine(profile, beta, 128, 1)
 			if err != nil {
@@ -312,6 +312,7 @@ func TestN14HighScaleProfileBudgets(t *testing.T) {
 		wantSlots int
 		wantLogN  int
 	}{
+		{name: "PN14QP427S38", logScale: 38, maxLevel: 7, logQ: []int{40, 39, 38, 38, 38, 38, 38, 38}, logP: []int{40, 40, 40}, logQP: 427, depth: 3, parties: 2, security: 128, wantSlots: 8192, wantLogN: 14},
 		{name: "PN14QP431S40", logScale: 40, maxLevel: 7, logQ: []int{51, 40, 40, 40, 40, 40, 40, 40}, logP: []int{50, 50}, logQP: 431, depth: 3, parties: 2, security: 128, wantSlots: 8192, wantLogN: 14},
 		{name: "PN14QP436S45", logScale: 45, maxLevel: 6, logQ: []int{56, 45, 45, 45, 45, 45, 45}, logP: []int{55, 55}, logQP: 436, depth: 3, parties: 2, security: 128, wantSlots: 8192, wantLogN: 14},
 	}
