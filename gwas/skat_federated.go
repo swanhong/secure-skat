@@ -199,6 +199,13 @@ var fedTimings struct {
 	initTotal, nullTotal, blocks, total time.Duration
 	blockSecs                           []float64
 	distributionName                    string
+	phenotypeNullRSS                    []time.Duration
+	phenotypeScoreQL                    []time.Duration
+}
+
+func resetPhenotypeTimings(q int) {
+	fedTimings.phenotypeNullRSS = make([]time.Duration, q)
+	fedTimings.phenotypeScoreQL = make([]time.Duration, q)
 }
 
 // blockSecStats formats min/Q1/avg/Q3/max of per-block seconds (nearest-rank quantiles).
@@ -228,6 +235,7 @@ func (ast *AssocTest) ComputeSKATFederatedPrivate(privateOnly []*mat.Dense, priv
 	}
 
 	tStart := time.Now()
+	resetPhenotypeTimings(1)
 	fedTimings.distributionName = "gene_duration_distribution"
 	manifestMark := ast.metricMark()
 	_, publicSizes := ast.prepareGeneBatchManifest()

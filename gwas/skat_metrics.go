@@ -218,6 +218,11 @@ func printTimingRecord(mode string, pid int, stage, parent, kind string, duratio
 	fmt.Println()
 }
 
+func printPhenotypeTimingRecord(mode string, pid int, stage, parent string, phenotype int, duration time.Duration) {
+	fmt.Printf("[timing] scope=secure mode=%s party=%d stage=%s parent=%s kind=phenotype status=done milliseconds=%.3f count=1 phenotype=%d\n",
+		mode, pid, stage, parent, float64(duration)/float64(time.Millisecond), phenotype)
+}
+
 func printCommunicationStage(mode string, pid int, stage, parent, kind string, stats mpc.CommunicationStats) {
 	fmt.Printf("[communication-stage] scope=skat_fed_total mode=%s party=%d stage=%s parent=%s kind=%s sent_bytes=%d received_bytes=%d sent_messages=%d received_messages=%d\n",
 		mode, pid, stage, parent, kind, stats.SentBytes, stats.ReceivedBytes, stats.SentMessages, stats.ReceivedMessages)
@@ -235,6 +240,14 @@ func (m *fedRunMetrics) printRecords() {
 		v := m.values[def.name]
 		printTimingRecord(m.mode, m.pid, def.name, def.parent, "leaf", v.duration, v.count, 0, 0, 0, 0, 0)
 		printCommunicationStage(m.mode, m.pid, def.name, def.parent, "leaf", v.comm)
+	}
+	if len(fedTimings.phenotypeNullRSS) > 1 {
+		for phenotype := range fedTimings.phenotypeNullRSS {
+			printPhenotypeTimingRecord(m.mode, m.pid, "phenotype_null_rss", "null_rss", phenotype,
+				fedTimings.phenotypeNullRSS[phenotype])
+			printPhenotypeTimingRecord(m.mode, m.pid, "phenotype_score_ql", "packed_first_pass", phenotype,
+				fedTimings.phenotypeScoreQL[phenotype])
+		}
 	}
 }
 

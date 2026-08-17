@@ -485,6 +485,7 @@ func (ast *AssocTest) nullSetupMulti() (nulls []skatNull, X, y0 *mat.Dense) {
 	ytySS := mpcObj.CVecToSS(cps, rtype, ytyEnc, -1, len(ytyEnc), q, 1)
 	rss := make(mpc_core.RVec, q)
 	for t := 0; t < q; t++ {
+		phenotypeStarted := time.Now()
 		xtyColumn := make(mpc_core.RVec, c)
 		for i := 0; i < c; i++ {
 			xtyColumn[i] = xtySS[i][t]
@@ -493,6 +494,7 @@ func (ast *AssocTest) nullSetupMulti() (nulls []skatNull, X, y0 *mat.Dense) {
 		xtyBeta := ast.ssDot(xtyColumn, betas[t])
 		betaXtxBeta := ast.ssDot(betas[t], xtxBeta)
 		rss[t] = ytySS[t].Sub(xtyBeta).Sub(xtyBeta).Add(betaXtxBeta)
+		fedTimings.phenotypeNullRSS[t] += time.Since(phenotypeStarted)
 	}
 	rssDuration := ast.metricEnd("null_rss", rssMark)
 	log.LLvl1(fmt.Sprintf("[skat_fed]   null: RSS %v", rssDuration.Round(time.Millisecond)))

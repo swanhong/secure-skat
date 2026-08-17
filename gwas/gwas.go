@@ -588,6 +588,22 @@ func logFedTimingTree(metrics *fedRunMetrics, secureRun time.Duration) {
 	} {
 		log.LLvl1(ln)
 	}
+	if len(fedTimings.phenotypeNullRSS) > 1 {
+		var phenotypeNull, phenotypeScore time.Duration
+		for phenotype := range fedTimings.phenotypeNullRSS {
+			phenotypeNull += fedTimings.phenotypeNullRSS[phenotype]
+			phenotypeScore += fedTimings.phenotypeScoreQL[phenotype]
+		}
+		log.LLvl1("[skat_fed] multi-phenotype timing (exact sequential subspans):")
+		log.LLvl1(fmt.Sprintf("  ├─ null shared/batched       %v", ms(nonNegativeDuration(fedTimings.nullTotal-phenotypeNull))))
+		log.LLvl1(fmt.Sprintf("  ├─ genotype/variance/moments %v  (shared/batched)", ms(nonNegativeDuration(packedRaw+packedExact+packedHutch-phenotypeScore))))
+		for phenotype := range fedTimings.phenotypeNullRSS {
+			total := fedTimings.phenotypeNullRSS[phenotype] + fedTimings.phenotypeScoreQL[phenotype]
+			log.LLvl1(fmt.Sprintf("  ├─ phenotype %d              %v  [null RSS %v | score/Q/L %v]",
+				phenotype, ms(total), ms(fedTimings.phenotypeNullRSS[phenotype]), ms(fedTimings.phenotypeScoreQL[phenotype])))
+		}
+		log.LLvl1(fmt.Sprintf("  └─ final scale/p-values      %v  (batched across phenotypes)", ms(finalize)))
+	}
 }
 
 // SKATFederatedPrivate saves the per-gene SKAT statistic and Burden p-value (runFederatedPrivate

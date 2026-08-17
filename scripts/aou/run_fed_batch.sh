@@ -147,6 +147,7 @@ done < <(
     -name fed_results.csv -o \
     -name timing_steps.csv -o \
     -name communication_summary.csv -o \
+    -name phenotype_metrics.csv -o \
     -name manifest.json -o \
     -name parameter.txt -o \
     -name '*.png' -o \

@@ -326,6 +326,11 @@ func (ast *AssocTest) computePackedFederated(privateOnly []*mat.Dense, privatePi
 	fedTimings.nullTotal, fedTimings.blocks, fedTimings.total = 0, 0, 0
 	fedTimings.blockSecs = nil
 	fedTimings.distributionName = "packed_first_pass_window_distribution"
+	qCount := ast.general.config.NumPhenos
+	if qCount == 0 {
+		qCount = 1
+	}
+	resetPhenotypeTimings(qCount)
 
 	manifest := ast.general.skatManifest
 	publicSizes := ast.general.skatGeneSizes
@@ -334,7 +339,7 @@ func (ast *AssocTest) computePackedFederated(privateOnly []*mat.Dense, privatePi
 	}
 	nullStarted := time.Now()
 	nulls, X, y0 := ast.nullSetupMulti()
-	qCount := len(nulls)
+	qCount = len(nulls)
 	fedTimings.nullTotal = time.Since(nullStarted)
 	nullClassified := ast.fedMetrics.parentLeafDuration("null_model", "null_other")
 	ast.fedMetrics.addDurationCount("null_other", nonNegativeDuration(fedTimings.nullTotal-nullClassified), 1)
@@ -408,6 +413,7 @@ func (ast *AssocTest) computePackedFederated(privateOnly []*mat.Dense, privatePi
 				ast.addPrivateQLBase(&privateBase, tile, local[tile].Private)
 			}
 			for phenotype, null := range nulls {
+				phenotypeStarted := time.Now()
 				phenotypeLocal := phenotypeWindowLocal(local, phenotype)
 				score := ast.packedWindowScore(bucket, window, phenotypeLocal, null)
 				windowQ, windowL := ast.packedWindowQL(bucket, window, score, windowWeight)
@@ -422,6 +428,7 @@ func (ast *AssocTest) computePackedFederated(privateOnly []*mat.Dense, privatePi
 					q[phenotype][entry.Gene] = windowQ[tile]
 					l[phenotype][entry.Gene] = windowL[tile]
 				}
+				fedTimings.phenotypeScoreQL[phenotype] += time.Since(phenotypeStarted)
 			}
 			for tile, entry := range window.Tiles {
 				zpz[entry.Gene] = windowZpz[tile]

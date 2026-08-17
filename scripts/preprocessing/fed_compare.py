@@ -10,6 +10,7 @@ outputs out/party2/skat_fed_out.txt (SKAT) and skat_fed_burden_p_out.txt (Burden
 never releases the Burden statistic or zᵀPz, so there is nothing to diff for those. A CKKS match is
 ~1e-3; the per-gene 'within' column shows O/X against THRES (default 0.01).
 """
+import csv
 import json
 import math
 import os
@@ -46,6 +47,59 @@ def load_xy(sub, n):
     if cov.ndim == 1:
         cov = cov.reshape(n, -1)
     return np.column_stack([np.ones(n), cov]), y  # X = [1 | PCs]
+
+
+def paired_metrics(values, reference, thres, atol):
+    """Accuracy metrics over finite value/reference pairs."""
+    values = np.asarray(values, float)
+    reference = np.asarray(reference, float)
+    keep = np.isfinite(values) & np.isfinite(reference)
+    values, reference = values[keep], reference[keep]
+    if len(reference) == 0:
+        return {"n": 0, "r2": float("nan"), "max_rel": float("nan"),
+                "mean_abs_err": float("nan"), "within": 0, "total": len(keep)}
+    error = np.abs(values - reference)
+    ss = float(np.sum((reference - reference.mean()) ** 2))
+    r2 = 1 - float(np.sum((values - reference) ** 2)) / ss if ss > 0 else float("nan")
+    return {
+        "n": len(reference),
+        "r2": r2,
+        "max_rel": float(np.max(error / np.maximum(np.abs(reference), 1e-12))),
+        "mean_abs_err": float(np.mean(error)),
+        "within": int(np.sum(error <= atol + thres * np.abs(reference))),
+        "total": len(keep),
+    }
+
+
+def write_phenotype_metrics(phenotypes, comparisons):
+    """Print and save one accuracy row per phenotype and comparison."""
+    rows = []
+    q = len(phenotypes)
+    for comparison, values, reference, thres, atol in comparisons:
+        for phenotype, phenotype_name in enumerate(phenotypes):
+            metrics = paired_metrics(values[phenotype::q], reference[phenotype::q], thres, atol)
+            rows.append({"phenotype_index": phenotype, "phenotype": phenotype_name,
+                         "comparison": comparison, **metrics})
+
+    print("\n=== Accuracy by phenotype ===")
+    print(f"  {'phenotype':<62} {'comparison':<26} {'n':>5} {'R^2':>10} {'max rel':>10} {'within':>10}")
+    for row in rows:
+        r2 = f"{row['r2']:.6f}" if math.isfinite(row["r2"]) else "NA"
+        max_rel = f"{row['max_rel']:.2e}" if math.isfinite(row["max_rel"]) else "NA"
+        within = f"{row['within']}/{row['total']}"
+        print(f"  {row['phenotype']:<62} {row['comparison']:<26} {row['n']:>5} "
+              f"{r2:>10} {max_rel:>10} {within:>10}")
+    if any(not math.isfinite(row["r2"]) for row in rows):
+        print("  R^2=NA when a phenotype has fewer than two genes or a constant plaintext reference.")
+
+    path = f"{OUT}/phenotype_metrics.csv"
+    fields = ["phenotype_index", "phenotype", "comparison", "n", "r2", "max_rel",
+              "mean_abs_err", "within", "total"]
+    with open(path, "w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"  phenotype metrics CSV -> {path}")
 
 
 def compare(name, secure, plain, ng, phenotypes, thres=THRES, atol=1.0):
@@ -125,12 +179,15 @@ def _erfcinv(y):
 
 
 print(f"  nA={nA} nB={nB} genes={ng} phenotypes={q} output_order=g*q+t")
+phenotype_comparisons = []
 if Ssec is not None:  # SKAT statistic Q — only revealed when skat_pvalue_probes=0 (else Q is hidden)
     skat_within = compare("SKAT (Q)", Ssec, Splain, ng, phenotypes)
+    phenotype_comparisons.append(("SKAT Q: secure vs plain", Ssec, Splain, THRES, 1.0))
 else:
     skat_within = None
     print("\n  SKAT statistic Q not released (skat_pvalue_probes>0 → only the WH pivot z leaves)")
 burdenp_within = compare("Burden p-value", Psec, Pplain, ng, phenotypes, atol=0.0)
+phenotype_comparisons.append(("Burden p: secure vs plain", Psec, Pplain, THRES, 0.0))
 # Burden T = 2·(√(T/2))² = 2·erfcinv(p)²: the χ²₁ statistic behind the Burden p. Derived from the
 # revealed p (T ↔ p bijective), so no new information leaves; shown for interpretability.
 Tsec = np.array([2 * _erfcinv(p) ** 2 for p in np.atleast_1d(Psec)])
@@ -138,6 +195,7 @@ Tplain = np.array([2 * _erfcinv(p) ** 2 for p in np.atleast_1d(Pplain)])
 # atol=0.02: T=2·erfcinv(p)² amplifies the relative error at high p (T→0), so a small-T gene can miss
 # a pure-rel threshold while its authoritative Burden p is within — the absolute floor absorbs that.
 burdenT_within = compare("Burden T (=2·erfcinv(p)²)", Tsec, Tplain, ng, phenotypes, atol=0.02)
+phenotype_comparisons.append(("Burden T: secure vs plain", Tsec, Tplain, THRES, 0.02))
 total = ng * q
 summary = f"\nwithin threshold ({THRES}):  "
 summary += f"SKAT Q {skat_within}/{total},  " if skat_within is not None else ""
@@ -166,38 +224,32 @@ if os.path.exists(skat_p_file):
         print(f"{gene:>4} {phenotype:>5} {SkatPsec[index]:>12.4e} {WHplain[index]:>12.4e} "
               f"{LiuPlain[index]:>12.4e} {DaviesPlain[index]:>12.4e}")
 
-    def _paired(a, ref):
-        keep = np.isfinite(a) & np.isfinite(ref)
-        return a[keep], ref[keep]
-
     def _r2(a, ref):
-        a, ref = _paired(a, ref)
-        if len(ref) == 0:
-            return float("nan")
-        ss = float(np.sum((ref - ref.mean()) ** 2))
-        return 1 - float(np.sum((a - ref) ** 2)) / ss if ss > 0 else float("nan")
+        return paired_metrics(a, ref, THRES, 0.0)["r2"]
 
     def _maxrel(a, ref):
-        a, ref = _paired(a, ref)
-        if len(ref) == 0:
-            return float("nan")
-        return float(np.max(np.abs(a - ref) / np.maximum(np.abs(ref), 1e-12)))
+        return paired_metrics(a, ref, THRES, 0.0)["max_rel"]
 
     def _mae(a, ref):
-        a, ref = _paired(a, ref)
-        return float(np.mean(np.abs(a - ref))) if len(ref) else float("nan")
+        return paired_metrics(a, ref, THRES, 0.0)["mean_abs_err"]
 
     def _npaired(a, ref):
-        return int(np.sum(np.isfinite(a) & np.isfinite(ref)))
+        return paired_metrics(a, ref, THRES, 0.0)["n"]
 
     print(f"\n  {'comparison':<24} {'n':>6} {'R^2':>10} {'max rel':>10} {'mean abs err':>13}")
     for name, ref in [("secure-WH vs plain-WH", WHplain), ("WH vs Liu", LiuPlain), ("WH vs Davies", DaviesPlain)]:
         print(f"  {name:<24} {_npaired(SkatPsec, ref):>6} {_r2(SkatPsec, ref):>10.6f} "
               f"{_maxrel(SkatPsec, ref):>10.2e} {_mae(SkatPsec, ref):>13.2e}")
     summary += f",  SKAT p (WH vs Liu R^2={_r2(SkatPsec, LiuPlain):.4f}, vs Davies R^2={_r2(SkatPsec, DaviesPlain):.4f})"
+    phenotype_comparisons.extend([
+        ("SKAT p: secure WH vs plain WH", SkatPsec, WHplain, THRES, 0.0),
+        ("SKAT p: secure WH vs Liu", SkatPsec, LiuPlain, THRES, 0.0),
+        ("SKAT p: secure WH vs Davies", SkatPsec, DaviesPlain, THRES, 0.0),
+    ])
 else:
     emit_timing("compare.plain_skat_p_refs", 0.0, status="skipped", count=0)
 print(summary)
+write_phenotype_metrics(phenotypes, phenotype_comparisons)
 
 
 def gene_positions(ng):
