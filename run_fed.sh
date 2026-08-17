@@ -127,6 +127,7 @@ write_timing_summary() {
   # Merge machine-readable substeps emitted by prep, each secure party, and
   # comparison.  A parser failure must not hide the original run status.
   local timing_args=("$OUT/timing_steps.csv" --output "$OUT/timing_steps.csv")
+  [ -f "$OUT/manifest.json" ] && timing_args+=(--manifest "$OUT/manifest.json")
   [ -f "$OUT/prep.log" ] && timing_args+=(--prep-log "$OUT/prep.log")
   [ -f "$OUT/party0.log" ] && timing_args+=(--party-log "$OUT/party0.log")
   [ -f "$OUT/party1.log" ] && timing_args+=(--party-log "$OUT/party1.log")
