@@ -92,9 +92,9 @@ if [ -n "${FED_CHRS:-}" ]; then
     exit 1
   }
   if [ "${FED_SPLIT_ANCESTRY:-0}" = "1" ]; then
-    GROUPS=(EUR AFR AMR)
+    ANC_GROUPS=(EUR AFR AMR)
   else
-    GROUPS=("")
+    ANC_GROUPS=("")
   fi
 
   export FED_SKIP_PLOT=1
@@ -103,7 +103,7 @@ if [ -n "${FED_CHRS:-}" ]; then
   done
   unset FED_SKIP_PLOT
 
-  for group in "${GROUPS[@]}"; do
+  for group in "${ANC_GROUPS[@]}"; do
     CSV_FILES=()
     for chr in "${CHRS[@]}"; do
       csv=$RUN/$chr${group:+/$group}/fed_results.csv
@@ -138,7 +138,7 @@ if [ -n "${FED_CHRS:-}" ]; then
 
   echo "=== MULTI-CHROMOSOME COST ==="
   printf '  %-10s %-6s %10s %10s %10s %10s %12s\n' ancestry chromosome prep secure compare total network_MiB
-  for group in "${GROUPS[@]}"; do
+  for group in "${ANC_GROUPS[@]}"; do
     for chr in "${CHRS[@]}"; do
       chr_dir=$RUN/$chr${group:+/$group}
       [ -f "$chr_dir/timing_steps.csv" ] || continue
