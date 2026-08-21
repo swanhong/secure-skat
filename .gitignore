@@ -14,6 +14,8 @@ test_stdout_*.txt
 *.skat.bin
 
 CLAUDE.md
+AGENTS.md
+docs/*
 skills-lock.json
 .claude/*
 .agents/*
