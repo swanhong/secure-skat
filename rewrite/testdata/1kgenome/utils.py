@@ -1,0 +1,240 @@
+import subprocess
+from pathlib import Path
+import gzip
+import random
+
+def download_if_missing(url: str, destination: Path) -> Path:
+    if destination.exists():
+        print(f"exists: {destination}")
+        return destination
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    # download to partial, then rename to destination if successful
+    partial = destination.with_name(f"{destination.name}.part")
+    subprocess.run(["curl", "-fL", "--retry", "5", "--retry-all-errors", "-C", "-", "-o", str(partial), url,
+        ],
+        check=True,
+    )
+    partial.replace(destination)
+    print(f"downloaded: {destination}")
+    return destination
+
+def create_pgen(
+        vcf_path: Path,
+        panel_path: Path,
+        out_prefix: Path,
+        keep_path: Path,
+) -> Path:
+    output_files = [
+        Path(f"{out_prefix}.pgen"),
+        Path(f"{out_prefix}.pvar"),
+        Path(f"{out_prefix}.psam"),
+    ]
+
+    if all(path.exists() for path in output_files):
+        print(f"exists: {out_prefix}")
+        return out_prefix
+
+    # read sample IDs from panel file
+    with panel_path.open() as panel:
+        columns = next(panel).split()
+        sample_column = columns.index("sample")
+
+        sample_ids = []
+        for line in panel:
+            sample_id = line.split()[sample_column]
+            sample_ids.append(sample_id)
+
+    # create output directories and write keep file
+    out_prefix.parent.mkdir(parents=True, exist_ok=True)    
+    keep_path.parent.mkdir(parents=True, exist_ok=True)
+    keep_path.write_text(
+        "".join(f"{sample_id}\n" for sample_id in sample_ids)
+    )
+
+    subprocess.run(
+        [
+            "plink2", "--vcf", str(vcf_path), 
+            "--keep", str(keep_path), "--make-pgen", 
+            "--out", str(out_prefix),
+            "--var-filter",
+            "--import-max-alleles", "2",
+            "--set-all-var-ids", "@:#:$r:$a",
+            "--new-id-max-allele-len", "1000",
+        ],
+        check=True,
+    )
+
+    print("created: " + ", ".join(str(path) for path in output_files))
+    print("number of samples: " + str(len(sample_ids)))
+    return out_prefix
+
+def create_inputs_from_gencode(
+        gtf_path: Path,
+        pvar_path: Path,
+        gene_panel_path: Path,
+        annotation_path: Path,
+        chr: str = "22",
+        seed: int = 42,
+) -> tuple[Path, Path]:
+    # format chr, gtf_chr like "22", "chr22"
+    chr = chr.removeprefix("chr")
+    gtf_chr = f"chr{chr}"
+
+    rng = random.Random(seed)
+    genes = []
+    with gzip.open(gtf_path, "rt") as gtf:
+        for line in gtf:
+            if line.startswith("#"):
+                continue
+
+            fields = line.rstrip().split("\t")
+            if fields[0] != gtf_chr or fields[2] != "gene":
+                continue
+
+            attributes = {}
+            # fields[8] contains attributes like 'gene_id "ENSG00000186092.5"; gene_name "OR4F5"; ...'
+            for item in fields[8].rstrip(";").split("; "):
+                key, value = item.strip().split(" ", 1)
+                attributes[key] = value.strip('"')
+
+            # filter for protein-coding genes, to make it simpler
+            if attributes["gene_type"] != "protein_coding":
+                continue
+
+            genes.append(
+                (
+                    int(fields[3]),  # start position
+                    int(fields[4]),  # end position
+                    attributes["gene_id"],
+                    attributes["gene_name"]
+                )
+            )
+    gene_panel_path.parent.mkdir(parents=True, exist_ok=True)
+    with gene_panel_path.open("w") as gene_panel:
+        gene_panel.write(
+            "gene_id\tgene_symbol\tchromosome\torder_index\n"
+        )
+        for order_index, (_, _, gene_id, gene_symbol) in enumerate(genes):
+            gene_panel.write(
+                f"{gene_id}\t{gene_symbol}\t{chr}\t{order_index}\n"
+            )
+
+    annotation_path.parent.mkdir(parents=True, exist_ok=True)
+    gene_index = 0
+    active_genes = []
+    annotation_count = 0
+
+    with pvar_path.open() as pvar, annotation_path.open("w") as annotation:
+        # write header
+        annotation.write(
+            "variant_key\tgene_id\tgene_symbol\tLoF\tconsequence\n"
+        )
+
+        for line in pvar:
+            if line.startswith("##"):
+                continue
+
+            if line.startswith("#"):
+                columns = line.lstrip("#").rstrip().split()
+                chr_column = columns.index("CHROM")
+                pos_column = columns.index("POS")
+                id_column = columns.index("ID")
+                continue
+
+            fields = line.rstrip().split()
+            if fields[chr_column].removeprefix("chr") != chr:
+                continue
+
+            pos = int(fields[pos_column])
+            while gene_index < len(genes) and pos >= genes[gene_index][0]:
+                active_genes.append(genes[gene_index])
+                gene_index += 1
+
+
+            active_genes = [
+                gene for gene in active_genes if pos <= gene[1]
+            ]
+            variant_key = fields[id_column]
+
+            # for annotation, assume all annot == HC for test
+            for _, _, gene_id, gene_symbol in active_genes:
+                # for test, set LoF == "HC"
+                # randomly assign consequence= "missense_variant" or "synonymous_variant"
+                consequence = rng.choice(["missense_variant", "synonymous_variant"])
+                annotation.write(
+                    f"{variant_key}\t{gene_id}\t{gene_symbol}\tHC\t{consequence}\n"
+                )
+                annotation_count += 1
+
+    print(f"created: {gene_panel_path}, ({len(genes)} genes)")
+    print(f"created: {annotation_path}, ({annotation_count} annotations )")
+    return gene_panel_path, annotation_path
+
+    
+def create_covariates(
+        panel_path: Path,
+        psam_path: Path,
+        out_path: Path,
+) -> Path:
+    super_populations = {}
+
+    with panel_path.open() as panel:
+        columns = next(panel).split()
+        sample_column = columns.index("sample")
+        super_pop_column = columns.index("super_pop")
+
+        for line in panel:
+            fields = line.split()
+            super_populations[fields[sample_column]] = fields[super_pop_column]
+
+    with psam_path.open() as psam:
+        columns = next(psam).lstrip("#").split()
+        iid_column = columns.index("IID")
+        sample_ids = [line.split()[iid_column] for line in psam]
+
+    # SAS is left out on purpose: it is the reference level. With all five
+    # indicators the design would be collinear with the intercept the protocol
+    # adds as column 0 of X.
+    populations = ("AFR", "AMR", "EAS", "EUR")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with out_path.open("w") as output:
+        output.write("IID\t" + "\t".join(f"superpop_{pop}" for pop in populations) + "\n")
+
+        for sample_id in sample_ids:
+            super_pop = super_populations[sample_id]
+            indicators = (str(int(super_pop==pop)) for pop in populations)
+            output.write(f"{sample_id}\t" + "\t".join(indicators) + "\n")
+
+    print(f"created: {out_path}, ({len(sample_ids)} samples)")
+    return out_path
+
+
+def create_phenotype(
+    psam_path: Path,
+    out_path: Path,
+    seed: int = 42,
+) -> Path:
+    with psam_path.open() as psam:
+        columns = next(psam).lstrip("#").split()
+        iid_column = columns.index("IID")
+        sample_ids = [
+            line.split()[iid_column]
+            for line in psam
+        ]
+
+    rng = random.Random(seed)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with out_path.open("w") as output:
+        output.write("IID,phenotype\n")
+
+        for sample_id in sample_ids:
+            phenotype = rng.gauss(0.0, 1.0)
+            output.write(
+                f"{sample_id},{phenotype:.12f}\n"
+            )
+
+    print(f"created: {out_path}, ({len(sample_ids)} samples)")
+    return out_path
