@@ -42,33 +42,17 @@ def extract_genotypes(
         rows_b: PhenoCovRows,
         plans: Sequence[GenePlan],
         extractor: Callable[
-            [Path, tuple[str, ...], tuple[str, ...],],
+            [Path, tuple[str, ...], tuple[str, ...]],
             tuple[np.ndarray, tuple[str, ...]],
-        ],      
+        ],
 ) -> tuple[
     tuple[GenePlan, ...],
     np.ndarray,
+    dict[str, int],
     np.ndarray,
     dict[str, int],
 ]:
-    '''
-    Extract genetypes for the variants in the plans.
-
-    Args:
-        pgen_prefix: Path prefix for the PLINK2 pgen/pvar/psam
-        rows_a: Phenotype and covariate rows for cohort A
-        rows_b: Phenotype and covariate rows for cohort B 
-        plans: GenePlans for the variants to extract
-        extractor: Function to extract genotypes from PLINK2 files. It returns
-            int8 dosages with missing values already set to 0, plus the variant
-            keys it emitted, in its own output order.
-
-    Returns:
-        A tuple containing:
-            - A tuple of filtered GenePlans, with only variants that were successfully extracted.
-            - A numpy array of genotypes for cohort A and B, shape (n_samples, n_variants)
-            - A dictionary mapping variant keys to column indices in the genotype arrays
-    '''
+    """Extract party-specific genotypes and filter unavailable variants."""
 
     # from plan, collect variants to extract, and their roles
     keys_a = []
@@ -88,33 +72,23 @@ def extract_genotypes(
 
     # extract genotypes for the variants in the plans
     # extractor is for PLINK2 pgen/pvar/psam files
-    raw_a, emitted_a = extractor(
+    geno_a, emitted_a = extractor(
         pgen_prefix,
         rows_a.sample_ids,
         tuple(keys_a),
     )
-    raw_b, emitted_b = extractor(
+    geno_b, emitted_b = extractor(
         pgen_prefix,
         rows_b.sample_ids,
         tuple(keys_b),
     )
 
-    all_keys = []
-    seen_keys = set()
-
-    for key in (*emitted_a, *emitted_b):
-        if key not in seen_keys:
-            all_keys.append(key)
-            seen_keys.add(key)
-
-    key_column = {key: column for column, key in enumerate(all_keys)}
-    geno_a = np.zeros((raw_a.shape[0], len(all_keys)), dtype=np.int8)
-    geno_b = np.zeros((raw_b.shape[0], len(all_keys)), dtype=np.int8)
-
-    for source_column, key in enumerate(emitted_a):
-        geno_a[:, key_column[key]] = raw_a[:, source_column]
-    for source_column, key in enumerate(emitted_b):
-        geno_b[:, key_column[key]] = raw_b[:, source_column]
+    key_column_a = {
+        key: column for column, key in enumerate(emitted_a)
+    }
+    key_column_b = {
+        key: column for column, key in enumerate(emitted_b)
+    }
 
     emitted_a_set = set(emitted_a)
     emitted_b_set = set(emitted_b)
@@ -139,17 +113,19 @@ def extract_genotypes(
     return (
         tuple(filtered_plans),
         geno_a,
+        key_column_a,
         geno_b,
-        key_column,
+        key_column_b,
     )
 
 def build_blocks(
         plans: Sequence[GenePlan],
         geno_a: np.ndarray,
+        key_column_a: Mapping[str, int],
         geno_b: np.ndarray,
-        key_column: Mapping[str, int],
+        key_column_b: Mapping[str, int],
 ) -> tuple[GeneBlock, ...]:
-    """Build gene-local public and private genotype blocks.""" 
+    """Build gene-local public and private genotype blocks."""
     blocks = []
     for plan in plans:
         public = [
@@ -157,29 +133,31 @@ def build_blocks(
             if role in {"shared", "public_only"}
         ]
         private = [
-            (variant, role) for variant, role in plan.variant_roles
-            if role in {"private"}
+            variant for variant, role in plan.variant_roles
+            if role == "private"
         ]
 
-        public_columns = [
-            key_column[variant.key] for variant, _ in public
+        public_columns_a = [
+            key_column_a[variant.key] for variant, _ in public
         ]
-        private_columns = [
-            key_column[variant.key] for variant, _ in private
+        private_columns_b = [
+            key_column_b[variant.key] for variant in private
         ]
 
-        public_a = geno_a[:, public_columns].copy()
+        public_a = geno_a[:, public_columns_a].copy()
         public_b = np.zeros((geno_b.shape[0], len(public)), dtype=np.int8)
 
         for block_column, (variant, role) in enumerate(public):
             if role == "shared":
-                public_b[:, block_column] = geno_b[:, key_column[variant.key]]
-        private_b = geno_b[:, private_columns].copy()
+                public_b[:, block_column] = (
+                    geno_b[:, key_column_b[variant.key]]
+                )
+        private_b = geno_b[:, private_columns_b].copy()
         blocks.append(
             GeneBlock(
                 gene=plan.gene,
                 public_variants=tuple(variant for variant, _ in public),
-                private_variants=tuple(variant for variant, _ in private),
+                private_variants=tuple(private),
                 public_a=public_a,
                 public_b=public_b,
                 private_b=private_b,
@@ -449,7 +427,13 @@ def prepare_blocks(
         role_seed=options.role_seed,
     )
 
-    ( extracted_plans, geno_a, geno_b, key_column ) = extract_genotypes(
+    (
+        extracted_plans,
+        geno_a,
+        key_column_a,
+        geno_b,
+        key_column_b,
+    ) = extract_genotypes(
         pgen_prefix=inputs.pgen_prefix,
         rows_a=rows_a,
         rows_b=rows_b,
@@ -460,8 +444,9 @@ def prepare_blocks(
     blocks = build_blocks(
         plans=extracted_plans,
         geno_a=geno_a,
+        key_column_a=key_column_a,
         geno_b=geno_b,
-        key_column=key_column,
+        key_column_b=key_column_b,
     )
 
     write_outputs(
