@@ -1,5 +1,7 @@
 package protocol
 
+import mpc_core "github.com/hhcho/mpc-core"
+
 func PackGeneBatch[T any](
 	dataParams DataParams,
 	cryptoParams CryptoParams,
@@ -16,6 +18,27 @@ func PackGeneBatch[T any](
 		for variantIndex := 0; variantIndex < variantCount; variantIndex++ {
 			slot := variantIndex*nu + laneBase
 			packed[slot] = values[pos][variantIndex]
+		}
+	}
+	return packed
+}
+
+func packSharedGeneBatch(
+	rtype mpc_core.RElem,
+	dataParams DataParams,
+	cryptoParams CryptoParams,
+	batch GeneBatch,
+	values [][]mpc_core.RElem,
+) mpc_core.RVec {
+	packed := mpc_core.RVec(PackGeneBatch(
+		dataParams,
+		cryptoParams,
+		batch,
+		values,
+	))
+	for slot, value := range packed {
+		if value == nil {
+			packed[slot] = rtype.Zero()
 		}
 	}
 	return packed

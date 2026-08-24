@@ -63,6 +63,59 @@ func privateSignedWeights(counts []float64, sampleCount int) []float64 {
 	return signedWeight
 }
 
+func computeLocalGvGeneTerms(
+	privateGenotypes *mat.Dense,
+	publicGenotypes *mat.Dense,
+	x *mat.Dense,
+	sampleCount int,
+	publicVariantCount int,
+) (gvLocalGene, gvGeneValues) {
+	if privateGenotypes == nil {
+		return gvLocalGene{}, gvGeneValues{}
+	}
+
+	_, privateVariantCount := privateGenotypes.Dims()
+	counts := make([]float64, privateVariantCount)
+	for variant := range counts {
+		counts[variant] = mat.Sum(privateGenotypes.ColView(variant))
+	}
+	signedWeight := privateSignedWeights(counts, sampleCount)
+
+	gtx := new(mat.Dense)
+	gtx.Mul(privateGenotypes.T(), x)
+	wGtx := scaleDenseRows(gtx, signedWeight)
+
+	wGtxSquare := new(mat.Dense)
+	wGtxSquare.Mul(wGtx.T(), wGtx)
+	privateXtb := denseColumnSums(wGtx)
+
+	var cross *mat.Dense
+	burdenCross := make([]float64, publicVariantCount)
+	if publicVariantCount > 0 {
+		cross = new(mat.Dense)
+		cross.Mul(publicGenotypes.T(), privateGenotypes)
+		cross = scaleDenseColumns(cross, signedWeight)
+		burdenCross = denseRowSums(cross)
+	}
+
+	gvGtG := new(mat.Dense)
+	gvGtG.Mul(privateGenotypes.T(), privateGenotypes)
+	wGvGtG := scaleDenseColumns(gvGtG, signedWeight)
+	wGvGtG = scaleDenseRows(wGvGtG, signedWeight)
+
+	return gvLocalGene{
+			signedWeight: signedWeight,
+			wGtx:         wGtx,
+			cross:        cross,
+			wGvGtG:       wGvGtG,
+		}, gvGeneValues{
+			wGtxSquare:   wGtxSquare,
+			privateXtb:   privateXtb,
+			burdenCross:  burdenCross,
+			burdenSquare: mat.Sum(wGvGtG),
+		}
+}
+
 func PrepareGvGeneTerms(
 	mpcObj *mpc.MPC,
 	dataParams DataParams,
@@ -71,70 +124,19 @@ func PrepareGvGeneTerms(
 	gp []*mat.Dense,
 	x *mat.Dense,
 ) (gvLocal []gvLocalGene, gvGene []gvGeneShares) {
-	/*
-		For each gene g, let D[g] = Diag(signedWeight[g]):
-
-		wGtx[g]              = D[g] * Transpose(Gv[g]) * X[B]
-		wGtxSquare[g]        = Transpose(wGtx[g]) * wGtx[g]
-		PrivateXtb[g]        = ColSum(wGtx[g])
-		cross[g]             = Transpose(Gp[B][g]) * Gv[g] * D[g]
-		wGvGtG[g]            = D[g] * Transpose(Gv[g]) * Gv[g] * D[g]
-		BurdenCross[g]       = RowSum(cross[g])
-		BurdenSquare[g]      = Sum(wGvGtG[g])
-	*/
 	geneCount := len(batch.GeneIndices)
 	gvLocal = make([]gvLocalGene, geneCount)
 	localGene := make([]gvGeneValues, geneCount)
 
 	if mpcObj.GetPid() == cohortBPartyID {
 		for position, geneIndex := range batch.GeneIndices {
-			publicVariantCount := dataParams.Genes[geneIndex].VariantCount
-			privateGenotypes := gv[geneIndex]
-			if privateGenotypes == nil {
-				continue
-			}
-
-			_, privateVariantCount := privateGenotypes.Dims()
-			counts := make([]float64, privateVariantCount)
-			for variant := range counts {
-				counts[variant] = mat.Sum(privateGenotypes.ColView(variant))
-			}
-			signedWeight := privateSignedWeights(counts, dataParams.N)
-
-			gtx := new(mat.Dense)
-			gtx.Mul(privateGenotypes.T(), x)
-			wGtx := scaleDenseRows(gtx, signedWeight)
-
-			wGtxSquare := new(mat.Dense)
-			wGtxSquare.Mul(wGtx.T(), wGtx)
-			privateXtb := denseColumnSums(wGtx)
-
-			var cross *mat.Dense
-			burdenCross := make([]float64, publicVariantCount)
-			if publicVariantCount > 0 {
-				cross = new(mat.Dense)
-				cross.Mul(gp[geneIndex].T(), privateGenotypes)
-				cross = scaleDenseColumns(cross, signedWeight)
-				burdenCross = denseRowSums(cross)
-			}
-
-			gvGtG := new(mat.Dense)
-			gvGtG.Mul(privateGenotypes.T(), privateGenotypes)
-			wGvGtG := scaleDenseColumns(gvGtG, signedWeight)
-			wGvGtG = scaleDenseRows(wGvGtG, signedWeight)
-
-			gvLocal[position] = gvLocalGene{
-				signedWeight: signedWeight,
-				wGtx:         wGtx,
-				cross:        cross,
-				wGvGtG:       wGvGtG,
-			}
-			localGene[position] = gvGeneValues{
-				wGtxSquare:   wGtxSquare,
-				privateXtb:   privateXtb,
-				burdenCross:  burdenCross,
-				burdenSquare: mat.Sum(wGvGtG),
-			}
+			gvLocal[position], localGene[position] = computeLocalGvGeneTerms(
+				gv[geneIndex],
+				gp[geneIndex],
+				x,
+				dataParams.N,
+				dataParams.Genes[geneIndex].VariantCount,
+			)
 		}
 	}
 
@@ -226,8 +228,6 @@ func AssembleGvQL(
 	geneCount := len(gvPheno.wGtySquare)
 	covariateCount := len(beta)
 	rtype := mpcObj.GetRType()
-	dataBits := mpcObj.GetDataBits()
-	fracBits := mpcObj.GetFracBits()
 
 	geneBatchQ = mpc_core.InitRVec(rtype.Zero(), geneCount)
 	geneBatchL = mpc_core.InitRVec(rtype.Zero(), geneCount)
@@ -237,34 +237,19 @@ func AssembleGvQL(
 	}
 
 	for position := 0; position < geneCount; position++ {
-		wGtxGtyBetaTerms := mpcObj.SSMultElemVec(
-			gvPheno.wGtxGty[position], beta,
-		)
-		wGtxGtyBetaTerms = mpcObj.TruncVec(
-			wGtxGtyBetaTerms, dataBits, fracBits,
-		)
-		wGtxGtyBeta := sumShares(rtype, wGtxGtyBetaTerms)
-
-		privateXtbBetaTerms := mpcObj.SSMultElemVec(
-			gvGene[position].privateXtb, beta,
-		)
-		privateXtbBetaTerms = mpcObj.TruncVec(
-			privateXtbBetaTerms, dataBits, fracBits,
-		)
-		privateXtbBeta := sumShares(rtype, privateXtbBetaTerms)
+		wGtxGtyBeta := sharedDot(mpcObj, gvPheno.wGtxGty[position], beta)
+		privateXtbBeta := sharedDot(mpcObj, gvGene[position].privateXtb, beta)
 
 		qMatrixBeta := mpcObj.SSMultMat(
 			gvGene[position].wGtxSquare, betaColumn,
 		)
-		qMatrixBeta = mpcObj.TruncMat(qMatrixBeta, dataBits, fracBits)
+		qMatrixBeta = mpcObj.TruncMat(qMatrixBeta, mpcObj.GetDataBits(), mpcObj.GetFracBits())
 		qMatrixBetaColumn := make(mpc_core.RVec, covariateCount)
 		for covariate := range qMatrixBetaColumn {
 			qMatrixBetaColumn[covariate] = qMatrixBeta[covariate][0]
 		}
 
-		qCorrectionTerms := mpcObj.SSMultElemVec(beta, qMatrixBetaColumn)
-		qCorrectionTerms = mpcObj.TruncVec(qCorrectionTerms, dataBits, fracBits)
-		qCorrection := sumShares(rtype, qCorrectionTerms)
+		qCorrection := sharedDot(mpcObj, beta, qMatrixBetaColumn)
 
 		twicewGtxGtyBeta := wGtxGtyBeta.Mul(rtype.FromInt(2))
 		geneBatchQ[position] = gvPheno.wGtySquare[position].Sub(
@@ -458,12 +443,4 @@ func denseRowSums(matrix *mat.Dense) []float64 {
 		sums[row] = mat.Sum(matrix.RowView(row))
 	}
 	return sums
-}
-
-func sumShares(rtype mpc_core.RElem, values mpc_core.RVec) mpc_core.RElem {
-	sum := rtype.Zero()
-	for _, value := range values {
-		sum = sum.Add(value)
-	}
-	return sum
 }

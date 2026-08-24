@@ -43,6 +43,9 @@ func ComputeGtX(
 ) ([]*mat.Dense, securecrypto.PlainVector) {
 	gtx := make([]*mat.Dense, len(batch.GeneIndices))
 	for position, geneIndex := range batch.GeneIndices {
+		if dataParams.Genes[geneIndex].VariantCount == 0 {
+			continue
+		}
 		gtx[position] = new(mat.Dense)
 		gtx[position].Mul(gp[geneIndex].T(), x)
 	}
@@ -52,6 +55,9 @@ func ComputeGtX(
 	for covariate := 0; covariate < covariateCount; covariate++ {
 		columnByGene := make([][]float64, len(batch.GeneIndices))
 		for position := range batch.GeneIndices {
+			if gtx[position] == nil {
+				continue
+			}
 			columnByGene[position] = mat.Col(nil, covariate, gtx[position])
 		}
 		packed := PackGeneBatch(dataParams, cryptoParams, batch, columnByGene)
@@ -116,14 +122,13 @@ func PackWeight(
 	for position, geneIndex := range batch.GeneIndices {
 		weightByGene[position] = signedWeight[geneIndex]
 	}
-	packed := mpc_core.RVec(PackGeneBatch(
-		dataParams, cryptoParams, batch, weightByGene,
-	))
-	for slot := range packed {
-		if packed[slot] == nil {
-			packed[slot] = mpcObj.GetRType().Zero()
-		}
-	}
+	packed := packSharedGeneBatch(
+		mpcObj.GetRType(),
+		dataParams,
+		cryptoParams,
+		batch,
+		weightByGene,
+	)
 	return mpcObj.SSToCVec(heParams, packed)
 }
 
@@ -173,14 +178,13 @@ func ReduceQL(
 		}
 	}
 
-	repackedUshares := mpc_core.RVec(PackGeneBatch(
-		dataParams, cryptoParams, batch, uSharesByGene,
-	))
-	for slot := range repackedUshares {
-		if repackedUshares[slot] == nil {
-			repackedUshares[slot] = mpcObj.GetRType().Zero()
-		}
-	}
+	repackedUshares := packSharedGeneBatch(
+		mpcObj.GetRType(),
+		dataParams,
+		cryptoParams,
+		batch,
+		uSharesByGene,
+	)
 	freshEncPackedU := mpcObj.SSToCVec(
 		heParams, repackedUshares,
 	)

@@ -97,8 +97,8 @@ func ComputeBurdenQuadratic(
 		    + 2 * Dot(w, BurdenCross)
 		    + BurdenSquare
 	*/
-	gtgTerm := burdenSharedDot(mpcObj, signedWeight, gtgWeight)
-	crossTerm := burdenSharedDot(mpcObj, signedWeight, gvGene.burdenCross)
+	gtgTerm := sharedDot(mpcObj, signedWeight, gtgWeight)
+	crossTerm := sharedDot(mpcObj, signedWeight, gvGene.burdenCross)
 	twiceCross := crossTerm.Mul(mpcObj.GetRType().FromInt(2))
 	return gtgTerm.Add(twiceCross).Add(gvGene.burdenSquare)
 }
@@ -139,7 +139,7 @@ func ComputeBurdenProjectionTerm(
 	for covariate := range projectedVector {
 		projectedVector[covariate] = projected[covariate][0]
 	}
-	return burdenSharedDot(mpcObj, xtb, projectedVector)
+	return sharedDot(mpcObj, xtb, projectedVector)
 }
 
 func ComputeBurdenVariance(
@@ -170,23 +170,6 @@ func ComputeBurdenVariance(
 		geneBatchV[position] = quadratic.Sub(projection)
 	}
 	return geneBatchV
-}
-
-func burdenSharedDot(
-	mpcObj *mpc.MPC,
-	left, right mpc_core.RVec,
-) mpc_core.RElem {
-	/*
-		Dot(left, right) = Sum_j left[j] * right[j]
-	*/
-	if len(left) == 0 {
-		return mpcObj.GetRType().Zero()
-	}
-	products := mpcObj.SSMultElemVec(left, right)
-	products = mpcObj.TruncVec(
-		products, mpcObj.GetDataBits(), mpcObj.GetFracBits(),
-	)
-	return sumShares(mpcObj.GetRType(), products)
 }
 
 func burdenColumn(mpcObj *mpc.MPC, values mpc_core.RVec) mpc_core.RMat {
