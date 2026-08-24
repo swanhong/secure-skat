@@ -20,6 +20,11 @@ from .model import (
 from .output import write_outputs
 from .plink import plink_extract
 
+GenotypeExtractor = Callable[
+    [Path, tuple[str, ...], tuple[str, ...]],
+    tuple[np.ndarray, tuple[str, ...]],
+]
+
 
 def require_columns(
         table: Mapping[str, Mapping[str, float]],
@@ -41,10 +46,7 @@ def extract_genotypes(
         rows_a: PhenoCovRows,
         rows_b: PhenoCovRows,
         plans: Sequence[GenePlan],
-        extractor: Callable[
-            [Path, tuple[str, ...], tuple[str, ...]],
-            tuple[np.ndarray, tuple[str, ...]],
-        ],
+        extractor: GenotypeExtractor,
 ) -> tuple[
     tuple[GenePlan, ...],
     np.ndarray,
@@ -213,8 +215,8 @@ def select_gene_variants(
         gene_panel: Sequence[GeneRef],
         variants: Sequence[VariantRef],
         annotations: Sequence[AnnotationRef],
-        annot_columns: Collection[str],
-        chr: str,
+        annotation_columns: Collection[str],
+        chromosome: str,
         gene_selection: Collection[str] | Literal["all"],
         mask: Mapping[str, str | Collection[str]],
 ) -> tuple[GeneVariants, ...]:
@@ -224,8 +226,8 @@ def select_gene_variants(
         gene_panel: Genes to consider.
         variants: Variants to consider.
         annotations: Annotations for the variants.
-        annot_columns: Annotation columns to use for filtering.
-        chr: Chromosome to filter on.
+        annotation_columns: Annotation columns to use for filtering.
+        chromosome: Chromosome to filter on.
         gene_selection: Gene IDs to select. If "all", all genes are selected.
         mask: chosen annotation values to filter on.
             input example: {"LoF": "HC", "consequence": {"missense_variant", "stop_gained"}}
@@ -234,7 +236,7 @@ def select_gene_variants(
         A tuple of GeneVariants objects
     """
     for column in mask:
-        if column not in set(annot_columns):
+        if column not in annotation_columns:
             raise ValueError(f"mask column not found: {column}")
 
     accepted_values_by_column = {
@@ -253,7 +255,7 @@ def select_gene_variants(
 
     selected_genes = tuple(
         gene for gene in gene_panel
-        if gene.chromosome == chr and (
+        if gene.chromosome == chromosome and (
             gene_selection == "all" or gene.gene_id in gene_selection
         )
     )
@@ -397,17 +399,14 @@ def select_rows(
 def prepare_blocks(
         inputs: PrepInputs,
         options: PrepOptions,
-        extractor: Callable[
-            [Path, tuple[str, ...], tuple[str, ...],],
-            tuple[np.ndarray, tuple[str, ...]],
-        ] = plink_extract,
+        extractor: GenotypeExtractor = plink_extract,
 ) -> Path:
     gene_variants = select_gene_variants(
         gene_panel=inputs.gene_panel,
         variants=inputs.variants,
         annotations=inputs.annotations,
-        annot_columns=inputs.annotation_columns,
-        chr=options.chromosome,
+        annotation_columns=inputs.annotation_columns,
+        chromosome=options.chromosome,
         gene_selection=options.gene_selection,
         mask=options.mask,
     )

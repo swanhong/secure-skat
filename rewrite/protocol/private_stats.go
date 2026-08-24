@@ -41,7 +41,7 @@ type gvPhenoShares struct {
 	wGtySum    mpc_core.RVec
 }
 
-func privateSignedWeights(counts []float64, sampleCount int) []float64 {
+func privateSignedWeights(counts []float64, totalSampleCount int) []float64 {
 	/*
 		For each B-private variant j with ALT count count[j]:
 
@@ -49,12 +49,12 @@ func privateSignedWeights(counts []float64, sampleCount int) []float64 {
 		weight[j]       = 25 * base[j]^24
 		signedWeight[j] = -weight[j] if count[j] > N, otherwise weight[j]
 	*/
-	totalAlleles := float64(2 * sampleCount)
+	totalAlleles := float64(2 * totalSampleCount)
 	signedWeight := make([]float64, len(counts))
 	for variant, count := range counts {
 		baseCount := totalAlleles - count
 		sign := 1.0
-		if count > float64(sampleCount) {
+		if count > float64(totalSampleCount) {
 			baseCount = count
 			sign = -1.0
 		}
@@ -67,7 +67,7 @@ func computeLocalGvGeneTerms(
 	privateGenotypes *mat.Dense,
 	publicGenotypes *mat.Dense,
 	x *mat.Dense,
-	sampleCount int,
+	totalSampleCount int,
 	publicVariantCount int,
 ) (gvLocalGene, gvGeneValues) {
 	if privateGenotypes == nil {
@@ -79,7 +79,7 @@ func computeLocalGvGeneTerms(
 	for variant := range counts {
 		counts[variant] = mat.Sum(privateGenotypes.ColView(variant))
 	}
-	signedWeight := privateSignedWeights(counts, sampleCount)
+	signedWeight := privateSignedWeights(counts, totalSampleCount)
 
 	gtx := new(mat.Dense)
 	gtx.Mul(privateGenotypes.T(), x)
