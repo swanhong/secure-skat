@@ -34,3 +34,6 @@ rewrite/testdata/**
 !rewrite/testdata/1kgenome/prepare.ipynb
 rewrite/preprocessing/test_*.py
 rewrite/preprocessing/*.md
+
+rewrite/protocol/*.md
+rewrite/protocol/*_test.go
