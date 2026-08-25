@@ -687,144 +687,6 @@ func ComputeDelta(
 	return delta1, delta2, delta3
 }
 
-func BuildFirstTraceRight(
-	mpcObj *mpc.MPC,
-	weight mpc_core.RVec,
-	signedWeight mpc_core.RVec,
-	theta mpc_core.RMat,
-	privateTerms privateTraceShares,
-	probe *mat.Dense,
-) (
-	firstRight mpc_core.RMat,
-	weightedProbe mpc_core.RMat,
-	weightedBasisRight mpc_core.RMat,
-) {
-	/*
-		Build the combined right-hand side for the first GtG action.
-
-		D = Diag(weight)
-		delta3Basis = ConcatColumns(c0GpGpProbe, c0GpX, theta)
-
-		weightedProbe = D * probe
-		basisRight = D * delta3Basis
-		weightedBasisRight = D * basisRight
-
-		firstRight = ConcatColumns(
-			weightedProbe,
-			weightedBasisRight,
-			signedWeight,
-		)
-	*/
-	publicVariantCount := len(weight)
-	if publicVariantCount == 0 {
-		return nil, nil, nil
-	}
-
-	rtype := mpcObj.GetRType()
-	fracBits := mpcObj.GetFracBits()
-	_, probeCount := probe.Dims()
-	_, covariateCount := theta.Dims()
-
-	// 1. Represent the public probe as shares and apply the first weight.
-	sharedProbe := mpc_core.InitRMat(
-		rtype.Zero(),
-		publicVariantCount,
-		probeCount,
-	)
-	if mpcObj.GetPid() == mpcObj.GetHubPid() {
-		for variant := 0; variant < publicVariantCount; variant++ {
-			for column := 0; column < probeCount; column++ {
-				sharedProbe[variant][column] =
-					rtype.FromFloat64(
-						probe.At(variant, column),
-						fracBits,
-					)
-			}
-		}
-	}
-	weightedProbe = scaleSharedRows(
-		mpcObj,
-		weight,
-		sharedProbe,
-	)
-
-	// 2. Assemble c0GpGpProbe, c0GpX, and theta into delta3Basis.
-	basisColumnCount := probeCount + 2*covariateCount
-	delta3Basis := mpc_core.InitRMat(
-		rtype.Zero(),
-		publicVariantCount,
-		basisColumnCount,
-	)
-
-	for variant := 0; variant < publicVariantCount; variant++ {
-		offset := 0
-
-		for column := 0; column < probeCount; column++ {
-			delta3Basis[variant][offset] =
-				privateTerms.
-					c0GpGpProbe[variant][column].
-					Copy()
-			offset++
-		}
-
-		for column := 0; column < covariateCount; column++ {
-			delta3Basis[variant][offset] =
-				privateTerms.
-					c0GpX[variant][column].
-					Copy()
-			offset++
-		}
-
-		for column := 0; column < covariateCount; column++ {
-			delta3Basis[variant][offset] =
-				theta[variant][column].Copy()
-			offset++
-		}
-	}
-
-	// 3. Apply the weight twice to delta3Basis.
-	basisRight := scaleSharedRows(
-		mpcObj,
-		weight,
-		delta3Basis,
-	)
-	weightedBasisRight =
-		scaleSharedRows(
-			mpcObj,
-			weight,
-			basisRight,
-		)
-
-	// 4. Assemble the first GtG right-hand side.
-	firstRight = mpc_core.InitRMat(
-		rtype.Zero(),
-		publicVariantCount,
-		probeCount+basisColumnCount+1,
-	)
-
-	for variant := 0; variant < publicVariantCount; variant++ {
-		offset := 0
-
-		for column := 0; column < probeCount; column++ {
-			firstRight[variant][offset] =
-				weightedProbe[variant][column].Copy()
-			offset++
-		}
-
-		for column := 0; column < basisColumnCount; column++ {
-			firstRight[variant][offset] =
-				weightedBasisRight[variant][column].
-					Copy()
-			offset++
-		}
-
-		firstRight[variant][offset] =
-			signedWeight[variant].Copy()
-	}
-
-	return firstRight, weightedProbe, weightedBasisRight
-}
-
 func GtGTransformGaloisElements(
 	heParams ckks.Parameters,
 	cryptoParams CryptoParams,
@@ -1199,6 +1061,99 @@ func PublicGtGAction(
 		rightMatrix,
 		rhsCount,
 	)
+}
+
+func ComputeGeneBatchKernelStatistics(
+	mpcObj *mpc.MPC,
+	heParams *securecrypto.CryptoParams,
+	dataParams DataParams,
+	cryptoParams CryptoParams,
+	batch GeneBatch,
+	gp []*mat.Dense,
+	gv []*mat.Dense,
+	x *mat.Dense,
+	localGtx []*mat.Dense,
+	localGtG []*mat.Dense,
+	gvLocal []gvLocalGene,
+	gvGene []gvGeneShares,
+	xtxInv mpc_core.RMat,
+	weight []mpc_core.RVec,
+	signedWeight []mpc_core.RVec,
+	seed int64,
+) (geneBatchV, geneBatchS1, geneBatchS2, geneBatchS3 mpc_core.RVec) {
+	/*
+		Compute the phenotype-independent kernel statistics for one gene batch.
+
+		Inputs in global gene:
+		    gp, gv, weight, signedWeight
+
+		Inputs in batch:
+		    localGtx, localGtG, gvLocal, gvGene
+
+		For each gene:
+		    pooledGtx = Transpose(Gp[A]) * X[A] + Transpose(Gp[B]) * X[B]
+		    pooledGtG = Transpose(Gp[A]) * Gp[A] + Transpose(Gp[B]) * Gp[B]
+
+		    S1 = Trace(K)
+		    S2 = Trace(K²)
+		    S3 = Trace(K³)
+		    V  = Burden variance
+
+		Outputs V, S1, S2, S3 remain secret-shared and use batch order.
+	*/
+	geneCount := len(batch.GeneIndices)
+
+	// 1. Share pooledGtx.
+	// pooledGtx = Transpose(Gp[A]) * X[A] + Transpose(Gp[B]) * X[B]
+	pooledGtx := SharePooledGtx(mpcObj, dataParams, batch, localGtx)
+
+	// 2. Share diagGtG.
+	// diagGtG = diag(localGtG[A] + localGtG[B])
+	packedLength := 0
+	for _, geneIndex := range batch.GeneIndices {
+		packedLength += dataParams.Genes[geneIndex].VariantCount
+	}
+
+	diagGtG := make([]mpc_core.RVec, geneCount)
+	if packedLength > 0 {
+		var packedLocal *mat.Dense
+
+		if mpcObj.GetPid() != auxiliaryPartyID {
+			packedLocal = mat.NewDense(1, packedLength, nil)
+			packed := packedLocal.RawRowView(0)
+			offset := 0
+
+			for position, geneIndex := range batch.GeneIndices {
+				variantCount := dataParams.Genes[geneIndex].VariantCount
+				for variant := 0; variant < variantCount; variant++ {
+					packed[offset+variant] = localGtG[position].At(variant, variant)
+				}
+				offset += variantCount
+			}
+		}
+
+		sharedDiag := ShareSum(mpcObj, packedLocal, 1, packedLength)[0]
+		offset := 0
+
+		for position, geneIndex := range batch.GeneIndices {
+			variantCount := dataParams.Genes[geneIndex].VariantCount
+			if variantCount > 0 {
+				diagGtG[position] = sharedDiag[offset : offset+variantCount].Copy()
+			}
+			offset += variantCount
+		}
+	}
+
+	// 3. Compute S1, S2, S3 and reuse the first GtG action for gtgWeight.
+	geneBatchS1, geneBatchS2, geneBatchS3, gtgWeight := ComputeKernelTraces(
+		mpcObj, heParams, dataParams, cryptoParams, batch, gp, gv, x, gvLocal,
+		localGtG, pooledGtx, diagGtG, xtxInv, weight, signedWeight, seed,
+	)
+
+	// 4. Compute the Burden variance using gtgWeight = pooledGtG * signedWeight.
+	geneBatchV = ComputeBurdenVariance(mpcObj, batch, pooledGtx, signedWeight, gtgWeight, gvGene, xtxInv)
+
+	return geneBatchV, geneBatchS1, geneBatchS2, geneBatchS3
 }
 
 func ComputeKernelTraces(

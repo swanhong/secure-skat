@@ -37,3 +37,4 @@ rewrite/preprocessing/*.md
 
 rewrite/protocol/*.md
 rewrite/protocol/*_test.go
+*_test.go
