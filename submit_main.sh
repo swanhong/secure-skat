@@ -150,16 +150,7 @@ tar --exclude='__pycache__' --exclude='*.pyc' \
 gcloud storage cp "$temporary/code.tar.gz" "$code_gcs"
 gcloud storage cp "$config_file" "$run_gcs/run.conf"
 
-tasks=$temporary/tasks.tsv
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-  '--env CHROMOSOME' \
-  '--env RESULT_GCS' \
-  '--input PGEN' \
-  '--input PVAR' \
-  '--input PSAM' \
-  '--input ANNOTATION' \
-  '--output-recursive CHROMOSOME_RESULTS' > "$tasks"
-
+annotations_gcs=$run_gcs/inputs/annotations
 for chromosome_number in "${CHROMOSOME_NUMBERS[@]}"; do
   chromosome=chr$chromosome_number
   annotation="$annotation_dir/${chromosome}_annotation.tsv"
@@ -167,19 +158,9 @@ for chromosome_number in "${CHROMOSOME_NUMBERS[@]}"; do
     echo "missing annotation: $annotation" >&2
     exit 1
   }
-  annotation_gcs=$run_gcs/inputs/${chromosome}_annotation.tsv
-  gcloud storage cp "$annotation" "$annotation_gcs"
-
-  chromosome_genotype=$genotype_prefix.$chromosome
-  result_gcs=$run_gcs/chromosomes/$chromosome
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$chromosome" \
-    "$result_gcs" \
-    "$chromosome_genotype.pgen" \
-    "$chromosome_genotype.pvar" \
-    "$chromosome_genotype.psam" \
-    "$annotation_gcs" \
-    "$result_gcs" >> "$tasks"
+  gcloud storage cp \
+    "$annotation" \
+    "$annotations_gcs/${chromosome}_annotation.tsv"
 done
 
 common_dsub=(
@@ -199,15 +180,20 @@ common_dsub=(
   --disk-size "$disk_size"
 )
 
-echo ">>> submitting ${#CHROMOSOME_NUMBERS[@]} chromosome tasks"
+echo ">>> submitting coordinator for ${#CHROMOSOME_NUMBERS[@]} chromosomes"
 dsub "${common_dsub[@]}" \
-  --name secure-skat-chromosomes \
-  --logging "$run_gcs/logs/chromosomes" \
+  --name secure-skat-coordinator \
+  --logging "$run_gcs/logs/coordinator" \
   --input CODE_BUNDLE="$code_gcs" \
           R_ENV_ARCHIVE="$r_env_archive" \
           PHENOTYPE="$phenotype" \
           COVARIATE="$covariate" \
+  --input-recursive ANNOTATIONS="$annotations_gcs" \
+  --output-recursive COORDINATOR_RESULTS="$run_gcs/results" \
   --env project="$project" \
+        RESULT_GCS="$run_gcs/results" \
+        genotype_prefix="$genotype_prefix" \
+        chromosomes="$chromosomes" \
         phenotype_columns="$phenotype_columns" \
         covariate_columns="$covariate_columns" \
         phenotype_id_column="$phenotype_id_column" \
@@ -223,22 +209,9 @@ dsub "${common_dsub[@]}" \
         frac_bits="$frac_bits" \
         probes="$probes" \
         seed="$seed" \
-  --tasks "$tasks" \
-  --script "$root/rewrite/workbench/run_chromosome_task.sh" \
-  --wait
-
-echo ">>> aggregating chromosome results"
-dsub "${common_dsub[@]}" \
-  --name secure-skat-aggregate \
-  --logging "$run_gcs/logs/aggregate" \
-  --input CODE_BUNDLE="$code_gcs" \
-  --input-recursive CHROMOSOME_RESULTS="$run_gcs/chromosomes" \
-  --output-recursive FINAL_RESULTS="$run_gcs/final" \
-  --env chromosomes="$chromosomes" \
-  --script "$root/rewrite/workbench/run_aggregate_task.sh" \
-  --wait
+  --script "$root/rewrite/workbench/run_coordinator_task.sh"
 
 echo "run config:         $run_gcs/run.conf"
-echo "chromosome results: $run_gcs/chromosomes"
-echo "final results:      $run_gcs/final"
+echo "chromosome results: $run_gcs/results/chromosomes"
+echo "final results:      $run_gcs/results/final"
 echo "logs:               $run_gcs/logs"

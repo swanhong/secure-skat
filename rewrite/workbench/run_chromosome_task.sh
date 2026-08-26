@@ -13,12 +13,12 @@ set -euo pipefail
 : "${CHROMOSOME_RESULTS:?CHROMOSOME_RESULTS is required}"
 : "${project:?project is required}"
 
-WORK=/mnt/data/secure-skat
-REPO=$WORK/repo
-INPUT=$WORK/input
-PREPROCESSED=$WORK/preprocessed
-RUN=$WORK/run
-R_ENV=$WORK/r-env
+WORK=${WORK:-/mnt/data/secure-skat}
+REPO=${REPO:-$WORK/repo}
+INPUT=${INPUT:-$WORK/input}
+PREPROCESSED=${PREPROCESSED:-$WORK/preprocessed}
+RUN=${RUN:-$WORK/run}
+R_ENV=${R_ENV:-$WORK/r-env}
 mkdir -p "$REPO" "$INPUT" "$RUN" "$CHROMOSOME_RESULTS"
 
 LOG=$CHROMOSOME_RESULTS/run.log
@@ -43,16 +43,20 @@ finish() {
 }
 trap finish EXIT
 
-tar -xzf "$CODE_BUNDLE" -C "$REPO"
+if [ ! -x "$REPO/secure-skat" ]; then
+  tar -xzf "$CODE_BUNDLE" -C "$REPO"
+fi
 if [ ! -x "$REPO/plink2" ]; then
   echo "plink2 binary not found: $REPO/plink2" >&2
   exit 1
 fi
 
 echo ">>> $CHROMOSOME: R environment"
-mkdir -p "$R_ENV"
-tar -xzf "$R_ENV_ARCHIVE" -C "$R_ENV"
-"$R_ENV/bin/conda-unpack"
+if [ ! -x "$R_ENV/bin/Rscript" ]; then
+  mkdir -p "$R_ENV"
+  tar -xzf "$R_ENV_ARCHIVE" -C "$R_ENV"
+  "$R_ENV/bin/conda-unpack"
+fi
 "$R_ENV/bin/Rscript" -e \
   'stopifnot(requireNamespace("SKAT", quietly = TRUE))'
 

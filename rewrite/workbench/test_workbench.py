@@ -1,5 +1,8 @@
 import csv
 import json
+import os
+import subprocess
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,6 +35,210 @@ def write_table(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 class WorkbenchTest(unittest.TestCase):
+    def test_coordinator_runs_chromosomes_before_aggregation(self) -> None:
+        root = Path(__file__).parents[2]
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            code_root = temporary / "code"
+            r_root = temporary / "r"
+            bin_dir = temporary / "bin"
+            annotations = temporary / "annotations"
+            results = temporary / "results"
+            for path in (
+                code_root / "rewrite/workbench",
+                r_root / "bin",
+                bin_dir,
+                annotations,
+            ):
+                path.mkdir(parents=True)
+
+            self.write_executable(code_root / "secure-skat", "#!/bin/bash\n")
+            self.write_executable(code_root / "plink2", "#!/bin/bash\n")
+            self.write_executable(
+                code_root / "rewrite/workbench/run_chromosome_task.sh",
+                """#!/usr/bin/env bash
+printf '%s\n' "$CHROMOSOME" >> "$COORDINATOR_CALLS"
+mkdir -p "$CHROMOSOME_RESULTS"
+touch "$CHROMOSOME_RESULTS/_SUCCESS"
+""",
+            )
+            self.write_executable(r_root / "bin/conda-unpack", "#!/bin/bash\n")
+            self.write_executable(r_root / "bin/Rscript", "#!/bin/bash\n")
+            code_archive = temporary / "code.tar.gz"
+            r_archive = temporary / "r.tar.gz"
+            self.write_archive(code_root, code_archive)
+            self.write_archive(r_root, r_archive)
+
+            for chromosome in (21, 22):
+                (annotations / f"chr{chromosome}_annotation.tsv").write_text(
+                    "variant_key\tgene_id\tgene_symbol\tannotation\n"
+                )
+            phenotype = temporary / "phenotype.csv"
+            covariate = temporary / "covariate.tsv"
+            phenotype.touch()
+            covariate.touch()
+
+            self.write_executable(
+                bin_dir / "gcloud",
+                """#!/usr/bin/env bash
+destination=${!#}
+mkdir -p "$destination"
+for argument in "$@"; do
+  case "$argument" in
+    gs://*.pgen|gs://*.pvar|gs://*.psam)
+      touch "$destination/$(basename "$argument")"
+      ;;
+  esac
+done
+""",
+            )
+            self.write_executable(
+                bin_dir / "python3",
+                """#!/usr/bin/env bash
+printf '%s\n' "$@" > "$AGGREGATE_ARGUMENTS"
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-dir" ]; then
+    mkdir -p "$2"
+    exit 0
+  fi
+  shift
+done
+exit 1
+""",
+            )
+
+            coordinator_calls = temporary / "coordinator-calls.txt"
+            aggregate_arguments = temporary / "aggregate-arguments.txt"
+            environment = os.environ.copy()
+            environment.update({
+                "PATH": f"{bin_dir}:{environment['PATH']}",
+                "CODE_BUNDLE": str(code_archive),
+                "R_ENV_ARCHIVE": str(r_archive),
+                "PHENOTYPE": str(phenotype),
+                "COVARIATE": str(covariate),
+                "ANNOTATIONS": str(annotations),
+                "COORDINATOR_RESULTS": str(results),
+                "WORK": str(temporary / "work"),
+                "LOG": "-",
+                "project": "test-project",
+                "genotype_prefix": "gs://test/exome",
+                "chromosomes": "21,22",
+                "COORDINATOR_CALLS": str(coordinator_calls),
+                "AGGREGATE_ARGUMENTS": str(aggregate_arguments),
+            })
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(root / "rewrite/workbench/run_coordinator_task.sh"),
+                ],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                coordinator_calls.read_text().splitlines(),
+                ["chr21", "chr22"],
+            )
+            arguments = aggregate_arguments.read_text().splitlines()
+            chromosome_start = arguments.index("--chromosomes") + 1
+            self.assertEqual(arguments[chromosome_start:], ["21", "22"])
+            self.assertTrue((results / "_SUCCESS").exists())
+
+    def test_submit_returns_after_one_coordinator_job(self) -> None:
+        root = Path(__file__).parents[2]
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            bin_dir = temporary / "bin"
+            annotation_dir = temporary / "annotations"
+            bin_dir.mkdir()
+            annotation_dir.mkdir()
+            for chromosome in (21, 22):
+                (annotation_dir / f"chr{chromosome}_annotation.tsv").write_text(
+                    "variant_key\tgene_id\tgene_symbol\tannotation\n"
+                )
+
+            plink2 = temporary / "plink2"
+            plink2.write_text("#!/usr/bin/env bash\nexit 0\n")
+            plink2.chmod(0o755)
+            dsub_arguments = temporary / "dsub-arguments.txt"
+
+            self.write_executable(
+                bin_dir / "go",
+                """#!/usr/bin/env bash
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    output=$2
+    mkdir -p "$(dirname "$output")"
+    printf '#!/usr/bin/env bash\\nexit 0\\n' > "$output"
+    chmod +x "$output"
+    exit 0
+  fi
+  shift
+done
+exit 1
+""",
+            )
+            self.write_executable(
+                bin_dir / "gcloud",
+                "#!/usr/bin/env bash\nexit 0\n",
+            )
+            self.write_executable(
+                bin_dir / "dsub",
+                """#!/usr/bin/env bash
+printf 'CALL\\n' >> "$DSUB_ARGUMENTS"
+printf '%s\\n' "$@" >> "$DSUB_ARGUMENTS"
+echo fake-coordinator-job
+""",
+            )
+
+            config = temporary / "run.conf"
+            config.write_text(
+                f"annotation_dir={annotation_dir}\n"
+                "data_bits=70\n"
+                "chromosomes=21,22\n"
+                "project=test-project\n"
+                "service_account=test@example.com\n"
+                f"plink2_bin={plink2}\n"
+                "output_root=gs://test/secure-skat\n"
+                "r_env_archive=gs://test/secure-skat/runtime/r.tar.gz\n"
+            )
+            environment = os.environ.copy()
+            environment["PATH"] = f"{bin_dir}:{environment['PATH']}"
+            environment["DSUB_ARGUMENTS"] = str(dsub_arguments)
+
+            result = subprocess.run(
+                ["bash", str(root / "submit_main.sh"), str(config)],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            arguments = dsub_arguments.read_text().splitlines()
+            self.assertEqual(arguments.count("CALL"), 1)
+            self.assertNotIn("--wait", arguments)
+            self.assertNotIn("--tasks", arguments)
+            self.assertIn(
+                str(root / "rewrite/workbench/run_coordinator_task.sh"),
+                arguments,
+            )
+
+    @staticmethod
+    def write_executable(path: Path, contents: str) -> None:
+        path.write_text(contents)
+        path.chmod(0o755)
+
+    @staticmethod
+    def write_archive(source: Path, output: Path) -> None:
+        with tarfile.open(output, "w:gz") as archive:
+            for path in source.rglob("*"):
+                archive.add(path, arcname=path.relative_to(source))
+
     def test_maps_annotation_coordinates_to_pvar_ids(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

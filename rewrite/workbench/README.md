@@ -59,12 +59,14 @@ only by the current small tests and is not an AoU full-cohort production
 contract.
 
 `chromosomes` defaults to all autosomes. Set a comma-separated subset such as
-`chromosomes=21,22` to submit and aggregate only those chromosome tasks.
+`chromosomes=21,22` to run and aggregate only those chromosomes.
 
-Internally, dsub exposes `--env` and task-table values as temporary environment
-variables inside each Batch container. dsub does not provide a general
-`--var` flag. These values do not modify or remain in the caller's shell.
-The exact submitted `run.conf` is copied to the run's GCS root.
+`submit_main.sh` submits one coordinator dsub job without `--wait` and returns
+after Batch accepts it. The coordinator localizes shared inputs once, runs the
+selected chromosomes sequentially in isolated work directories, aggregates
+their results, and uploads one result tree. The configured Batch timeout
+applies to that complete sequence. The exact submitted `run.conf` is copied to
+the run's GCS root.
 
 ## Per-chromosome flow
 
@@ -81,7 +83,7 @@ VM and are not copied to final GCS results.
 
 ## Outputs
 
-Each successful chromosome contains:
+Each successful chromosome is written below `results/`:
 
 ```text
 chromosomes/chrN/
@@ -97,7 +99,7 @@ chromosomes/chrN/
   _SUCCESS
 ```
 
-The aggregation job writes:
+The coordinator writes the aggregate below the same result root:
 
 ```text
 final/
@@ -108,24 +110,24 @@ final/
   _SUCCESS
 ```
 
-Aggregation starts only after `dsub --tasks` reports success for all 22
-chromosome rows. A failed public-width validation is uploaded directly so its
-`validation_errors.csv` and logs can remain available even though the task
-exits non-zero. This failure upload is best-effort; the task's exit status is
-the authoritative signal.
+Aggregation starts only after every selected chromosome succeeds. A failed
+chromosome or public-width validation triggers a best-effort upload of partial
+results and logs; the coordinator task's exit status is the authoritative
+signal. Temporary genotype and protocol work directories are removed after
+each successful chromosome so disk use does not accumulate across the run.
 
 ## Reading order
 
 Read the implementation in execution order, not directory order:
 
-1. `run_chromosome_task.sh`: one chromosome's complete flow
-2. `rewrite/preprocessing/cli.py`, `prepare()`: original inputs to protocol blocks
-3. `rewrite/cmd/secure-skat/run.go`, `runSecure()`: setup once and natural batches
-4. `runGeneBatch()` in the same Go file: weights, statistics, finalization, release
-5. `run_reference_skat.R`: pooled R Burden and Davies reference
-6. `results.py`, `join_results()` and `aggregate_results()`
-7. `plots.py`: scatter and Manhattan output
-8. `run.conf`, then `submit_main.sh`: configure and submit chr1--chr22
+1. `submit_main.sh`: package inputs and submit one coordinator job
+2. `run_coordinator_task.sh`: shared setup, chromosome loop, and aggregation
+3. `run_chromosome_task.sh`: one chromosome's complete flow
+4. `rewrite/preprocessing/cli.py`, `prepare()`: original inputs to protocol blocks
+5. `rewrite/cmd/secure-skat/run.go`, `runSecure()`: setup once and natural batches
+6. `runGeneBatch()` in the same Go file: weights, statistics, finalization, release
+7. `run_reference_skat.R`: pooled R Burden and Davies reference
+8. `results.py`, `join_results()`, `aggregate_results()`, and plots
 
 `input.go`, key generation, CSV writers, and plotting helpers are support code;
 they are not part of the secure statistical algorithm itself.
