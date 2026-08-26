@@ -102,10 +102,13 @@ fi
 if [ -z "$plink2_bin" ]; then
   plink2_bin=$(command -v plink2 || true)
 fi
+if [ -z "$plink2_bin" ] && [ -n "${HOME:-}" ] && [ -x "$HOME/plink2" ]; then
+  plink2_bin=$HOME/plink2
+fi
 
 : "${project:?set project in run.conf or configure a gcloud default project}"
 : "${service_account:?set service_account in run.conf outside Workbench}"
-: "${plink2_bin:?set plink2_bin in run.conf or add plink2 to PATH}"
+: "${plink2_bin:?set plink2_bin in run.conf, add plink2 to PATH, or install it at ~/plink2}"
 
 if [ -z "$output_root" ]; then
   output_root=gs://dataproc-staging-${project}/secure-skat

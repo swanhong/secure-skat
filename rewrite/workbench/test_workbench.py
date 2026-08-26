@@ -148,20 +148,22 @@ exit 1
             self.assertEqual(arguments[chromosome_start:], ["21", "22"])
             self.assertTrue((results / "_SUCCESS").exists())
 
-    def test_submit_returns_after_one_coordinator_job(self) -> None:
+    def test_submit_uses_home_plink2_and_returns_after_one_job(self) -> None:
         root = Path(__file__).parents[2]
         with tempfile.TemporaryDirectory() as directory:
             temporary = Path(directory)
             bin_dir = temporary / "bin"
+            home_dir = temporary / "home"
             annotation_dir = temporary / "annotations"
             bin_dir.mkdir()
+            home_dir.mkdir()
             annotation_dir.mkdir()
             for chromosome in (21, 22):
                 (annotation_dir / f"chr{chromosome}_annotation.tsv").write_text(
                     "variant_key\tgene_id\tgene_symbol\tannotation\n"
                 )
 
-            plink2 = temporary / "plink2"
+            plink2 = home_dir / "plink2"
             plink2.write_text("#!/usr/bin/env bash\nexit 0\n")
             plink2.chmod(0o755)
             dsub_arguments = temporary / "dsub-arguments.txt"
@@ -202,12 +204,12 @@ echo fake-coordinator-job
                 "chromosomes=21,22\n"
                 "project=test-project\n"
                 "service_account=test@example.com\n"
-                f"plink2_bin={plink2}\n"
                 "output_root=gs://test/secure-skat\n"
                 "r_env_archive=gs://test/secure-skat/runtime/r.tar.gz\n"
             )
             environment = os.environ.copy()
-            environment["PATH"] = f"{bin_dir}:{environment['PATH']}"
+            environment["PATH"] = f"{bin_dir}:/usr/bin:/bin"
+            environment["HOME"] = str(home_dir)
             environment["DSUB_ARGUMENTS"] = str(dsub_arguments)
 
             result = subprocess.run(
