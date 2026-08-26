@@ -1,17 +1,18 @@
 # AoU Workbench runner
 
-`submit_main.sh` submits one common chromosome worker for chr1--chr22, waits
-for all 22 tasks, and then submits the aggregation and plotting job. It does
-not change or call the legacy submit path.
+`submit_main.sh` submits one coordinator job and returns without waiting. The
+coordinator runs the requested chromosomes concurrently on one Batch VM, then
+aggregates and plots their results. It does not call the legacy submit path.
 
 ```text
 submit_main.sh
-  -> 22 x run_chromosome_task.sh
+  -> coordinator
+     -> concurrent run_chromosome_task.sh workers
        -> preprocessing
        -> three localhost secure-skat processes
        -> pooled R Burden/Davies
        -> gene_results.csv
-  -> run_aggregate_task.sh
+     -> aggregation
        -> all_gene_results.csv + summaries + plots
 ```
 
@@ -60,13 +61,16 @@ contract.
 
 `chromosomes` defaults to all autosomes. Set a comma-separated subset such as
 `chromosomes=21,22` to run and aggregate only those chromosomes.
+`max_parallel_chromosomes` defaults to `2` and limits how many chromosome
+workers share the coordinator VM at once.
 
 `submit_main.sh` submits one coordinator dsub job without `--wait` and returns
 after Batch accepts it. The coordinator localizes shared inputs once, runs the
-selected chromosomes sequentially in isolated work directories, aggregates
-their results, and uploads one result tree. The configured Batch timeout
-applies to that complete sequence. The exact submitted `run.conf` is copied to
-the run's GCS root.
+selected chromosomes concurrently in isolated work directories and disjoint
+MPC port ranges, up to `max_parallel_chromosomes` at a time, then aggregates
+their results and uploads one result tree. All workers share the coordinator
+VM's configured cores and memory. The configured Batch timeout applies to the
+complete job. The exact submitted `run.conf` is copied to the run's GCS root.
 
 ## Per-chromosome flow
 

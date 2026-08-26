@@ -19,6 +19,7 @@ INPUT=${INPUT:-$WORK/input}
 PREPROCESSED=${PREPROCESSED:-$WORK/preprocessed}
 RUN=${RUN:-$WORK/run}
 R_ENV=${R_ENV:-$WORK/r-env}
+PORT_BASE=${PORT_BASE:-18000}
 mkdir -p "$REPO" "$INPUT" "$RUN" "$CHROMOSOME_RESULTS"
 
 LOG=$CHROMOSOME_RESULTS/run.log
@@ -114,7 +115,7 @@ for party in 0 1 2; do
     --party "$party" \
     --input "$PREPROCESSED" \
     --output "$RUN/secure_results.csv" \
-    --port-base 18000 \
+    --port-base "$PORT_BASE" \
     --shared-keys "$SHARED_KEYS" \
     --ckks "${ckks:?}" \
     --data-bits "${data_bits:?}" \

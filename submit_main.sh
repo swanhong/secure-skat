@@ -48,6 +48,7 @@ frac_bits=30
 probes=50
 seed=42
 chromosomes=1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22
+max_parallel_chromosomes=2
 
 # Optional Workbench and storage defaults.
 project=${GOOGLE_CLOUD_PROJECT:-}
@@ -87,6 +88,10 @@ for chromosome_number in "${CHROMOSOME_NUMBERS[@]}"; do
     exit 1
   fi
 done
+if [[ ! "$max_parallel_chromosomes" =~ ^[1-9][0-9]*$ ]]; then
+  echo "max_parallel_chromosomes must be a positive integer" >&2
+  exit 1
+fi
 
 # Validate required commands and settings.
 for command_name in go gcloud dsub tar; do
@@ -197,6 +202,7 @@ dsub "${common_dsub[@]}" \
         RESULT_GCS="$run_gcs/results" \
         genotype_prefix="$genotype_prefix" \
         chromosomes="$chromosomes" \
+        max_parallel_chromosomes="$max_parallel_chromosomes" \
         phenotype_columns="$phenotype_columns" \
         covariate_columns="$covariate_columns" \
         phenotype_id_column="$phenotype_id_column" \

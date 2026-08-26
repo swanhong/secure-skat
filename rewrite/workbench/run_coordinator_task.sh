@@ -10,6 +10,12 @@ set -euo pipefail
 : "${project:?project is required}"
 : "${genotype_prefix:?genotype_prefix is required}"
 : "${chromosomes:?chromosomes is required}"
+: "${max_parallel_chromosomes:?max_parallel_chromosomes is required}"
+
+if [[ ! "$max_parallel_chromosomes" =~ ^[1-9][0-9]*$ ]]; then
+  echo "max_parallel_chromosomes must be a positive integer" >&2
+  exit 1
+fi
 
 WORK=${WORK:-/mnt/data/secure-skat-coordinator}
 REPO=$WORK/shared/repo
@@ -46,16 +52,18 @@ tar -xzf "$R_ENV_ARCHIVE" -C "$R_ENV"
   'stopifnot(requireNamespace("SKAT", quietly = TRUE))'
 
 IFS=, read -r -a CHROMOSOME_NUMBERS <<< "$chromosomes"
-for chromosome_number in "${CHROMOSOME_NUMBERS[@]}"; do
-  chromosome=chr$chromosome_number
-  chromosome_input=$WORK/$chromosome/input
-  chromosome_work=$WORK/$chromosome/work
-  chromosome_output=$CHROMOSOME_RESULTS/$chromosome
-  chromosome_genotype=$genotype_prefix.$chromosome
-  annotation=$ANNOTATIONS/${chromosome}_annotation.tsv
-  pgen=$chromosome_input/$(basename "$chromosome_genotype.pgen")
-  pvar=$chromosome_input/$(basename "$chromosome_genotype.pvar")
-  psam=$chromosome_input/$(basename "$chromosome_genotype.psam")
+run_chromosome() {
+  local chromosome_number=$1
+  local port_base=$2
+  local chromosome=chr$chromosome_number
+  local chromosome_input=$WORK/$chromosome/input
+  local chromosome_work=$WORK/$chromosome/work
+  local chromosome_output=$CHROMOSOME_RESULTS/$chromosome
+  local chromosome_genotype=$genotype_prefix.$chromosome
+  local annotation=$ANNOTATIONS/${chromosome}_annotation.tsv
+  local pgen=$chromosome_input/$(basename "$chromosome_genotype.pgen")
+  local pvar=$chromosome_input/$(basename "$chromosome_genotype.pvar")
+  local psam=$chromosome_input/$(basename "$chromosome_genotype.psam")
   mkdir -p "$chromosome_input" "$chromosome_output"
 
   if [ ! -s "$annotation" ]; then
@@ -77,13 +85,49 @@ for chromosome_number in "${CHROMOSOME_NUMBERS[@]}"; do
   CHROMOSOME=$chromosome \
   CHROMOSOME_RESULTS=$chromosome_output \
   RESULT_GCS=${RESULT_GCS:+$RESULT_GCS/chromosomes/$chromosome} \
+  PORT_BASE=$port_base \
   WORK=$chromosome_work \
   REPO=$REPO \
   R_ENV=$R_ENV \
     bash "$REPO/rewrite/workbench/run_chromosome_task.sh"
 
   rm -rf "$chromosome_input" "$chromosome_work"
+}
+
+run_chromosome_lane() {
+  local lane_index=$1
+  local port_base=$((18000 + 10 * lane_index))
+  local chromosome_index
+
+  chromosome_index=$lane_index
+  while [ "$chromosome_index" -lt "${#CHROMOSOME_NUMBERS[@]}" ]; do
+    run_chromosome \
+      "${CHROMOSOME_NUMBERS[$chromosome_index]}" "$port_base"
+    chromosome_index=$((chromosome_index + max_parallel_chromosomes))
+  done
+}
+
+lane_count=$max_parallel_chromosomes
+if [ "$lane_count" -gt "${#CHROMOSOME_NUMBERS[@]}" ]; then
+  lane_count=${#CHROMOSOME_NUMBERS[@]}
+fi
+
+CHROMOSOME_PIDS=()
+for ((lane_index = 0; lane_index < lane_count; lane_index++)); do
+  run_chromosome_lane "$lane_index" &
+  CHROMOSOME_PIDS+=("$!")
 done
+
+chromosome_failure=0
+for lane_index in "${!CHROMOSOME_PIDS[@]}"; do
+  if ! wait "${CHROMOSOME_PIDS[$lane_index]}"; then
+    echo "chromosome lane failed: $lane_index" >&2
+    chromosome_failure=1
+  fi
+done
+if [ "$chromosome_failure" -ne 0 ]; then
+  exit 1
+fi
 
 echo ">>> coordinator: aggregate results"
 mkdir -p "$WORK/matplotlib"

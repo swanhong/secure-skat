@@ -35,7 +35,7 @@ def write_table(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 class WorkbenchTest(unittest.TestCase):
-    def test_coordinator_runs_chromosomes_before_aggregation(self) -> None:
+    def test_coordinator_runs_chromosomes_in_parallel_before_aggregation(self) -> None:
         root = Path(__file__).parents[2]
         with tempfile.TemporaryDirectory() as directory:
             temporary = Path(directory)
@@ -57,7 +57,20 @@ class WorkbenchTest(unittest.TestCase):
             self.write_executable(
                 code_root / "rewrite/workbench/run_chromosome_task.sh",
                 """#!/usr/bin/env bash
-printf '%s\n' "$CHROMOSOME" >> "$COORDINATOR_CALLS"
+printf '%s\t%s\n' "$CHROMOSOME" "$PORT_BASE" >> "$COORDINATOR_CALLS"
+case "$CHROMOSOME" in
+  chr20)
+    while ! grep -q '^chr21' "$COORDINATOR_CALLS"; do sleep 0.01; done
+    sleep 0.2
+    touch "$COORDINATOR_STATE/chr20.done"
+    ;;
+  chr21)
+    sleep 0.4
+    ;;
+  chr22)
+    [ -f "$COORDINATOR_STATE/chr20.done" ] || exit 9
+    ;;
+esac
 mkdir -p "$CHROMOSOME_RESULTS"
 touch "$CHROMOSOME_RESULTS/_SUCCESS"
 """,
@@ -69,7 +82,7 @@ touch "$CHROMOSOME_RESULTS/_SUCCESS"
             self.write_archive(code_root, code_archive)
             self.write_archive(r_root, r_archive)
 
-            for chromosome in (21, 22):
+            for chromosome in (20, 21, 22):
                 (annotations / f"chr{chromosome}_annotation.tsv").write_text(
                     "variant_key\tgene_id\tgene_symbol\tannotation\n"
                 )
@@ -108,6 +121,8 @@ exit 1
             )
 
             coordinator_calls = temporary / "coordinator-calls.txt"
+            coordinator_state = temporary / "coordinator-state"
+            coordinator_state.mkdir()
             aggregate_arguments = temporary / "aggregate-arguments.txt"
             environment = os.environ.copy()
             environment.update({
@@ -122,8 +137,10 @@ exit 1
                 "LOG": "-",
                 "project": "test-project",
                 "genotype_prefix": "gs://test/exome",
-                "chromosomes": "21,22",
+                "chromosomes": "20,21,22",
+                "max_parallel_chromosomes": "2",
                 "COORDINATOR_CALLS": str(coordinator_calls),
+                "COORDINATOR_STATE": str(coordinator_state),
                 "AGGREGATE_ARGUMENTS": str(aggregate_arguments),
             })
 
@@ -140,12 +157,12 @@ exit 1
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(
-                coordinator_calls.read_text().splitlines(),
-                ["chr21", "chr22"],
+                sorted(coordinator_calls.read_text().splitlines()),
+                ["chr20\t18000", "chr21\t18010", "chr22\t18000"],
             )
             arguments = aggregate_arguments.read_text().splitlines()
             chromosome_start = arguments.index("--chromosomes") + 1
-            self.assertEqual(arguments[chromosome_start:], ["21", "22"])
+            self.assertEqual(arguments[chromosome_start:], ["20", "21", "22"])
             self.assertTrue((results / "_SUCCESS").exists())
 
     def test_submit_uses_home_plink2_and_returns_after_one_job(self) -> None:
@@ -225,6 +242,7 @@ echo fake-coordinator-job
             self.assertEqual(arguments.count("CALL"), 1)
             self.assertNotIn("--wait", arguments)
             self.assertNotIn("--tasks", arguments)
+            self.assertIn("max_parallel_chromosomes=2", arguments)
             self.assertIn(
                 str(root / "rewrite/workbench/run_coordinator_task.sh"),
                 arguments,
