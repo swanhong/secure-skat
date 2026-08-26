@@ -50,6 +50,10 @@ table instead, set `covariate_array_column=` and provide its numeric columns in
 `covariate_columns`. Other defaults include `PN14QP436S45`, 30 fractional bits,
 50 probes, and seed 42.
 
+Annotation `variant_key` values may be exact PVAR IDs or `POS:REF:ALT`
+coordinates. Preprocessing maps coordinate keys to the corresponding PVAR IDs
+before gene and variant selection.
+
 `data_bits` is intentionally required. The 60-bit value has been validated
 only by the current small tests and is not an AoU full-cohort production
 contract.

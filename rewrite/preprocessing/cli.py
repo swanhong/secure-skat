@@ -6,6 +6,7 @@ import json
 import sys
 import tempfile
 from collections import defaultdict
+from collections.abc import Mapping
 from pathlib import Path
 
 from rewrite.preprocessing.input import load_inputs
@@ -32,6 +33,7 @@ def build_gene_panel(
     annotation_path: Path,
     chromosome: str,
     output_path: Path,
+    variant_positions: Mapping[str, int] | None = None,
 ) -> None:
     target_chromosome = normalize_chromosome(chromosome)
     genes = {}
@@ -47,12 +49,16 @@ def build_gene_panel(
 
         for row in reader:
             key = row["variant_key"]
-            key_chromosome = normalize_chromosome(key.split(":", 1)[0])
-            if key_chromosome != target_chromosome:
-                continue
-
             gene_id = row["gene_id"]
-            position = variant_position(key)
+            if variant_positions is None:
+                key_chromosome = normalize_chromosome(key.split(":", 1)[0])
+                if key_chromosome != target_chromosome:
+                    continue
+                position = variant_position(key)
+            else:
+                position = variant_positions.get(key)
+                if position is None:
+                    continue
             current = genes.get(gene_id)
             if current is None or position < current[1]:
                 genes[gene_id] = (row["gene_symbol"], position)
@@ -176,6 +182,75 @@ def normalize_array_sample_table(
                 })
 
 
+def normalize_annotation_variant_ids(
+    annotation_path: Path,
+    pvar_path: Path,
+    output_path: Path,
+) -> dict[str, int]:
+    with annotation_path.open(newline="") as file:
+        reader = csv.DictReader(file, delimiter="\t")
+        if not reader.fieldnames or "variant_key" not in reader.fieldnames:
+            raise ValueError(f"{annotation_path} has no variant_key column")
+        fieldnames = reader.fieldnames
+        requested_keys = {row["variant_key"] for row in reader}
+
+    normalized_ids = {}
+    positions = {}
+    with pvar_path.open(newline="") as file:
+        reader = csv.reader(file, delimiter="\t")
+        for header in reader:
+            if header and header[0] == "#CHROM":
+                break
+        else:
+            raise ValueError("PVAR header not found")
+
+        position_column = header.index("POS")
+        id_column = header.index("ID")
+        reference_column = header.index("REF")
+        alternate_column = header.index("ALT")
+        for row in reader:
+            if not row:
+                continue
+            position = int(row[position_column])
+            variant_id = row[id_column]
+            coordinate_key = (
+                f"{position}:{row[reference_column]}:{row[alternate_column]}"
+            )
+            for source_key in (variant_id, coordinate_key):
+                if source_key not in requested_keys:
+                    continue
+                previous = normalized_ids.get(source_key)
+                if previous is not None and previous != variant_id:
+                    raise ValueError(
+                        f"annotation key maps to multiple PVAR IDs: {source_key}"
+                    )
+                normalized_ids[source_key] = variant_id
+                positions[variant_id] = position
+
+    if not normalized_ids:
+        raise ValueError(f"no {annotation_path} variants matched {pvar_path}")
+
+    with annotation_path.open(newline="") as source, output_path.open(
+        "w", newline=""
+    ) as output:
+        reader = csv.DictReader(source, delimiter="\t")
+        writer = csv.DictWriter(
+            output,
+            fieldnames=fieldnames,
+            delimiter="\t",
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        for row in reader:
+            variant_id = normalized_ids.get(row["variant_key"])
+            if variant_id is None:
+                continue
+            row["variant_key"] = variant_id
+            writer.writerow(row)
+
+    return positions
+
+
 def count_rows(path: Path) -> int:
     with path.open() as file:
         return sum(1 for line in file if line.strip())
@@ -271,9 +346,20 @@ def prepare(args: argparse.Namespace) -> int:
     with tempfile.TemporaryDirectory() as directory:
         temporary = Path(directory)
         gene_panel_path = temporary / "gene_panel.tsv"
+        annotation_path = temporary / "annotation.tsv"
         phenotype_path = temporary / "phenotype.csv"
         covariate_path = temporary / "covariate.tsv"
-        build_gene_panel(args.annotation, chromosome, gene_panel_path)
+        variant_positions = normalize_annotation_variant_ids(
+            args.annotation,
+            Path(f"{args.pgen_prefix}.pvar"),
+            annotation_path,
+        )
+        build_gene_panel(
+            annotation_path,
+            chromosome,
+            gene_panel_path,
+            variant_positions,
+        )
         normalize_sample_table(
             args.phenotype,
             phenotype_path,
@@ -301,7 +387,7 @@ def prepare(args: argparse.Namespace) -> int:
         inputs = load_inputs(
             pgen_prefix=args.pgen_prefix,
             gene_panel_path=gene_panel_path,
-            annotation_path=args.annotation,
+            annotation_path=annotation_path,
             phenotype_path=phenotype_path,
             covariate_path=covariate_path,
         )

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from rewrite.workbench.plots import write_all_plots
 from rewrite.preprocessing.cli import (
+    normalize_annotation_variant_ids,
     normalize_array_sample_table,
     validate_public_widths,
 )
@@ -31,6 +32,35 @@ def write_table(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 class WorkbenchTest(unittest.TestCase):
+    def test_maps_annotation_coordinates_to_pvar_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            annotation = root / "annotation.tsv"
+            pvar = root / "genotype.pvar"
+            output = root / "normalized.tsv"
+            annotation.write_text(
+                "variant_key\tgene_id\tgene_symbol\tannotation\n"
+                "100:A:G\tg1\tGENE1\tpLoF\n"
+                "200:C:T\tg2\tGENE2\tpLoF\n"
+            )
+            pvar.write_text(
+                "##fileformat=PVARv1\n"
+                "#CHROM\tPOS\tID\tREF\tALT\tFILTER\n"
+                "chr21\t100\tchr21:100:opaque1\tA\tG\tPASS\n"
+            )
+
+            positions = normalize_annotation_variant_ids(
+                annotation,
+                pvar,
+                output,
+            )
+
+            with output.open(newline="") as file:
+                rows = list(csv.DictReader(file, delimiter="\t"))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["variant_key"], "chr21:100:opaque1")
+            self.assertEqual(positions, {"chr21:100:opaque1": 100})
+
     def test_expands_aou_ancestry_pcs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
