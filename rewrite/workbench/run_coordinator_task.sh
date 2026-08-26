@@ -59,12 +59,14 @@ run_chromosome() {
   local chromosome_input=$WORK/$chromosome/input
   local chromosome_work=$WORK/$chromosome/work
   local chromosome_output=$CHROMOSOME_RESULTS/$chromosome
+  local gcloud_config=$chromosome_work/gcloud
   local chromosome_genotype=$genotype_prefix.$chromosome
   local annotation=$ANNOTATIONS/${chromosome}_annotation.tsv
   local pgen=$chromosome_input/$(basename "$chromosome_genotype.pgen")
   local pvar=$chromosome_input/$(basename "$chromosome_genotype.pvar")
   local psam=$chromosome_input/$(basename "$chromosome_genotype.psam")
-  mkdir -p "$chromosome_input" "$chromosome_output"
+  mkdir -p "$chromosome_input" "$chromosome_output" "$gcloud_config"
+  export CLOUDSDK_CONFIG=$gcloud_config
 
   if [ ! -s "$annotation" ]; then
     echo "annotation not found: $annotation" >&2
