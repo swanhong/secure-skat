@@ -30,13 +30,14 @@ fi
 
 # Required settings. run.conf must provide these values.
 annotation_dir=
-covariate_columns=
 data_bits=
 
 # Optional analysis and protocol defaults.
-phenotype_columns=LDLC_final_mgdl_6sd_masked
-phenotype_id_column=IID
-covariate_id_column=IID
+phenotype_columns=LDLC_final_mgdl_6sd_masked,HDLC_mgdl_6sd_masked,TotChol_corrected_mvp_explicit_duration_mgdl_6sd_masked,ln_Trig_6sd_masked,nonHDL_corrected_mvp_explicit_duration_mgdl_6sd_masked
+phenotype_id_column=person_id
+covariate_columns=PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8,PC9,PC10,PC11,PC12,PC13,PC14,PC15,PC16
+covariate_id_column=research_id
+covariate_array_column=pca_features
 mask=annotation=pLoF
 genes=all
 samples_per_cohort=all
@@ -46,6 +47,7 @@ ckks=PN14QP436S45
 frac_bits=30
 probes=50
 seed=42
+chromosomes=1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22
 
 # Optional Workbench and storage defaults.
 project=${GOOGLE_CLOUD_PROJECT:-}
@@ -69,8 +71,22 @@ plink2_bin=
 . "$config_file"
 
 : "${annotation_dir:?run.conf must set annotation_dir}"
-: "${covariate_columns:?run.conf must set covariate_columns}"
+: "${covariate_columns:?covariate_columns must not be empty}"
 : "${data_bits:?run.conf must set data_bits}"
+
+IFS=, read -r -a CHROMOSOME_NUMBERS <<< "$chromosomes"
+if [ "${#CHROMOSOME_NUMBERS[@]}" -eq 0 ]; then
+  echo "chromosomes must contain at least one chromosome" >&2
+  exit 1
+fi
+for chromosome_number in "${CHROMOSOME_NUMBERS[@]}"; do
+  if [[ ! "$chromosome_number" =~ ^[0-9]+$ ]] ||
+     [ "$chromosome_number" -lt 1 ] ||
+     [ "$chromosome_number" -gt 22 ]; then
+    echo "invalid chromosome number: $chromosome_number" >&2
+    exit 1
+  fi
+done
 
 # Validate required commands and settings.
 for command_name in go gcloud dsub tar; do
@@ -144,7 +160,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
   '--input ANNOTATION' \
   '--output-recursive CHROMOSOME_RESULTS' > "$tasks"
 
-for chromosome_number in $(seq 1 22); do
+for chromosome_number in "${CHROMOSOME_NUMBERS[@]}"; do
   chromosome=chr$chromosome_number
   annotation="$annotation_dir/${chromosome}_annotation.tsv"
   [ -f "$annotation" ] || {
@@ -183,7 +199,7 @@ common_dsub=(
   --disk-size "$disk_size"
 )
 
-echo ">>> submitting 22 chromosome tasks"
+echo ">>> submitting ${#CHROMOSOME_NUMBERS[@]} chromosome tasks"
 dsub "${common_dsub[@]}" \
   --name secure-skat-chromosomes \
   --logging "$run_gcs/logs/chromosomes" \
@@ -196,6 +212,7 @@ dsub "${common_dsub[@]}" \
         covariate_columns="$covariate_columns" \
         phenotype_id_column="$phenotype_id_column" \
         covariate_id_column="$covariate_id_column" \
+        covariate_array_column="$covariate_array_column" \
         mask="$mask" \
         genes="$genes_argument" \
         samples_per_cohort="$samples_per_cohort" \
@@ -217,6 +234,7 @@ dsub "${common_dsub[@]}" \
   --input CODE_BUNDLE="$code_gcs" \
   --input-recursive CHROMOSOME_RESULTS="$run_gcs/chromosomes" \
   --output-recursive FINAL_RESULTS="$run_gcs/final" \
+  --env chromosomes="$chromosomes" \
   --script "$root/rewrite/workbench/run_aggregate_task.sh" \
   --wait
 

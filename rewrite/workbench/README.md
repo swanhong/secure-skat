@@ -23,11 +23,10 @@ Edit the root `run.conf`, then submit it:
 bash submit_main.sh run.conf
 ```
 
-`run.conf` separates the three required settings from optional settings:
+`run.conf` separates the two required settings from optional settings:
 
 ```bash
 annotation_dir=/path/to/chromosome_annotations
-covariate_columns=PC1,PC2,PC3,PC4,PC5
 data_bits=DATA_BITS
 ```
 
@@ -43,15 +42,20 @@ to the active `gcloud` project. `service_account` defaults to the Workbench
 VM to access controlled resources. Set either value in `run.conf` only when
 automatic detection is unavailable or must be overridden.
 
-The phenotype input is comma-separated and the covariate input is
-tab-separated. Both must have one sample ID column and flat numeric value
-columns. Their ID columns default to `IID`; set `phenotype_id_column` and
-`covariate_id_column` in `run.conf` when necessary. Other defaults include
-`PN14QP436S45`, 30 fractional bits, 50 probes, and seed 42.
+The phenotype input is comma-separated and defaults to the five configured
+lipid columns keyed by `person_id`. The covariate input is tab-separated and
+defaults to the AoU ancestry table keyed by `research_id`; its `pca_features`
+array is expanded to `PC1` through `PC16`. To use an already-flat covariate
+table instead, set `covariate_array_column=` and provide its numeric columns in
+`covariate_columns`. Other defaults include `PN14QP436S45`, 30 fractional bits,
+50 probes, and seed 42.
 
 `data_bits` is intentionally required. The 60-bit value has been validated
 only by the current small tests and is not an AoU full-cohort production
 contract.
+
+`chromosomes` defaults to all autosomes. Set a comma-separated subset such as
+`chromosomes=21,22` to submit and aggregate only those chromosome tasks.
 
 Internally, dsub exposes `--env` and task-table values as temporary environment
 variables inside each Batch container. dsub does not provide a general

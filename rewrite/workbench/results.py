@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import math
 from collections import defaultdict
+from collections.abc import Sequence
 from pathlib import Path
 
 
@@ -233,10 +234,10 @@ def chromosome_number(value: str) -> int:
 def aggregate_results(
     input_root: Path,
     output_dir: Path,
-    chromosome_count: int = 22,
+    chromosomes: Sequence[int] = tuple(range(1, 23)),
 ) -> list[dict[str, str]]:
     rows = []
-    for chromosome in range(1, chromosome_count + 1):
+    for chromosome in chromosomes:
         directory = input_root / f"chr{chromosome}"
         if not (directory / "_SUCCESS").exists():
             raise ValueError(f"missing {directory / '_SUCCESS'}")

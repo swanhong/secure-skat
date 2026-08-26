@@ -88,6 +88,9 @@ PREPARE=(
   --role-seed "${role_seed:?}"
   --out "$PREPROCESSED"
 )
+if [ -n "${covariate_array_column:-}" ]; then
+  PREPARE+=(--covariate-array-column "$covariate_array_column")
+fi
 for mask in "${MASKS[@]}"; do
   PREPARE+=(--mask "$mask")
 done

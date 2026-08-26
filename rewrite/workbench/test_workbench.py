@@ -5,7 +5,10 @@ import unittest
 from pathlib import Path
 
 from rewrite.workbench.plots import write_all_plots
-from rewrite.preprocessing.cli import validate_public_widths
+from rewrite.preprocessing.cli import (
+    normalize_array_sample_table,
+    validate_public_widths,
+)
 from rewrite.workbench.results import (
     RESULT_FIELDS,
     aggregate_results,
@@ -28,6 +31,57 @@ def write_table(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 class WorkbenchTest(unittest.TestCase):
+    def test_expands_aou_ancestry_pcs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "ancestry.tsv"
+            output = root / "covariates.tsv"
+            columns = [f"PC{index}" for index in range(1, 17)]
+            source.write_text(
+                "research_id\tpca_features\tancestry_pred\n"
+                "s1\t[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]\teur\n"
+                "s2\t[21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37]\tafr\n"
+            )
+
+            normalize_array_sample_table(
+                source,
+                output,
+                delimiter="\t",
+                id_column="research_id",
+                array_column="pca_features",
+                value_columns=columns,
+            )
+
+            with output.open(newline="") as file:
+                rows = list(csv.DictReader(file, delimiter="\t"))
+            self.assertEqual(list(rows[0]), ["IID", *columns])
+            self.assertEqual(rows[0]["IID"], "s1")
+            self.assertEqual(rows[0]["PC1"], "1.0")
+            self.assertEqual(rows[0]["PC16"], "16.0")
+            self.assertEqual(rows[1]["PC16"], "36.0")
+
+    def test_rejects_too_few_ancestry_pcs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "ancestry.tsv"
+            source.write_text(
+                "research_id\tpca_features\n"
+                "s1\t[0.1,0.2]\n"
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "pca_features for s1 has 2 values; expected at least 3",
+            ):
+                normalize_array_sample_table(
+                    source,
+                    root / "covariates.tsv",
+                    delimiter="\t",
+                    id_column="research_id",
+                    array_column="pca_features",
+                    value_columns=["PC1", "PC2", "PC3"],
+                )
+
     def test_public_width_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
@@ -72,13 +126,13 @@ class WorkbenchTest(unittest.TestCase):
             chromosomes = root / "chromosomes"
             final = root / "final"
 
-            for chromosome, converged in ((1, "true"), (2, "false")):
+            for chromosome, converged in ((21, "true"), (22, "false")):
                 row = self.joined_row(chromosome, converged)
                 chromosome_dir = chromosomes / f"chr{chromosome}"
                 write_rows(chromosome_dir / "gene_results.csv", [row], RESULT_FIELDS)
                 (chromosome_dir / "_SUCCESS").touch()
 
-            rows = aggregate_results(chromosomes, final, chromosome_count=2)
+            rows = aggregate_results(chromosomes, final, chromosomes=(21, 22))
             write_all_plots(final / "all_gene_results.csv", final / "plots")
 
             self.assertEqual([row["global_gene_index"] for row in rows], ["0", "1"])

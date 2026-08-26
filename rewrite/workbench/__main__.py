@@ -18,7 +18,7 @@ def join_command(args: argparse.Namespace) -> None:
 def aggregate_command(args: argparse.Namespace) -> None:
     from .plots import write_all_plots
 
-    aggregate_results(args.input_root, args.output_dir)
+    aggregate_results(args.input_root, args.output_dir, args.chromosomes)
     write_all_plots(
         args.output_dir / "all_gene_results.csv",
         args.output_dir / "plots",
@@ -45,6 +45,12 @@ def build_parser() -> argparse.ArgumentParser:
     aggregate = subparsers.add_parser("aggregate")
     aggregate.add_argument("--input-root", type=Path, required=True)
     aggregate.add_argument("--output-dir", type=Path, required=True)
+    aggregate.add_argument(
+        "--chromosomes",
+        nargs="+",
+        type=int,
+        default=tuple(range(1, 23)),
+    )
     aggregate.set_defaults(handler=aggregate_command)
 
     keys = subparsers.add_parser("keys")

@@ -135,6 +135,47 @@ def normalize_sample_table(
                 })
 
 
+def normalize_array_sample_table(
+    input_path: Path,
+    output_path: Path,
+    delimiter: str,
+    id_column: str,
+    array_column: str,
+    value_columns: list[str],
+) -> None:
+    with input_path.open(newline="") as source:
+        reader = csv.DictReader(source, delimiter=delimiter)
+        required = {id_column, array_column}
+        missing = required.difference(reader.fieldnames or ())
+        if missing:
+            raise ValueError(
+                f"{input_path} columns not found: " + ", ".join(sorted(missing))
+            )
+
+        with output_path.open("w", newline="") as output:
+            writer = csv.DictWriter(
+                output,
+                fieldnames=["IID", *value_columns],
+                delimiter=delimiter,
+                lineterminator="\n",
+            )
+            writer.writeheader()
+            for row in reader:
+                values = [
+                    float(value)
+                    for value in row[array_column].strip().strip("[]").split(",")
+                ]
+                if len(values) < len(value_columns):
+                    raise ValueError(
+                        f"{array_column} for {row[id_column]} has {len(values)} values; "
+                        f"expected at least {len(value_columns)}"
+                    )
+                writer.writerow({
+                    "IID": row[id_column],
+                    **dict(zip(value_columns, values)),
+                })
+
+
 def count_rows(path: Path) -> int:
     with path.open() as file:
         return sum(1 for line in file if line.strip())
@@ -240,13 +281,23 @@ def prepare(args: argparse.Namespace) -> int:
             args.phenotype_id_column,
             args.phenotype_columns,
         )
-        normalize_sample_table(
-            args.covariate,
-            covariate_path,
-            "\t",
-            args.covariate_id_column,
-            args.covariate_columns,
-        )
+        if args.covariate_array_column:
+            normalize_array_sample_table(
+                args.covariate,
+                covariate_path,
+                "\t",
+                args.covariate_id_column,
+                args.covariate_array_column,
+                args.covariate_columns,
+            )
+        else:
+            normalize_sample_table(
+                args.covariate,
+                covariate_path,
+                "\t",
+                args.covariate_id_column,
+                args.covariate_columns,
+            )
         inputs = load_inputs(
             pgen_prefix=args.pgen_prefix,
             gene_panel_path=gene_panel_path,
@@ -290,6 +341,7 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--covariate", type=Path, required=True)
     command.add_argument("--phenotype-id-column", default="IID")
     command.add_argument("--covariate-id-column", default="IID")
+    command.add_argument("--covariate-array-column")
     command.add_argument("--phenotype-columns", nargs="+", required=True)
     command.add_argument("--covariate-columns", nargs="+", required=True)
     command.add_argument("--chromosome", required=True)
