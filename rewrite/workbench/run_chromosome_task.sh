@@ -31,6 +31,9 @@ finish() {
   for process in "${PARTY_PIDS[@]:-}"; do
     kill "$process" 2>/dev/null || true
   done
+  for process in "${PARTY_PIDS[@]:-}"; do
+    wait "$process" 2>/dev/null || true
+  done
   cp "$RUN"/party*.log "$CHROMOSOME_RESULTS/" 2>/dev/null || true
   if [ "$rc" -ne 0 ] && [ -n "${RESULT_GCS:-}" ]; then
     gcloud storage rsync --recursive "$CHROMOSOME_RESULTS" "$RESULT_GCS" \
@@ -41,9 +44,24 @@ finish() {
 trap finish EXIT
 
 tar -xzf "$CODE_BUNDLE" -C "$REPO"
+if [ ! -x "$REPO/plink2" ]; then
+  echo "plink2 binary not found: $REPO/plink2" >&2
+  exit 1
+fi
+
+echo ">>> $CHROMOSOME: R environment"
+mkdir -p "$R_ENV"
+tar -xzf "$R_ENV_ARCHIVE" -C "$R_ENV"
+"$R_ENV/bin/conda-unpack"
+"$R_ENV/bin/Rscript" -e \
+  'stopifnot(requireNamespace("SKAT", quietly = TRUE))'
+
 ln -s "$PGEN" "$INPUT/genotype.pgen"
 ln -s "$PVAR" "$INPUT/genotype.pvar"
 ln -s "$PSAM" "$INPUT/genotype.psam"
+ln -s "$ANNOTATION" "$INPUT/annotation.csv"
+ln -s "$PHENOTYPE" "$INPUT/phenotype.csv"
+ln -s "$COVARIATE" "$INPUT/covariate.csv"
 
 IFS=, read -r -a PHENOTYPE_COLUMN_LIST <<< "${phenotype_columns:?}"
 IFS=, read -r -a COVARIATE_COLUMN_LIST <<< "${covariate_columns:?}"
@@ -75,7 +93,7 @@ for mask in "${MASKS[@]}"; do
 done
 
 echo ">>> $CHROMOSOME: preprocessing"
-if ! PYTHONPATH="$REPO" "${PREPARE[@]}"; then
+if ! PATH="$REPO:$PATH" PYTHONPATH="$REPO" "${PREPARE[@]}"; then
   cp "$PREPROCESSED/validation_errors.csv" "$CHROMOSOME_RESULTS/" 2>/dev/null || true
   exit 1
 fi
@@ -100,21 +118,18 @@ for party in 0 1 2; do
   PARTY_PIDS+=("$!")
 done
 
-SECURE_RC=0
-for process in "${PARTY_PIDS[@]}"; do
-  if ! wait "$process"; then
-    SECURE_RC=1
+remaining_parties=${#PARTY_PIDS[@]}
+while [ "$remaining_parties" -gt 0 ]; do
+  if wait -n "${PARTY_PIDS[@]}"; then
+    remaining_parties=$((remaining_parties - 1))
+  else
+    secure_rc=$?
+    exit "$secure_rc"
   fi
 done
 PARTY_PIDS=()
-if [ "$SECURE_RC" -ne 0 ]; then
-  exit "$SECURE_RC"
-fi
 
 echo ">>> $CHROMOSOME: R::SKAT Burden and Davies"
-mkdir -p "$R_ENV"
-tar -xzf "$R_ENV_ARCHIVE" -C "$R_ENV"
-"$R_ENV/bin/conda-unpack"
 "$R_ENV/bin/Rscript" "$REPO/rewrite/workbench/run_reference_skat.R" \
   "$PREPROCESSED" "$RUN/r_results.csv"
 

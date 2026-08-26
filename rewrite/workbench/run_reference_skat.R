@@ -64,10 +64,16 @@ for (gene in seq_along(input$genes)) {
 }
 
 # 4. Write gene-major CSV output for the Workbench join step.
+output <- do.call(rbind, results)
+for (column in c("r_burden_p", "r_skat_davies_p")) {
+  output[[column]] <- sprintf("%.17g", output[[column]])
+}
 write.table(
-  do.call(rbind, results),
+  output,
   file = args[[2]],
   sep = ",",
-  quote = FALSE,
-  row.names = FALSE
+  quote = TRUE,
+  qmethod = "double",
+  row.names = FALSE,
+  na = "NA"
 )

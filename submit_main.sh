@@ -98,6 +98,13 @@ if [ -z "$r_env_archive" ]; then
   r_env_archive=$output_root/runtime/skat-r44-skat225.tar.gz
 fi
 
+if ! gcloud storage objects describe \
+  "$r_env_archive" \
+  --billing-project "$project" >/dev/null 2>&1; then
+  echo "R environment archive not found: $r_env_archive" >&2
+  exit 1
+fi
+
 run_id=$(date -u +%Y%m%d-%H%M%S)
 run_gcs=$output_root/runs/$run_id
 code_gcs=$run_gcs/code.tar.gz
