@@ -1,6 +1,8 @@
 import csv
 import json
+import math
 import os
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -20,6 +22,7 @@ from rewrite.workbench.results import (
     read_rows,
     write_rows,
 )
+from rewrite.workbench.timing import read_timing_rows
 
 
 def write_table(path: Path, rows: list[dict[str, object]]) -> None:
@@ -35,6 +38,81 @@ def write_table(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 class WorkbenchTest(unittest.TestCase):
+    def test_reference_skat_writes_gene_timing(self) -> None:
+        rscript = shutil.which("Rscript")
+        if rscript is None:
+            self.skipTest("Rscript is not installed")
+        skat = subprocess.run(
+            [rscript, "-e", 'stopifnot(requireNamespace("SKAT", quietly=TRUE))'],
+            capture_output=True,
+            text=True,
+        )
+        if skat.returncode != 0:
+            self.skipTest("R::SKAT is not installed")
+
+        root = Path(__file__).parents[2]
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            preprocessed = temporary / "preprocessed"
+            for cohort in ("A", "B"):
+                (preprocessed / cohort / "geno").mkdir(parents=True)
+            (preprocessed / "B" / "private").mkdir(parents=True)
+
+            sample_count = 40
+            covariates = [(index - 20) / 10 for index in range(sample_count)]
+            phenotypes = [
+                math.sin(index / 3) + 0.1 * covariates[index]
+                for index in range(sample_count)
+            ]
+            public_genotype = [
+                value
+                for index in range(sample_count)
+                for value in (index % 3, (index // 3) % 3)
+            ]
+            for cohort, start in (("A", 0), ("B", sample_count // 2)):
+                end = start + sample_count // 2
+                (preprocessed / cohort / "cov.txt").write_text(
+                    "".join(f"{covariates[index]:.17g}\n" for index in range(start, end))
+                )
+                (preprocessed / cohort / "pheno.txt").write_text(
+                    "".join(f"{phenotypes[index]:.17g}\n" for index in range(start, end))
+                )
+                offset = 2 * start
+                (preprocessed / cohort / "geno" / "block.0.bin").write_bytes(
+                    bytes(public_genotype[offset:offset + sample_count])
+                )
+            (preprocessed / "B" / "private" / "block.0.bin").write_bytes(b"")
+            (preprocessed / "genes.txt").write_text("gene1\n")
+            (preprocessed / "block_sizes.txt").write_text("2\n")
+            (preprocessed / "phenotypes.txt").write_text("trait\n")
+            (preprocessed / "gene_metadata.tsv").write_text(
+                "gene_index\tgene_id\tgene_symbol\tchromosome\tgene_order\n"
+                "0\tgene1\tGENE1\t22\t0\n"
+            )
+
+            output = temporary / "r_results.csv"
+            timing = temporary / "r_timing.csv"
+            result = subprocess.run(
+                [
+                    rscript,
+                    str(root / "rewrite/workbench/run_reference_skat.R"),
+                    str(preprocessed),
+                    str(output),
+                    str(timing),
+                ],
+                cwd=root,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            phases = [row["phase"] for row in read_timing_rows(timing)]
+            self.assertIn("null_model_fit", phases)
+            self.assertIn("burden", phases)
+            self.assertIn("skat_davies", phases)
+            self.assertIn("r_gene_total", phases)
+            self.assertIn("r_total", phases)
+
     def test_coordinator_runs_chromosomes_in_parallel_before_aggregation(self) -> None:
         root = Path(__file__).parents[2]
         with tempfile.TemporaryDirectory() as directory:
@@ -95,6 +173,7 @@ touch "$CHROMOSOME_RESULTS/_SUCCESS"
                 bin_dir / "gcloud",
                 """#!/usr/bin/env bash
 destination=${!#}
+printf '%s\n' "${CLOUDSDK_CONFIG:-}" >> "$GCLOUD_CONFIGS"
 mkdir -p "$destination"
 for argument in "$@"; do
   case "$argument" in
@@ -108,6 +187,33 @@ done
             self.write_executable(
                 bin_dir / "python3",
                 """#!/usr/bin/env bash
+if [ "$1" = "-c" ]; then
+  echo 1000000000
+  exit 0
+fi
+if [ "$3" = "timing-event" ]; then
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--output" ]; then
+      mkdir -p "$(dirname "$2")"
+      touch "$2"
+      exit 0
+    fi
+    shift
+  done
+fi
+if [ "$3" = "timing-summary" ]; then
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--output-dir" ]; then
+      mkdir -p "$2"
+      touch "$2/timing_summary.csv"
+      exit 0
+    fi
+    shift
+  done
+fi
+if [ "$3" != "aggregate" ]; then
+  exit 1
+fi
 printf '%s\n' "$@" > "$AGGREGATE_ARGUMENTS"
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "--output-dir" ]; then
@@ -121,6 +227,7 @@ exit 1
             )
 
             coordinator_calls = temporary / "coordinator-calls.txt"
+            gcloud_configs = temporary / "gcloud-configs.txt"
             coordinator_state = temporary / "coordinator-state"
             coordinator_state.mkdir()
             aggregate_arguments = temporary / "aggregate-arguments.txt"
@@ -140,6 +247,7 @@ exit 1
                 "chromosomes": "20,21,22",
                 "max_parallel_chromosomes": "2",
                 "COORDINATOR_CALLS": str(coordinator_calls),
+                "GCLOUD_CONFIGS": str(gcloud_configs),
                 "COORDINATOR_STATE": str(coordinator_state),
                 "AGGREGATE_ARGUMENTS": str(aggregate_arguments),
             })
@@ -160,9 +268,18 @@ exit 1
                 sorted(coordinator_calls.read_text().splitlines()),
                 ["chr20\t18000", "chr21\t18010", "chr22\t18000"],
             )
+            self.assertEqual(
+                sorted(gcloud_configs.read_text().splitlines()),
+                [
+                    str(temporary / "work/chr20/work/gcloud"),
+                    str(temporary / "work/chr21/work/gcloud"),
+                    str(temporary / "work/chr22/work/gcloud"),
+                ],
+            )
             arguments = aggregate_arguments.read_text().splitlines()
             chromosome_start = arguments.index("--chromosomes") + 1
             self.assertEqual(arguments[chromosome_start:], ["20", "21", "22"])
+            self.assertTrue((results / "final/timing_summary.csv").exists())
             self.assertTrue((results / "_SUCCESS").exists())
 
     def test_submit_uses_home_plink2_and_returns_after_one_job(self) -> None:

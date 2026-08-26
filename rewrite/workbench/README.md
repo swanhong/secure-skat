@@ -13,7 +13,7 @@ submit_main.sh
        -> pooled R Burden/Davies
        -> gene_results.csv
      -> aggregation
-       -> all_gene_results.csv + summaries + plots
+       -> result and benchmark timing summaries + plots
 ```
 
 ## Run configuration
@@ -96,6 +96,13 @@ chromosomes/chrN/
   gene_results.csv
   error_summary.csv
   metadata.json
+  preprocessing_timing.csv
+  secure_timing_party0.csv
+  secure_timing_party1.csv
+  secure_timing_party2.csv
+  r_timing.csv
+  workflow_timing.csv
+  timing_events.csv
   party0.log
   party1.log
   party2.log
@@ -109,10 +116,21 @@ The coordinator writes the aggregate below the same result root:
 final/
   all_gene_results.csv
   error_summary.csv
+  all_timing_events.csv
+  timing_summary.csv
   plots/scatter_*.png
   plots/manhattan_*.png
   _SUCCESS
 ```
+
+`timing_events.csv` preserves the measured execution scope. Packed secure
+operations are actual batch measurements; their gene rows are explicitly
+labelled `amortized` rather than reported as independent gene latency. R rows
+are actual gene and gene-by-phenotype measurements. The coordinator merges all
+chromosomes deterministically, prints chromosome and gene timing tables, and
+writes the same values to `final/timing_summary.csv`. Party durations remain
+separate; the printed secure gene value is the maximum party duration, not the
+sum.
 
 Aggregation starts only after every selected chromosome succeeds. A failed
 chromosome or public-width validation triggers a best-effort upload of partial

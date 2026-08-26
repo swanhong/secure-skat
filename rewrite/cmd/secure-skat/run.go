@@ -27,8 +27,10 @@ const (
 
 type runOptions struct {
 	Party          int
+	Lane           int
 	Input          string
 	Output         string
+	TimingOutput   string
 	PortBase       int
 	SharedKeys     string
 	CKKS           string
@@ -45,7 +47,24 @@ type secureResult struct {
 	SKATWHP        float64
 }
 
-func runSecure(options runOptions) error {
+func runSecure(options runOptions) (runErr error) {
+	recorder := newTimingRecorder(options)
+	runSpan := recorder.startPhase("run", "secure_process_total", "")
+	defer func() {
+		panicValue := recover()
+		status := "success"
+		if runErr != nil || panicValue != nil {
+			status = "failure"
+		}
+		runSpan.finish(status)
+		if err := recorder.write(options.TimingOutput); err != nil && runErr == nil {
+			runErr = fmt.Errorf("write timing output: %w", err)
+		}
+		if panicValue != nil {
+			panic(panicValue)
+		}
+	}()
+
 	// 1. Validate the process-local runtime options.
 	if options.Party < 0 || options.Party >= partyCount {
 		return fmt.Errorf("party must be 0, 1, or 2")
@@ -64,25 +83,39 @@ func runSecure(options runOptions) error {
 	}
 
 	// 2. Load public metadata and build the natural HE batch schedule.
+	inputSpan := recorder.startPhase("run", "load_public_input", "secure_process_total")
 	input, err := loadPreprocessedInput(options.Input)
 	if err != nil {
+		inputSpan.finish("failure")
 		return err
 	}
+	inputSpan.finish("success")
+	recorder.setInput(input)
+
+	parameterSpan := recorder.startPhase("run", "resolve_ckks_parameters", "secure_process_total")
 	literal, err := securecrypto.ResolveCKKSParametersLiteral(options.CKKS)
 	if err != nil {
+		parameterSpan.finish("failure")
 		return err
 	}
 	heParameters, err := ckks.NewParametersFromLiteral(literal)
 	if err != nil {
+		parameterSpan.finish("failure")
 		return err
 	}
+	parameterSpan.finish("success")
+
+	scheduleSpan := recorder.startPhase("run", "build_batch_schedule", "secure_process_total")
 	fullCryptoParams, err := protocol.BuildCryptoParams(
 		input.DataParams, options.Probes, heParameters.MaxSlots(),
 	)
 	if err != nil {
+		scheduleSpan.finish("failure")
 		return err
 	}
+	scheduleSpan.finish("success")
 
+	networkSpan := recorder.startPhase("run", "network_init", "secure_process_total")
 	networks := mpc.InitCommunication(
 		"127.0.0.1",
 		localhostServers(options.PortBase),
@@ -91,18 +124,23 @@ func runSecure(options runOptions) error {
 		1,
 		options.SharedKeys,
 	)
+	networkSpan.finish("success")
 	defer func() {
 		for _, network := range networks {
 			network.CloseAll()
 		}
 	}()
 
+	collectiveSpan := recorder.startPhase("run", "collective_init", "secure_process_total")
 	heContext := mpc.ParallelNetworks(networks).CollectiveInit(
 		&heParameters,
 		mpcFieldBits,
 		true,
 		galoisElements(heParameters, fullCryptoParams),
 	)
+	collectiveSpan.finish("success")
+
+	mpcSpan := recorder.startPhase("run", "mpc_env_init", "secure_process_total")
 	mpcObject := mpc.InitParallelMPCEnv(
 		networks,
 		mpc_core.LElem256Zero,
@@ -110,17 +148,25 @@ func runSecure(options runOptions) error {
 		options.FractionalBits,
 	)[0]
 	mpcObject.SetDivSqrtMaxLen(divSqrtChunkSize)
+	mpcSpan.finish("success")
 
 	// 3. Load A/B phenotype inputs and fit the shared null model once.
+	nullInputSpan := recorder.startPhase("run", "load_null_inputs", "secure_process_total")
 	x, y, err := loadPartyPhenotypeInput(input, options.Party)
 	if err != nil {
+		nullInputSpan.finish("failure")
 		return err
 	}
+	nullInputSpan.finish("success")
+
+	nullSpan := recorder.startPhase("run", "null_model", "secure_process_total")
 	beta, xtxInv, rss := protocol.SetupNull(mpcObject, input.DataParams, x, y)
+	nullSpan.finish("success")
 
 	// 4. Load and run one natural HE batch at a time.
 	results := make([]secureResult, 0, len(input.Genes)*input.DataParams.PhenotypeCount)
-	for _, batch := range fullCryptoParams.Batches {
+	kernelSpan := recorder.startPhase("run", "secure_kernel_total", "secure_process_total")
+	for batchIndex, batch := range fullCryptoParams.Batches {
 		batchResults, err := runGeneBatch(
 			mpcObject,
 			heContext,
@@ -132,16 +178,25 @@ func runSecure(options runOptions) error {
 			xtxInv,
 			rss,
 			options,
+			batchIndex,
+			recorder,
 		)
 		if err != nil {
+			kernelSpan.finish("failure")
 			return err
 		}
 		results = append(results, batchResults...)
 	}
+	kernelSpan.finish("success")
 
 	// 5. Only cohort A writes the released chromosome results.
 	if options.Party == cohortAPartyID {
-		return writeSecureResults(options.Output, input, results)
+		writeSpan := recorder.startPhase("run", "write_secure_results", "secure_process_total")
+		if err := writeSecureResults(options.Output, input, results); err != nil {
+			writeSpan.finish("failure")
+			return err
+		}
+		writeSpan.finish("success")
 	}
 	return nil
 }
@@ -155,8 +210,19 @@ func runGeneBatch(
 	beta, xtxInv mpc_core.RMat,
 	rss mpc_core.RVec,
 	options runOptions,
+	batchIndex int,
+	recorder *timingRecorder,
 ) ([]secureResult, error) {
+	batchSpan := recorder.startBatchPhase(
+		input, batchIndex, batch, nil,
+		"batch_total", "secure_kernel_total", protocol.NoTimingPhenotype,
+	)
+
 	// 1. Convert the global batch indices to one batch-local DataParams.
+	scheduleSpan := recorder.startBatchPhase(
+		input, batchIndex, batch, nil,
+		"build_batch_context", "batch_total", protocol.NoTimingPhenotype,
+	)
 	genes := make([]protocol.Gene, len(batch.GeneIndices))
 	localGeneIndices := make([]int, len(batch.GeneIndices))
 	for position, globalIndex := range batch.GeneIndices {
@@ -173,16 +239,37 @@ func runGeneBatch(
 			GeneIndices: localGeneIndices,
 		}},
 	}
+	scheduleSpan.finish("success")
 
 	// 2. Load only this party's genotype blocks for the current batch.
+	loadSpan := recorder.startBatchPhase(
+		input, batchIndex, batch, nil,
+		"load_gene_batch", "batch_total", protocol.NoTimingPhenotype,
+	)
 	gp, gv, err := loadPartyGeneBatch(input, options.Party, batch.GeneIndices)
 	if err != nil {
+		loadSpan.finish("failure")
+		batchSpan.finish("failure")
 		return nil, err
 	}
+	privateVariantCounts := loadedPrivateVariantCounts(options.Party, gv)
+	loadSpan.privateVariantCounts = privateVariantCounts
+	loadSpan.finish("success")
+	batchSpan.privateVariantCounts = privateVariantCounts
 
 	// 3. Compute weights, packed statistics, final pivots, and released p-values.
+	weightSpan := recorder.startBatchPhase(
+		input, batchIndex, batch, privateVariantCounts,
+		"compute_weights", "batch_total", protocol.NoTimingPhenotype,
+	)
 	weight, signedWeight := protocol.ComputeWeights(
 		mpcObject, heContext, batchDataParams, gp,
+	)
+	weightSpan.finish("success")
+
+	statisticsSpan := recorder.startBatchPhase(
+		input, batchIndex, batch, privateVariantCounts,
+		"packed_statistics", "batch_total", protocol.NoTimingPhenotype,
 	)
 	gpQ, gpL, gvQ, gvL, geneV, geneS1, geneS2, geneS3 :=
 		protocol.ComputePackedStatistics(
@@ -199,7 +286,16 @@ func runGeneBatch(
 			weight,
 			signedWeight,
 			options.Seed,
+			recorder.batchObserver(
+				input, batchIndex, batch, privateVariantCounts,
+			),
 		)
+	statisticsSpan.finish("success")
+
+	finalizeSpan := recorder.startBatchPhase(
+		input, batchIndex, batch, privateVariantCounts,
+		"finalization", "batch_total", protocol.NoTimingPhenotype,
+	)
 	b, z := protocol.Finalize(
 		mpcObject,
 		batchDataParams,
@@ -213,14 +309,26 @@ func runGeneBatch(
 		geneS2,
 		geneS3,
 	)
+	finalizeSpan.finish("success")
+
+	releaseSpan := recorder.startBatchPhase(
+		input, batchIndex, batch, privateVariantCounts,
+		"release", "batch_total", protocol.NoTimingPhenotype,
+	)
 	burdenP, skatP := protocol.Release(
 		mpcObject, heContext, batchDataParams, b, z,
 	)
+	releaseSpan.finish("success")
 	if options.Party != cohortAPartyID {
+		batchSpan.finish("success")
 		return nil, nil
 	}
 
 	// 4. Map cohort A's batch-local results back to global gene indices.
+	mappingSpan := recorder.startBatchPhase(
+		input, batchIndex, batch, privateVariantCounts,
+		"map_released_results", "batch_total", protocol.NoTimingPhenotype,
+	)
 	phenotypeCount := input.DataParams.PhenotypeCount
 	results := make([]secureResult, 0, len(batch.GeneIndices)*phenotypeCount)
 	for position, globalIndex := range batch.GeneIndices {
@@ -234,7 +342,23 @@ func runGeneBatch(
 			})
 		}
 	}
+	mappingSpan.finish("success")
+	batchSpan.finish("success")
 	return results, nil
+}
+
+func loadedPrivateVariantCounts(party int, gv []*mat.Dense) []int {
+	if party != cohortBPartyID {
+		return nil
+	}
+
+	counts := make([]int, len(gv))
+	for index, genotype := range gv {
+		if genotype != nil {
+			_, counts[index] = genotype.Dims()
+		}
+	}
+	return counts
 }
 
 func galoisElements(

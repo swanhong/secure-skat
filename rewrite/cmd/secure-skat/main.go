@@ -17,8 +17,15 @@ func main() {
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	options := runOptions{}
 	flags.IntVar(&options.Party, "party", -1, "party ID: 0, 1, or 2")
+	flags.IntVar(&options.Lane, "lane", 0, "Workbench chromosome lane index")
 	flags.StringVar(&options.Input, "input", "", "preprocessed input directory")
 	flags.StringVar(&options.Output, "output", "", "party A secure result CSV")
+	flags.StringVar(
+		&options.TimingOutput,
+		"timing-output",
+		"",
+		"optional benchmark timing CSV for this party",
+	)
 	flags.IntVar(&options.PortBase, "port-base", 18000, "first localhost party port")
 	flags.StringVar(&options.SharedKeys, "shared-keys", "", "shared PRG key directory")
 	flags.StringVar(

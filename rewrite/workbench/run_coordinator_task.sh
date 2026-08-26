@@ -24,6 +24,42 @@ CHROMOSOME_RESULTS=$COORDINATOR_RESULTS/chromosomes
 FINAL_RESULTS=$COORDINATOR_RESULTS/final
 mkdir -p "$REPO" "$R_ENV" "$CHROMOSOME_RESULTS" "$FINAL_RESULTS"
 
+COORDINATOR_TIMING=$COORDINATOR_RESULTS/coordinator_timing.csv
+clock_ns() {
+  python3 -c 'import time; print(time.perf_counter_ns())'
+}
+record_coordinator_timing() {
+  local phase=$1
+  local started_ns=$2
+  local status=${3:-success}
+  PYTHONPATH="$REPO" python3 -m rewrite.workbench timing-event \
+    --output "$COORDINATOR_TIMING" \
+    --started-ns "$started_ns" \
+    --component coordinator \
+    --scope run \
+    --phase "$phase" \
+    --status "$status"
+}
+record_chromosome_timing() {
+  local output=$1
+  local chromosome=$2
+  local lane_index=$3
+  local phase=$4
+  local started_ns=$5
+  local status=${6:-success}
+  PYTHONPATH="$REPO" python3 -m rewrite.workbench timing-event \
+    --output "$output" \
+    --started-ns "$started_ns" \
+    --component workflow \
+    --scope chromosome \
+    --chromosome "$chromosome" \
+    --lane "$lane_index" \
+    --phase "$phase" \
+    --parent-phase chromosome_total \
+    --status "$status"
+}
+coordinator_started_ns=$(clock_ns)
+
 LOG=${LOG:-$COORDINATOR_RESULTS/coordinator.log}
 if [ "$LOG" != "-" ]; then
   exec > >(tee -a "$LOG") 2>&1
@@ -41,6 +77,7 @@ finish() {
 trap finish EXIT
 
 echo ">>> coordinator: shared runtime"
+shared_runtime_started_ns=$(clock_ns)
 tar -xzf "$CODE_BUNDLE" -C "$REPO"
 if [ ! -x "$REPO/plink2" ]; then
   echo "plink2 binary not found: $REPO/plink2" >&2
@@ -50,11 +87,13 @@ tar -xzf "$R_ENV_ARCHIVE" -C "$R_ENV"
 "$R_ENV/bin/conda-unpack"
 "$R_ENV/bin/Rscript" -e \
   'stopifnot(requireNamespace("SKAT", quietly = TRUE))'
+record_coordinator_timing shared_runtime "$shared_runtime_started_ns"
 
 IFS=, read -r -a CHROMOSOME_NUMBERS <<< "$chromosomes"
 run_chromosome() {
   local chromosome_number=$1
   local port_base=$2
+  local lane_index=$3
   local chromosome=chr$chromosome_number
   local chromosome_input=$WORK/$chromosome/input
   local chromosome_work=$WORK/$chromosome/work
@@ -74,11 +113,23 @@ run_chromosome() {
   fi
 
   echo ">>> $chromosome: genotype localization"
-  gcloud storage cp --billing-project "$project" \
+  local localization_started_ns
+  localization_started_ns=$(clock_ns)
+  if ! gcloud storage cp --billing-project "$project" \
     "$chromosome_genotype.pgen" \
     "$chromosome_genotype.pvar" \
     "$chromosome_genotype.psam" \
-    "$chromosome_input/"
+    "$chromosome_input/"; then
+    record_chromosome_timing \
+      "$chromosome_output/workflow_timing.csv" \
+      "$chromosome" "$lane_index" \
+      genotype_localization "$localization_started_ns" failure
+    return 1
+  fi
+  record_chromosome_timing \
+    "$chromosome_output/workflow_timing.csv" \
+    "$chromosome" "$lane_index" \
+    genotype_localization "$localization_started_ns"
 
   PGEN=$pgen \
   PVAR=$pvar \
@@ -88,6 +139,8 @@ run_chromosome() {
   CHROMOSOME_RESULTS=$chromosome_output \
   RESULT_GCS=${RESULT_GCS:+$RESULT_GCS/chromosomes/$chromosome} \
   PORT_BASE=$port_base \
+  LANE_INDEX=$lane_index \
+  CHROMOSOME_STARTED_NS=$localization_started_ns \
   WORK=$chromosome_work \
   REPO=$REPO \
   R_ENV=$R_ENV \
@@ -104,7 +157,7 @@ run_chromosome_lane() {
   chromosome_index=$lane_index
   while [ "$chromosome_index" -lt "${#CHROMOSOME_NUMBERS[@]}" ]; do
     run_chromosome \
-      "${CHROMOSOME_NUMBERS[$chromosome_index]}" "$port_base"
+      "${CHROMOSOME_NUMBERS[$chromosome_index]}" "$port_base" "$lane_index"
     chromosome_index=$((chromosome_index + max_parallel_chromosomes))
   done
 }
@@ -132,11 +185,23 @@ if [ "$chromosome_failure" -ne 0 ]; then
 fi
 
 echo ">>> coordinator: aggregate results"
+aggregate_started_ns=$(clock_ns)
 mkdir -p "$WORK/matplotlib"
-PYTHONPATH="$REPO" MPLCONFIGDIR="$WORK/matplotlib" \
+if ! PYTHONPATH="$REPO" MPLCONFIGDIR="$WORK/matplotlib" \
   python3 -m rewrite.workbench aggregate \
   --input-root "$CHROMOSOME_RESULTS" \
   --output-dir "$FINAL_RESULTS" \
+  --chromosomes "${CHROMOSOME_NUMBERS[@]}"; then
+  record_coordinator_timing aggregate_results "$aggregate_started_ns" failure
+  exit 1
+fi
+record_coordinator_timing aggregate_results "$aggregate_started_ns"
+record_coordinator_timing run_total "$coordinator_started_ns"
+
+PYTHONPATH="$REPO" python3 -m rewrite.workbench timing-summary \
+  --input-root "$CHROMOSOME_RESULTS" \
+  --output-dir "$FINAL_RESULTS" \
+  --coordinator-timing "$COORDINATOR_TIMING" \
   --chromosomes "${CHROMOSOME_NUMBERS[@]}"
 
 touch "$FINAL_RESULTS/_SUCCESS" "$COORDINATOR_RESULTS/_SUCCESS"

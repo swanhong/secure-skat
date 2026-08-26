@@ -12,6 +12,7 @@ from pathlib import Path
 from rewrite.preprocessing.input import load_inputs
 from rewrite.preprocessing.model import PrepOptions
 from rewrite.preprocessing.pipeline import prepare_blocks
+from rewrite.workbench.timing import TimingRecorder
 
 
 MAX_PUBLIC_VARIANTS = 4096
@@ -342,78 +343,135 @@ def validate_public_widths(output_dir: Path) -> list[dict[str, str | int]]:
 def prepare(args: argparse.Namespace) -> int:
     chromosome = normalize_chromosome(args.chromosome)
     mask = parse_mask(args.mask)
+    timing = TimingRecorder("preprocessing", chromosome=f"chr{chromosome}")
 
-    with tempfile.TemporaryDirectory() as directory:
-        temporary = Path(directory)
-        gene_panel_path = temporary / "gene_panel.tsv"
-        annotation_path = temporary / "annotation.tsv"
-        phenotype_path = temporary / "phenotype.csv"
-        covariate_path = temporary / "covariate.tsv"
-        variant_positions = normalize_annotation_variant_ids(
-            args.annotation,
-            Path(f"{args.pgen_prefix}.pvar"),
-            annotation_path,
-        )
-        build_gene_panel(
-            annotation_path,
-            chromosome,
-            gene_panel_path,
-            variant_positions,
-        )
-        normalize_sample_table(
-            args.phenotype,
-            phenotype_path,
-            ",",
-            args.phenotype_id_column,
-            args.phenotype_columns,
-        )
-        if args.covariate_array_column:
-            normalize_array_sample_table(
-                args.covariate,
-                covariate_path,
-                "\t",
-                args.covariate_id_column,
-                args.covariate_array_column,
-                args.covariate_columns,
-            )
-        else:
-            normalize_sample_table(
-                args.covariate,
-                covariate_path,
-                "\t",
-                args.covariate_id_column,
-                args.covariate_columns,
-            )
-        inputs = load_inputs(
-            pgen_prefix=args.pgen_prefix,
-            gene_panel_path=gene_panel_path,
-            annotation_path=annotation_path,
-            phenotype_path=phenotype_path,
-            covariate_path=covariate_path,
-        )
+    try:
+        with timing.measure(
+            scope="chromosome",
+            phase="preprocessing_total",
+        ):
+            with tempfile.TemporaryDirectory() as directory:
+                temporary = Path(directory)
+                gene_panel_path = temporary / "gene_panel.tsv"
+                annotation_path = temporary / "annotation.tsv"
+                phenotype_path = temporary / "phenotype.csv"
+                covariate_path = temporary / "covariate.tsv"
 
-        options = PrepOptions(
-            chromosome=chromosome,
-            gene_selection=read_gene_selection(args.genes),
-            mask=mask,
-            phenotype_columns=tuple(args.phenotype_columns),
-            covariate_columns=tuple(args.covariate_columns),
-            samples_per_cohort=parse_sample_count(args.samples_per_cohort),
-            sample_seed=args.sample_seed,
-            role_seed=args.role_seed,
-            out_dir=args.out,
-        )
-        output_dir = prepare_blocks(inputs, options)
-        write_workbench_metadata(output_dir, inputs, options)
+                with timing.measure(
+                    scope="chromosome",
+                    phase="normalize_annotation_variant_ids",
+                    parent_phase="preprocessing_total",
+                ):
+                    variant_positions = normalize_annotation_variant_ids(
+                        args.annotation,
+                        Path(f"{args.pgen_prefix}.pvar"),
+                        annotation_path,
+                    )
+                with timing.measure(
+                    scope="chromosome",
+                    phase="build_gene_panel",
+                    parent_phase="preprocessing_total",
+                ):
+                    build_gene_panel(
+                        annotation_path,
+                        chromosome,
+                        gene_panel_path,
+                        variant_positions,
+                    )
+                with timing.measure(
+                    scope="chromosome",
+                    phase="normalize_phenotype",
+                    parent_phase="preprocessing_total",
+                ):
+                    normalize_sample_table(
+                        args.phenotype,
+                        phenotype_path,
+                        ",",
+                        args.phenotype_id_column,
+                        args.phenotype_columns,
+                    )
+                with timing.measure(
+                    scope="chromosome",
+                    phase="normalize_covariate",
+                    parent_phase="preprocessing_total",
+                ):
+                    if args.covariate_array_column:
+                        normalize_array_sample_table(
+                            args.covariate,
+                            covariate_path,
+                            "\t",
+                            args.covariate_id_column,
+                            args.covariate_array_column,
+                            args.covariate_columns,
+                        )
+                    else:
+                        normalize_sample_table(
+                            args.covariate,
+                            covariate_path,
+                            "\t",
+                            args.covariate_id_column,
+                            args.covariate_columns,
+                        )
+                with timing.measure(
+                    scope="chromosome",
+                    phase="load_inputs",
+                    parent_phase="preprocessing_total",
+                ):
+                    inputs = load_inputs(
+                        pgen_prefix=args.pgen_prefix,
+                        gene_panel_path=gene_panel_path,
+                        annotation_path=annotation_path,
+                        phenotype_path=phenotype_path,
+                        covariate_path=covariate_path,
+                    )
 
-    errors = validate_public_widths(output_dir)
-    for error in errors:
-        print(
-            f"{error['gene_id']}: public variants "
-            f"{error['public_variant_count']} exceed {error['limit']}",
-            file=sys.stderr,
-        )
-    return 1 if errors else 0
+                options = PrepOptions(
+                    chromosome=chromosome,
+                    gene_selection=read_gene_selection(args.genes),
+                    mask=mask,
+                    phenotype_columns=tuple(args.phenotype_columns),
+                    covariate_columns=tuple(args.covariate_columns),
+                    samples_per_cohort=parse_sample_count(args.samples_per_cohort),
+                    sample_seed=args.sample_seed,
+                    role_seed=args.role_seed,
+                    out_dir=args.out,
+                )
+                with timing.measure(
+                    scope="chromosome",
+                    phase="prepare_blocks",
+                    parent_phase="preprocessing_total",
+                ):
+                    output_dir = prepare_blocks(
+                        inputs,
+                        options,
+                        timing=timing,
+                    )
+                with timing.measure(
+                    scope="chromosome",
+                    phase="write_workbench_metadata",
+                    parent_phase="preprocessing_total",
+                ):
+                    write_workbench_metadata(output_dir, inputs, options)
+                timing.set_defaults(
+                    sample_count_a=count_rows(output_dir / "A" / "cov.txt"),
+                    sample_count_b=count_rows(output_dir / "B" / "cov.txt"),
+                )
+
+            with timing.measure(
+                scope="chromosome",
+                phase="validate_public_widths",
+                parent_phase="preprocessing_total",
+            ):
+                errors = validate_public_widths(output_dir)
+            for error in errors:
+                print(
+                    f"{error['gene_id']}: public variants "
+                    f"{error['public_variant_count']} exceed {error['limit']}",
+                    file=sys.stderr,
+                )
+            return 1 if errors else 0
+    finally:
+        timing.write(args.timing_output)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -437,6 +495,7 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--sample-seed", type=int, default=42)
     command.add_argument("--role-seed", type=int, default=42)
     command.add_argument("--out", type=Path, required=True)
+    command.add_argument("--timing-output", type=Path)
     command.set_defaults(handler=prepare)
     return parser
 

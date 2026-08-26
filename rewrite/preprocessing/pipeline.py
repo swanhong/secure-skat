@@ -1,6 +1,7 @@
 import math
 import random
 from collections.abc import Collection, Mapping, Sequence, Callable
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Literal
 import numpy as np
@@ -47,6 +48,7 @@ def extract_genotypes(
         rows_b: PhenoCovRows,
         plans: Sequence[GenePlan],
         extractor: GenotypeExtractor,
+        timing=None,
 ) -> tuple[
     tuple[GenePlan, ...],
     np.ndarray,
@@ -74,16 +76,28 @@ def extract_genotypes(
 
     # extract genotypes for the variants in the plans
     # extractor is for PLINK2 pgen/pvar/psam files
-    geno_a, emitted_a = extractor(
-        pgen_prefix,
-        rows_a.sample_ids,
-        tuple(keys_a),
-    )
-    geno_b, emitted_b = extractor(
-        pgen_prefix,
-        rows_b.sample_ids,
-        tuple(keys_b),
-    )
+    with measure_timing(
+        timing,
+        scope="chromosome",
+        phase="plink_extract_a",
+        parent_phase="extract_genotypes",
+    ):
+        geno_a, emitted_a = extractor(
+            pgen_prefix,
+            rows_a.sample_ids,
+            tuple(keys_a),
+        )
+    with measure_timing(
+        timing,
+        scope="chromosome",
+        phase="plink_extract_b",
+        parent_phase="extract_genotypes",
+    ):
+        geno_b, emitted_b = extractor(
+            pgen_prefix,
+            rows_b.sample_ids,
+            tuple(keys_b),
+        )
 
     key_column_a = {
         key: column for column, key in enumerate(emitted_a)
@@ -126,45 +140,64 @@ def build_blocks(
         key_column_a: Mapping[str, int],
         geno_b: np.ndarray,
         key_column_b: Mapping[str, int],
+        timing=None,
 ) -> tuple[GeneBlock, ...]:
     """Build gene-local public and private genotype blocks."""
     blocks = []
-    for plan in plans:
-        public = [
-            (variant, role) for variant, role in plan.variant_roles
-            if role in {"shared", "public_only"}
-        ]
-        private = [
-            variant for variant, role in plan.variant_roles
-            if role == "private"
-        ]
-
-        public_columns_a = [
-            key_column_a[variant.key] for variant, _ in public
-        ]
-        private_columns_b = [
-            key_column_b[variant.key] for variant in private
-        ]
-
-        public_a = geno_a[:, public_columns_a].copy()
-        public_b = np.zeros((geno_b.shape[0], len(public)), dtype=np.int8)
-
-        for block_column, (variant, role) in enumerate(public):
-            if role == "shared":
-                public_b[:, block_column] = (
-                    geno_b[:, key_column_b[variant.key]]
-                )
-        private_b = geno_b[:, private_columns_b].copy()
-        blocks.append(
-            GeneBlock(
-                gene=plan.gene,
-                public_variants=tuple(variant for variant, _ in public),
-                private_variants=tuple(private),
-                public_a=public_a,
-                public_b=public_b,
-                private_b=private_b,
-            )
+    for gene_index, plan in enumerate(plans):
+        public_variant_count = sum(
+            role in {"shared", "public_only"}
+            for _, role in plan.variant_roles
         )
+        private_variant_count = sum(
+            role == "private"
+            for _, role in plan.variant_roles
+        )
+        with measure_timing(
+            timing,
+            scope="gene",
+            phase="build_gene_block",
+            parent_phase="build_blocks",
+            gene_index=gene_index,
+            gene_id=plan.gene.gene_id,
+            public_variant_count=public_variant_count,
+            private_variant_count=private_variant_count,
+        ):
+            public = [
+                (variant, role) for variant, role in plan.variant_roles
+                if role in {"shared", "public_only"}
+            ]
+            private = [
+                variant for variant, role in plan.variant_roles
+                if role == "private"
+            ]
+
+            public_columns_a = [
+                key_column_a[variant.key] for variant, _ in public
+            ]
+            private_columns_b = [
+                key_column_b[variant.key] for variant in private
+            ]
+
+            public_a = geno_a[:, public_columns_a].copy()
+            public_b = np.zeros((geno_b.shape[0], len(public)), dtype=np.int8)
+
+            for block_column, (variant, role) in enumerate(public):
+                if role == "shared":
+                    public_b[:, block_column] = (
+                        geno_b[:, key_column_b[variant.key]]
+                    )
+            private_b = geno_b[:, private_columns_b].copy()
+            blocks.append(
+                GeneBlock(
+                    gene=plan.gene,
+                    public_variants=tuple(variant for variant, _ in public),
+                    private_variants=tuple(private),
+                    public_a=public_a,
+                    public_b=public_b,
+                    private_b=private_b,
+                )
+            )
     return tuple(blocks)
 
 def assign_roles(
@@ -400,59 +433,104 @@ def prepare_blocks(
         inputs: PrepInputs,
         options: PrepOptions,
         extractor: GenotypeExtractor = plink_extract,
+        timing=None,
 ) -> Path:
-    gene_variants = select_gene_variants(
-        gene_panel=inputs.gene_panel,
-        variants=inputs.variants,
-        annotations=inputs.annotations,
-        annotation_columns=inputs.annotation_columns,
-        chromosome=options.chromosome,
-        gene_selection=options.gene_selection,
-        mask=options.mask,
-    )
+    with measure_timing(
+        timing,
+        scope="chromosome",
+        phase="select_gene_variants",
+        parent_phase="prepare_blocks",
+    ):
+        gene_variants = select_gene_variants(
+            gene_panel=inputs.gene_panel,
+            variants=inputs.variants,
+            annotations=inputs.annotations,
+            annotation_columns=inputs.annotation_columns,
+            chromosome=options.chromosome,
+            gene_selection=options.gene_selection,
+            mask=options.mask,
+        )
 
-    rows_a, rows_b = select_rows(
-        psam_ids=inputs.psam_ids,
-        phenotypes=inputs.phenotypes,
-        covariates=inputs.covariates,
-        phenotype_columns=options.phenotype_columns,
-        covariate_columns=options.covariate_columns,
-        samples_per_cohort=options.samples_per_cohort,
-        sample_seed=options.sample_seed,
-    )
+    with measure_timing(
+        timing,
+        scope="chromosome",
+        phase="select_rows",
+        parent_phase="prepare_blocks",
+    ):
+        rows_a, rows_b = select_rows(
+            psam_ids=inputs.psam_ids,
+            phenotypes=inputs.phenotypes,
+            covariates=inputs.covariates,
+            phenotype_columns=options.phenotype_columns,
+            covariate_columns=options.covariate_columns,
+            samples_per_cohort=options.samples_per_cohort,
+            sample_seed=options.sample_seed,
+        )
 
-    plans = assign_roles(
-        gene_variants=gene_variants,
-        role_seed=options.role_seed,
-    )
+    with measure_timing(
+        timing,
+        scope="chromosome",
+        phase="assign_roles",
+        parent_phase="prepare_blocks",
+    ):
+        plans = assign_roles(
+            gene_variants=gene_variants,
+            role_seed=options.role_seed,
+        )
 
-    (
-        extracted_plans,
-        geno_a,
-        key_column_a,
-        geno_b,
-        key_column_b,
-    ) = extract_genotypes(
-        pgen_prefix=inputs.pgen_prefix,
-        rows_a=rows_a,
-        rows_b=rows_b,
-        plans=plans,
-        extractor=extractor,
-    )
+    with measure_timing(
+        timing,
+        scope="chromosome",
+        phase="extract_genotypes",
+        parent_phase="prepare_blocks",
+    ):
+        (
+            extracted_plans,
+            geno_a,
+            key_column_a,
+            geno_b,
+            key_column_b,
+        ) = extract_genotypes(
+            pgen_prefix=inputs.pgen_prefix,
+            rows_a=rows_a,
+            rows_b=rows_b,
+            plans=plans,
+            extractor=extractor,
+            timing=timing,
+        )
 
-    blocks = build_blocks(
-        plans=extracted_plans,
-        geno_a=geno_a,
-        key_column_a=key_column_a,
-        geno_b=geno_b,
-        key_column_b=key_column_b,
-    )
+    with measure_timing(
+        timing,
+        scope="chromosome",
+        phase="build_blocks",
+        parent_phase="prepare_blocks",
+    ):
+        blocks = build_blocks(
+            plans=extracted_plans,
+            geno_a=geno_a,
+            key_column_a=key_column_a,
+            geno_b=geno_b,
+            key_column_b=key_column_b,
+            timing=timing,
+        )
 
-    write_outputs(
-        blocks=blocks,
-        rows_a=rows_a,
-        rows_b=rows_b,
-        out_dir=options.out_dir,
-    )
+    with measure_timing(
+        timing,
+        scope="chromosome",
+        phase="write_outputs",
+        parent_phase="prepare_blocks",
+    ):
+        write_outputs(
+            blocks=blocks,
+            rows_a=rows_a,
+            rows_b=rows_b,
+            out_dir=options.out_dir,
+        )
 
     return options.out_dir
+
+
+def measure_timing(timing, **values):
+    if timing is None:
+        return nullcontext()
+    return timing.measure(**values)

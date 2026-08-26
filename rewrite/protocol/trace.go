@@ -1080,7 +1080,9 @@ func ComputeGeneBatchKernelStatistics(
 	weight []mpc_core.RVec,
 	signedWeight []mpc_core.RVec,
 	seed int64,
+	timingObservers ...TimingObserver,
 ) (geneBatchV, geneBatchS1, geneBatchS2, geneBatchS3 mpc_core.RVec) {
+	timingObserver := selectTimingObserver(timingObservers)
 	/*
 		Compute the phenotype-independent kernel statistics for one gene batch.
 
@@ -1105,10 +1107,23 @@ func ComputeGeneBatchKernelStatistics(
 
 	// 1. Share pooledGtx.
 	// pooledGtx = Transpose(Gp[A]) * X[A] + Transpose(Gp[B]) * X[B]
+	finishPooledGtx := startTiming(
+		timingObserver,
+		"share_pooled_gtx",
+		"kernel_statistics",
+		NoTimingPhenotype,
+	)
 	pooledGtx := SharePooledGtx(mpcObj, dataParams, batch, localGtx)
+	finishPooledGtx()
 
 	// 2. Share diagGtG.
 	// diagGtG = diag(localGtG[A] + localGtG[B])
+	finishDiagGtg := startTiming(
+		timingObserver,
+		"share_diag_gtg",
+		"kernel_statistics",
+		NoTimingPhenotype,
+	)
 	packedLength := 0
 	for _, geneIndex := range batch.GeneIndices {
 		packedLength += dataParams.Genes[geneIndex].VariantCount
@@ -1143,15 +1158,31 @@ func ComputeGeneBatchKernelStatistics(
 			offset += variantCount
 		}
 	}
+	finishDiagGtg()
 
 	// 3. Compute S1, S2, S3 and reuse the first GtG action for gtgWeight.
+	finishKernelTraces := startTiming(
+		timingObserver,
+		"kernel_traces",
+		"kernel_statistics",
+		NoTimingPhenotype,
+	)
 	geneBatchS1, geneBatchS2, geneBatchS3, gtgWeight := ComputeKernelTraces(
 		mpcObj, heParams, dataParams, cryptoParams, batch, gp, gv, x, gvLocal,
 		localGtG, pooledGtx, diagGtG, xtxInv, weight, signedWeight, seed,
+		timingObserver,
 	)
+	finishKernelTraces()
 
 	// 4. Compute the Burden variance using gtgWeight = pooledGtG * signedWeight.
+	finishBurdenVariance := startTiming(
+		timingObserver,
+		"burden_variance",
+		"kernel_statistics",
+		NoTimingPhenotype,
+	)
 	geneBatchV = ComputeBurdenVariance(mpcObj, batch, pooledGtx, signedWeight, gtgWeight, gvGene, xtxInv)
+	finishBurdenVariance()
 
 	return geneBatchV, geneBatchS1, geneBatchS2, geneBatchS3
 }
@@ -1173,7 +1204,9 @@ func ComputeKernelTraces(
 	weight []mpc_core.RVec,
 	signedWeight []mpc_core.RVec,
 	seed int64,
+	timingObservers ...TimingObserver,
 ) (geneBatchS1, geneBatchS2, geneBatchS3 mpc_core.RVec, gtgWeight []mpc_core.RVec) {
+	timingObserver := selectTimingObserver(timingObservers)
 	/*
 		Compute the three kernel traces and the public GtG burden action.
 
@@ -1193,6 +1226,12 @@ func ComputeKernelTraces(
 	fracBits := mpcObj.GetFracBits()
 
 	// 1. Generate the public trace and private-correction probes.
+	finishTraceProbe := startTiming(
+		timingObserver,
+		"trace_probe",
+		"kernel_traces",
+		NoTimingPhenotype,
+	)
 	traceProbe := make([]*mat.Dense, geneCount)
 	correctionProbe := make([]*mat.Dense, geneCount)
 	probeScale := make([]float64, geneCount)
@@ -1203,16 +1242,30 @@ func ComputeKernelTraces(
 		traceProbe[position], correctionProbe[position], probeScale[position] =
 			TraceProbe(variantCount, batch.W, cryptoParams.R, seed)
 	}
+	finishTraceProbe()
 
 	// 2. Prepare the fixed-public-shape private trace terms.
+	finishPrivateTrace := startTiming(
+		timingObserver,
+		"prepare_private_trace_terms",
+		"kernel_traces",
+		NoTimingPhenotype,
+	)
 	privateTerms := PreparePrivateTraceTerms(
 		mpcObj, dataParams, batch, gp, gv, x, gvLocal, correctionProbe,
 	)
+	finishPrivateTrace()
 
 	// 3. Compute theta and weightSquared for each gene.
 	//
 	// theta         = pooledGtx * xtxInv
 	// weightSquared = weight .* weight
+	finishTheta := startTiming(
+		timingObserver,
+		"theta_and_weight_square",
+		"kernel_traces",
+		NoTimingPhenotype,
+	)
 	batchWeight := make([]mpc_core.RVec, geneCount)
 	batchSignedWeight := make([]mpc_core.RVec, geneCount)
 	theta := make([]mpc_core.RMat, geneCount)
@@ -1232,12 +1285,19 @@ func ComputeKernelTraces(
 		weightSquared[position] = mpcObj.SSMultElemVec(batchWeight[position], batchWeight[position])
 		weightSquared[position] = mpcObj.TruncVec(weightSquared[position], dataBits, fracBits)
 	}
+	finishTheta()
 
 	// 4. Build the first combined GtG right-hand side.
 	// delta3Basis = ConcatColumns(c0GpGpProbe, c0GpX, theta)
 	// weightedProbe = Diag(weight) * traceProbe
 	// weightedBasisRight = Diag(weight)^2 * delta3Basis
 	// firstRight = ConcatColumns(weightedProbe, weightedBasisRight, signedWeight)
+	finishFirstRight := startTiming(
+		timingObserver,
+		"first_rhs_build",
+		"kernel_traces",
+		NoTimingPhenotype,
+	)
 	firstRight := make([]mpc_core.RMat, geneCount)
 	weightedProbe := make([]mpc_core.RMat, geneCount)
 	weightedBasisRight := make([]mpc_core.RMat, geneCount)
@@ -1305,20 +1365,34 @@ func ComputeKernelTraces(
 			firstRight[position][variant][offset] = batchSignedWeight[position][variant].Copy()
 		}
 	}
+	finishFirstRight()
 
 	// 5. Compute the first public GtG action.
 	// firstGtgAction = pooledGtG * firstRight
 	// Hutchinson rhsCount = 2*R + 2*C + 1.
 	// Exact mode ignores rhsCount because its widths are gene-specific.
+	finishFirstAction := startTiming(
+		timingObserver,
+		"first_gtg_action",
+		"kernel_traces",
+		NoTimingPhenotype,
+	)
 	firstGtgAction := PublicGtGAction(
 		mpcObj, heParams, dataParams, cryptoParams, batch, localGtG, firstRight,
 		2*cryptoParams.R+2*covariateCount+1,
 	)
+	finishFirstAction()
 
 	// 6. Split the first action and compute kProbe and basisAction.
 	// kProbe = Kpp * traceProbe
 	// basisAction = Kpp * Diag(weight) * delta3Basis
 	// gtgWeight = pooledGtG * signedWeight
+	finishFirstPostprocess := startTiming(
+		timingObserver,
+		"first_action_postprocess",
+		"kernel_traces",
+		NoTimingPhenotype,
+	)
 	kProbe := make([]mpc_core.RMat, geneCount)
 	basisAction := make([]mpc_core.RMat, geneCount)
 	gtgWeight = make([]mpc_core.RVec, geneCount)
@@ -1358,10 +1432,17 @@ func ComputeKernelTraces(
 			pooledGtx[position], theta[position], batchWeight[position],
 		)
 	}
+	finishFirstPostprocess()
 
 	// 7. Compute the dependent second public GtG action.
 	// weightedKProbe = Diag(weight) * kProbe
 	// secondGtgAction = pooledGtG * weightedKProbe
+	finishSecondRight := startTiming(
+		timingObserver,
+		"second_rhs_build",
+		"kernel_traces",
+		NoTimingPhenotype,
+	)
 	weightedKProbe := make([]mpc_core.RMat, geneCount)
 	for position, geneIndex := range batch.GeneIndices {
 		if dataParams.Genes[geneIndex].VariantCount == 0 {
@@ -1370,12 +1451,26 @@ func ComputeKernelTraces(
 
 		weightedKProbe[position] = scaleSharedRows(mpcObj, batchWeight[position], kProbe[position])
 	}
+	finishSecondRight()
 
+	finishSecondAction := startTiming(
+		timingObserver,
+		"second_gtg_action",
+		"kernel_traces",
+		NoTimingPhenotype,
+	)
 	secondGtgAction := PublicGtGAction(
 		mpcObj, heParams, dataParams, cryptoParams, batch,
 		localGtG, weightedKProbe, cryptoParams.R,
 	)
+	finishSecondAction()
 
+	finishSecondPostprocess := startTiming(
+		timingObserver,
+		"second_action_postprocess",
+		"kernel_traces",
+		NoTimingPhenotype,
+	)
 	kSquaredProbe := make([]mpc_core.RMat, geneCount)
 	for position, geneIndex := range batch.GeneIndices {
 		if dataParams.Genes[geneIndex].VariantCount == 0 {
@@ -1387,6 +1482,7 @@ func ComputeKernelTraces(
 			pooledGtx[position], theta[position], batchWeight[position],
 		)
 	}
+	finishSecondPostprocess()
 
 	// 8. Compute tau1, tau2, tau3, and delta3Action.
 	// tau1 = 0.5 * (Dot(weightSquared, diagGtG)
@@ -1394,6 +1490,12 @@ func ComputeKernelTraces(
 	// tau2 = probeScale * Dot(kProbe, kProbe)
 	// tau3 = probeScale * Dot(kProbe, kSquaredProbe)
 	// delta3Action = 2 * Diag(weight) * basisAction
+	finishTau := startTiming(
+		timingObserver,
+		"tau_and_delta3_action",
+		"kernel_traces",
+		NoTimingPhenotype,
+	)
 	flattenMatrix := func(matrix mpc_core.RMat) mpc_core.RVec {
 		rows, columns := matrix.Dims()
 		values := mpc_core.InitRVec(rtype.Zero(), rows*columns)
@@ -1443,8 +1545,15 @@ func ComputeKernelTraces(
 		delta3Action[position] = scaleSharedRows(mpcObj, batchWeight[position], basisAction[position])
 		delta3Action[position].MulScalar(rtype.FromInt(2))
 	}
+	finishTau()
 
 	// 9. Compute the three private trace corrections.
+	finishCorrections := startTiming(
+		timingObserver,
+		"private_trace_corrections",
+		"kernel_traces",
+		NoTimingPhenotype,
+	)
 	delta1 := mpc_core.InitRVec(rtype.Zero(), geneCount)
 	delta2 := mpc_core.InitRVec(rtype.Zero(), geneCount)
 	delta3 := mpc_core.InitRVec(rtype.Zero(), geneCount)
@@ -1455,12 +1564,19 @@ func ComputeKernelTraces(
 			xtxInv, delta3Action[position], correctionProbe[position], probeScale[position],
 		)
 	}
+	finishCorrections()
 
 	// 10. Assemble and return the final traces.
 	//
 	// S1 = tau1 + delta1
 	// S2 = tau2 + delta2
 	// S3 = tau3 + delta3
+	finishAssembly := startTiming(
+		timingObserver,
+		"trace_assembly",
+		"kernel_traces",
+		NoTimingPhenotype,
+	)
 	geneBatchS1 = mpc_core.InitRVec(rtype.Zero(), geneCount)
 	geneBatchS2 = mpc_core.InitRVec(rtype.Zero(), geneCount)
 	geneBatchS3 = mpc_core.InitRVec(rtype.Zero(), geneCount)
@@ -1470,6 +1586,7 @@ func ComputeKernelTraces(
 		geneBatchS2[position] = tau2[position].Add(delta2[position])
 		geneBatchS3[position] = tau3[position].Add(delta3[position])
 	}
+	finishAssembly()
 
 	return geneBatchS1, geneBatchS2, geneBatchS3, gtgWeight
 }
