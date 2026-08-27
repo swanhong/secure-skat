@@ -1,28 +1,26 @@
-fit_null_model <- function(input, phenotype) {
-  null_data <- data.frame(
-    y = input$phenotypes[, phenotype],
-    input$covariates,
-    check.names = FALSE
-  )
-  names(null_data) <- c(
-    "y",
-    paste0("covariate", seq_len(ncol(input$covariates)))
-  )
-
-  SKAT::SKAT_Null_Model(
-    y ~ .,
-    data = null_data,
-    out_type = "C",
-    Adjustment = FALSE
-  )
-}
-
 fit_null_models <- function(input) {
   phenotype_count <- ncol(input$phenotypes)
   null_models <- vector("list", phenotype_count)
 
   for (phenotype in seq_len(phenotype_count)) {
-    null_models[[phenotype]] <- fit_null_model(input, phenotype)
+    # 1. Build the pooled regression table for this phenotype.
+    null_data <- data.frame(
+      y = input$phenotypes[, phenotype],
+      input$covariates,
+      check.names = FALSE
+    )
+    names(null_data) <- c(
+      "y",
+      paste0("covariate", seq_len(ncol(input$covariates)))
+    )
+
+    # 2. Fit the continuous pooled null model with an intercept.
+    null_models[[phenotype]] <- SKAT::SKAT_Null_Model(
+      y ~ .,
+      data = null_data,
+      out_type = "C",
+      Adjustment = FALSE
+    )
   }
 
   null_models

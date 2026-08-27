@@ -29,7 +29,7 @@ func TraceProbe(
 
 		PublicTrace and PrivateCorrection use separate random streams.
 	*/
-	if batchWidth < probeCount {
+	if batchWidth <= probeCount {
 		if variantCount == 0 {
 			return nil, nil, 1
 		}

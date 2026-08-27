@@ -7,6 +7,7 @@ cache/*
 output/*
 out/*
 *.test
+/secure-rvas
 # Testing outputs and caches
 out/
 cache/
@@ -31,7 +32,8 @@ tmp/
 rewrite/testdata/**
 !rewrite/testdata/1kgenome/
 !rewrite/testdata/1kgenome/utils.py
-!rewrite/testdata/1kgenome/prepare.ipynb
+!rewrite/testdata/1kgenome/prepare_1kgenome.py
+!rewrite/testdata/1kgenome/smoke_genes_21_22.tsv
 rewrite/preprocessing/test_*.py
 rewrite/preprocessing/*.md
 

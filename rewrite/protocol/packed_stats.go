@@ -31,12 +31,10 @@ func ComputePackedStatistics(
 	weight []mpc_core.RVec,
 	signedWeight []mpc_core.RVec,
 	seed int64,
-	timingObservers ...TimingObserver,
 ) (
 	gpQ, gpL, gvQ, gvL mpc_core.RMat,
 	geneV, geneS1, geneS2, geneS3 mpc_core.RVec,
 ) {
-	timingObserver := selectTimingObserver(timingObservers)
 	/*
 		Compute all packed phenotype and kernel statistics.
 
@@ -71,62 +69,36 @@ func ComputePackedStatistics(
 	packedBeta := make([]securecrypto.CipherVector, phenotypeCount)
 
 	for phenotype := 0; phenotype < phenotypeCount; phenotype++ {
-		finishTiming := startTiming(
-			timingObserver, "pack_beta", "packed_statistics", phenotype,
-		)
 		betaByPhenotype[phenotype] = mpc_core.InitRVec(rtype.Zero(), dataParams.C)
 		for covariate := 0; covariate < dataParams.C; covariate++ {
 			betaByPhenotype[phenotype][covariate] = beta[covariate][phenotype].Copy()
 		}
 		packedBeta[phenotype] = PackBeta(mpcObj, heParams, betaByPhenotype[phenotype])
-		finishTiming()
 	}
 
 	for _, batch := range cryptoParams.Batches {
 		// 2. Prepare the phenotype-independent values for this gene batch.
-		finishPrepare := startTiming(
-			timingObserver,
-			"prepare_gene_batch",
-			"packed_statistics",
-			NoTimingPhenotype,
-		)
 		terms := PrepareGeneBatch(
 			mpcObj, heParams, dataParams, cryptoParams, batch,
-			gp, gv, x, signedWeight, timingObserver,
+			gp, gv, x, signedWeight,
 		)
-		finishPrepare()
 
 		// 3. Compute and store the phenotype-dependent public/private Q and L.
 		for phenotype := 0; phenotype < phenotypeCount; phenotype++ {
-			finishPhenotype := startTiming(
-				timingObserver,
-				"phenotype_pass",
-				"packed_statistics",
-				phenotype,
-			)
 			var yColumn mat.Vector
 			if mpcObj.GetPid() != auxiliaryPartyID {
 				yColumn = y0.ColView(phenotype)
 			}
 
-			finishPublic := startTiming(
-				timingObserver, "compute_gp_ql", "phenotype_pass", phenotype,
-			)
 			batchGpQ, batchGpL := ComputeGpQL(
 				mpcObj, heParams, dataParams, cryptoParams, batch,
 				gp, yColumn, terms.gtxEncoded, packedBeta[phenotype],
 				terms.packedWeight, terms.maskEncoded,
 			)
-			finishPublic()
-
-			finishPrivate := startTiming(
-				timingObserver, "compute_gv_ql", "phenotype_pass", phenotype,
-			)
 			batchGvQ, batchGvL := ComputeGvQL(
 				mpcObj, dataParams, batch, gv, yColumn,
 				terms.gvLocal, terms.gvGene, betaByPhenotype[phenotype],
 			)
-			finishPrivate()
 
 			for position, geneIndex := range batch.GeneIndices {
 				gpQ[geneIndex][phenotype] = batchGpQ[position].Copy()
@@ -134,23 +106,14 @@ func ComputePackedStatistics(
 				gvQ[geneIndex][phenotype] = batchGvQ[position].Copy()
 				gvL[geneIndex][phenotype] = batchGvL[position].Copy()
 			}
-			finishPhenotype()
 		}
 
 		// 4. Compute and store the phenotype-independent Burden variance and kernel traces.
-		finishKernel := startTiming(
-			timingObserver,
-			"kernel_statistics",
-			"packed_statistics",
-			NoTimingPhenotype,
-		)
 		batchV, batchS1, batchS2, batchS3 := ComputeGeneBatchKernelStatistics(
 			mpcObj, heParams, dataParams, cryptoParams, batch,
 			gp, gv, x, terms.localGtx, terms.localGtG,
 			terms.gvLocal, terms.gvGene, xtxInv, weight, signedWeight, seed,
-			timingObserver,
 		)
-		finishKernel()
 
 		for position, geneIndex := range batch.GeneIndices {
 			geneV[geneIndex] = batchV[position].Copy()
@@ -173,9 +136,7 @@ func PrepareGeneBatch(
 	gv []*mat.Dense,
 	x *mat.Dense,
 	signedWeight []mpc_core.RVec,
-	timingObservers ...TimingObserver,
 ) geneBatchTerms {
-	timingObserver := selectTimingObserver(timingObservers)
 	/*
 		Prepare the phenotype-independent values reused by one gene batch.
 
@@ -195,63 +156,27 @@ func PrepareGeneBatch(
 	var terms geneBatchTerms
 
 	// 1. Encode the public active-slot mask.
-	finishMask := startTiming(
-		timingObserver,
-		"active_mask_encode",
-		"prepare_gene_batch",
-		NoTimingPhenotype,
-	)
 	terms.maskEncoded, _ = securecrypto.EncodeFloatVector(
 		heParams, ActiveMask(dataParams, cryptoParams, batch),
 	)
-	finishMask()
 
 	// 2. Compute cohort-local public-variant terms.
 	if mpcObj.GetPid() != auxiliaryPartyID {
-		finishGtx := startTiming(
-			timingObserver,
-			"compute_gtx",
-			"prepare_gene_batch",
-			NoTimingPhenotype,
-		)
 		terms.localGtx, terms.gtxEncoded = ComputeGtX(
 			heParams, dataParams, cryptoParams, batch, gp, x,
 		)
-		finishGtx()
-
-		finishLocalGtg := startTiming(
-			timingObserver,
-			"compute_local_gtg",
-			"prepare_gene_batch",
-			NoTimingPhenotype,
-		)
 		terms.localGtG = ComputeLocalGtG(dataParams, batch, gp)
-		finishLocalGtg()
 	}
 
 	// 3. Pack the shared public-variant weights.
-	finishWeight := startTiming(
-		timingObserver,
-		"pack_weight",
-		"prepare_gene_batch",
-		NoTimingPhenotype,
-	)
 	terms.packedWeight = PackWeight(
 		mpcObj, heParams, dataParams, cryptoParams, batch, signedWeight,
 	)
-	finishWeight()
 
 	// 4. Prepare the private-variant terms.
-	finishPrivate := startTiming(
-		timingObserver,
-		"prepare_private_gene_terms",
-		"prepare_gene_batch",
-		NoTimingPhenotype,
-	)
 	terms.gvLocal, terms.gvGene = PrepareGvGeneTerms(
 		mpcObj, dataParams, batch, gv, gp, x,
 	)
-	finishPrivate()
 
 	return terms
 }

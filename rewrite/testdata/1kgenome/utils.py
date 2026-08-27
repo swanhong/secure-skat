@@ -2,6 +2,7 @@ import subprocess
 from pathlib import Path
 import gzip
 import random
+import csv
 
 def download_if_missing(url: str, destination: Path) -> Path:
     if destination.exists():
@@ -74,12 +75,11 @@ def create_inputs_from_gencode(
         pvar_path: Path,
         gene_panel_path: Path,
         annotation_path: Path,
-        chr: str = "22",
+        chromosome: str = "22",
         seed: int = 42,
 ) -> tuple[Path, Path]:
-    # format chr, gtf_chr like "22", "chr22"
-    chr = chr.removeprefix("chr")
-    gtf_chr = f"chr{chr}"
+    chromosome = chromosome.removeprefix("chr")
+    gtf_chromosome = f"chr{chromosome}"
 
     rng = random.Random(seed)
     genes = []
@@ -89,7 +89,7 @@ def create_inputs_from_gencode(
                 continue
 
             fields = line.rstrip().split("\t")
-            if fields[0] != gtf_chr or fields[2] != "gene":
+            if fields[0] != gtf_chromosome or fields[2] != "gene":
                 continue
 
             attributes = {}
@@ -117,7 +117,7 @@ def create_inputs_from_gencode(
         )
         for order_index, (_, _, gene_id, gene_symbol) in enumerate(genes):
             gene_panel.write(
-                f"{gene_id}\t{gene_symbol}\t{chr}\t{order_index}\n"
+                f"{gene_id}\t{gene_symbol}\t{chromosome}\t{order_index}\n"
             )
 
     annotation_path.parent.mkdir(parents=True, exist_ok=True)
@@ -143,7 +143,7 @@ def create_inputs_from_gencode(
                 continue
 
             fields = line.rstrip().split()
-            if fields[chr_column].removeprefix("chr") != chr:
+            if fields[chr_column].removeprefix("chr") != chromosome:
                 continue
 
             pos = int(fields[pos_column])
@@ -214,6 +214,7 @@ def create_covariates(
 def create_phenotype(
     psam_path: Path,
     out_path: Path,
+    num_pheno: int = 1,
     seed: int = 42,
 ) -> Path:
     with psam_path.open() as psam:
@@ -225,16 +226,16 @@ def create_phenotype(
         ]
 
     rng = random.Random(seed)
+    phenotype_columns = [f"phenotype{i+1}" for i in range(num_pheno)]
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     with out_path.open("w") as output:
-        output.write("IID,phenotype\n")
+        writer = csv.writer(output, lineterminator="\n")
+        writer.writerow(["IID", *phenotype_columns])
 
         for sample_id in sample_ids:
-            phenotype = rng.gauss(0.0, 1.0)
-            output.write(
-                f"{sample_id},{phenotype:.12f}\n"
-            )
+            phenotypes = [rng.gauss(0.0, 1.0) for _ in range(num_pheno)]
+            writer.writerow([sample_id, *[f"{phenotype:.12f}" for phenotype in phenotypes]])
 
     print(f"created: {out_path}, ({len(sample_ids)} samples)")
     return out_path
