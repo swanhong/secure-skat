@@ -70,9 +70,31 @@ def create_pgen(
     print("number of samples: " + str(len(sample_ids)))
     return out_prefix
 
+def create_allele_frequencies(
+        pgen_prefix: Path,
+        out_prefix: Path,
+) -> Path:
+    frequency_path = Path(f"{out_prefix}.afreq")
+    if frequency_path.exists():
+        print(f"exists: {frequency_path}")
+        return frequency_path
+
+    out_prefix.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "plink2", "--pfile", str(pgen_prefix),
+            "--freq",
+            "--out", str(out_prefix),
+        ],
+        check=True,
+    )
+    print(f"created: {frequency_path}")
+    return frequency_path
+
 def create_inputs_from_gencode(
         gtf_path: Path,
         pvar_path: Path,
+        frequency_path: Path,
         gene_panel_path: Path,
         annotation_path: Path,
         chromosome: str = "22",
@@ -124,11 +146,17 @@ def create_inputs_from_gencode(
     gene_index = 0
     active_genes = []
     annotation_count = 0
+    hc_count = 0
+    annotation_block = []
 
-    with pvar_path.open() as pvar, annotation_path.open("w") as annotation:
-        # write header
+    with (
+        pvar_path.open() as pvar,
+        frequency_path.open(newline="") as frequency,
+        annotation_path.open("w") as annotation,
+    ):
+        frequency_rows = csv.DictReader(frequency, delimiter="\t")
         annotation.write(
-            "variant_key\tgene_id\tgene_symbol\tLoF\tconsequence\n"
+            "variant_key\tgene_id\tgene_symbol\tLoF\tconsequence\tMAF\n"
         )
 
         for line in pvar:
@@ -143,6 +171,18 @@ def create_inputs_from_gencode(
                 continue
 
             fields = line.rstrip().split()
+            frequency_row = next(frequency_rows)
+            variant_key = fields[id_column]
+
+            if frequency_row["ID"] != variant_key:
+                raise ValueError(
+                    f"PVAR/frequency variant mismatch: "
+                    f"{variant_key} != {frequency_row['ID']}"
+                )
+
+            alt_frequency = float(frequency_row["ALT_FREQS"])
+            maf = min(alt_frequency, 1.0 - alt_frequency)
+
             if fields[chr_column].removeprefix("chr") != chromosome:
                 continue
 
@@ -151,24 +191,53 @@ def create_inputs_from_gencode(
                 active_genes.append(genes[gene_index])
                 gene_index += 1
 
-
             active_genes = [
                 gene for gene in active_genes if pos <= gene[1]
             ]
-            variant_key = fields[id_column]
 
-            # for annotation, assume all annot == HC for test
             for _, _, gene_id, gene_symbol in active_genes:
-                # for test, set LoF == "HC"
-                # randomly assign consequence= "missense_variant" or "synonymous_variant"
-                consequence = rng.choice(["missense_variant", "synonymous_variant"])
-                annotation.write(
-                    f"{variant_key}\t{gene_id}\t{gene_symbol}\tHC\t{consequence}\n"
+                consequence = rng.choice(
+                    ["missense_variant", "synonymous_variant"]
+                )
+                annotation_block.append(
+                    (variant_key, gene_id, gene_symbol, consequence, maf)
                 )
                 annotation_count += 1
 
+                # to set LoF=HC for only 1%,
+                # we can just set it for 1 out of every 100 variants
+                if len(annotation_block) == 100:
+                    hc_index = rng.randrange(100)
+
+                    for index, row in enumerate(annotation_block):
+                        (
+                            key,
+                            row_gene_id,
+                            row_gene_symbol,
+                            row_consequence,
+                            row_maf,
+                        ) = row
+                        lof = "HC" if index == hc_index else "LC"
+                        annotation.write(
+                            f"{key}\t{row_gene_id}\t{row_gene_symbol}\t"
+                            f"{lof}\t{row_consequence}\t{row_maf}\n"
+                        )
+
+                    annotation_block.clear()
+                    hc_count += 1
+
+        for key, gene_id, gene_symbol, consequence, maf in annotation_block:
+            annotation.write(
+                f"{key}\t{gene_id}\t{gene_symbol}\t"
+                f"LC\t{consequence}\t{maf}\n"
+            )
+
     print(f"created: {gene_panel_path}, ({len(genes)} genes)")
-    print(f"created: {annotation_path}, ({annotation_count} annotations )")
+    print(
+        f"created: {annotation_path}, "
+        f"({annotation_count} annotations, "
+        f"{hc_count} HC, {annotation_count - hc_count} LC)"
+    )
     return gene_panel_path, annotation_path
 
     
