@@ -18,6 +18,7 @@ type gvLocalGene struct {
 type gvGeneValues struct {
 	wGtxSquare   *mat.Dense
 	privateXtb   []float64
+	burdenXtb    []float64
 	burdenCross  []float64
 	burdenSquare float64
 }
@@ -31,6 +32,7 @@ type gvPhenoValues struct {
 type gvGeneShares struct {
 	wGtxSquare   mpc_core.RMat
 	privateXtb   mpc_core.RVec
+	burdenXtb    mpc_core.RVec
 	burdenCross  mpc_core.RVec
 	burdenSquare mpc_core.RElem
 }
@@ -80,26 +82,38 @@ func computeLocalGvGeneTerms(
 		counts[variant] = mat.Sum(privateGenotypes.ColView(variant))
 	}
 	signedWeight := privateSignedWeights(counts, totalSampleCount)
+	invN := 1 / float64(totalSampleCount)
+	invSqrtN := 1 / math.Sqrt(float64(totalSampleCount))
+	normalizedWeight := make([]float64, len(signedWeight))
+	for variant, weight := range signedWeight {
+		normalizedWeight[variant] = weight * invSqrtN
+	}
 
 	gtx := new(mat.Dense)
 	gtx.Mul(privateGenotypes.T(), x)
-	wGtx := scaleDenseRows(gtx, signedWeight)
+	wGtx := scaleDenseRows(gtx, normalizedWeight)
 
 	wGtxSquare := new(mat.Dense)
 	wGtxSquare.Mul(wGtx.T(), wGtx)
 	privateXtb := denseColumnSums(wGtx)
+	burdenXtb := append([]float64(nil), privateXtb...)
+	for covariate := range burdenXtb {
+		burdenXtb[covariate] *= invSqrtN
+	}
 
 	var cross *mat.Dense
 	burdenCross := make([]float64, publicVariantCount)
 	if publicVariantCount > 0 {
 		cross = new(mat.Dense)
 		cross.Mul(publicGenotypes.T(), privateGenotypes)
+		cross.Scale(invN, cross)
 		cross = scaleDenseColumns(cross, signedWeight)
 		burdenCross = denseRowSums(cross)
 	}
 
 	gvGtG := new(mat.Dense)
 	gvGtG.Mul(privateGenotypes.T(), privateGenotypes)
+	gvGtG.Scale(invN, gvGtG)
 	wGvGtG := scaleDenseColumns(gvGtG, signedWeight)
 	wGvGtG = scaleDenseRows(wGvGtG, signedWeight)
 
@@ -111,6 +125,7 @@ func computeLocalGvGeneTerms(
 		}, gvGeneValues{
 			wGtxSquare:   wGtxSquare,
 			privateXtb:   privateXtb,
+			burdenXtb:    burdenXtb,
 			burdenCross:  burdenCross,
 			burdenSquare: mat.Sum(wGvGtG),
 		}
@@ -165,6 +180,7 @@ func ComputeGvPhenoTerms(
 	*/
 	geneCount := len(batch.GeneIndices)
 	covariateCount := dataParams.C
+	invSqrtN := 1 / math.Sqrt(float64(dataParams.N))
 	localPheno := make([]gvPhenoValues, geneCount)
 
 	if mpcObj.GetPid() == cohortBPartyID {
@@ -178,7 +194,8 @@ func ComputeGvPhenoTerms(
 			wGty := make([]float64, privateVariantCount)
 			for variant := range wGty {
 				gty := mat.Dot(privateGenotypes.ColView(variant), y0)
-				wGty[variant] = gvLocal[position].signedWeight[variant] * gty
+				wGty[variant] =
+					gvLocal[position].signedWeight[variant] * gty * invSqrtN
 			}
 
 			wGtySquare := 0.0
@@ -220,10 +237,12 @@ func AssembleGvQL(
 	/*
 		For each gene g and current phenotype t:
 
-		Q[g,t] = wGtySquare[g,t]
-		         - 2 * Dot(wGtxGty[g,t], beta[:,t])
-		         + Dot(beta[:,t], wGtxSquare[g] * beta[:,t])
-		L[g,t] = wGtySum[g,t] - Dot(PrivateXtb[g], beta[:,t])
+			Q[g,t] = wGtySquare[g,t]
+			         - 2 * Dot(wGtxGty[g,t], beta[:,t])
+			         + Dot(beta[:,t], wGtxSquare[g] * beta[:,t])
+			L[g,t] = wGtySum[g,t] - Dot(PrivateXtb[g], beta[:,t])
+
+			Q is normalized by N and L by sqrt(N).
 	*/
 	geneCount := len(gvPheno.wGtySquare)
 	covariateCount := len(beta)
@@ -292,12 +311,13 @@ func packGvGeneValues(
 	/*
 		For each gene g, serialize the public-shape tuple:
 
-		(wGtxSquare[g], PrivateXtb[g], BurdenCross[g], BurdenSquare[g])
+			(wGtxSquare[g], PrivateXtb[g], BurdenXtb[g],
+			 BurdenCross[g], BurdenSquare[g])
 	*/
 	covariateCount := dataParams.C
 	sharedLength := 0
 	for _, geneIndex := range batch.GeneIndices {
-		sharedLength += covariateCount*covariateCount + covariateCount
+		sharedLength += covariateCount*covariateCount + 2*covariateCount
 		sharedLength += dataParams.Genes[geneIndex].VariantCount + 1
 	}
 	packed := make([]float64, sharedLength)
@@ -314,6 +334,8 @@ func packGvGeneValues(
 		offset += covariateCount * covariateCount
 
 		copy(packed[offset:], values.privateXtb)
+		offset += covariateCount
+		copy(packed[offset:], values.burdenXtb)
 		offset += covariateCount
 		copy(packed[offset:], values.burdenCross)
 		offset += dataParams.Genes[geneIndex].VariantCount
@@ -365,6 +387,8 @@ func unpackGvGeneShares(
 		}
 		privateXtb := shared[offset : offset+covariateCount].Copy()
 		offset += covariateCount
+		burdenXtb := shared[offset : offset+covariateCount].Copy()
+		offset += covariateCount
 		burdenCross := shared[offset : offset+publicVariantCount].Copy()
 		offset += publicVariantCount
 		burdenSquare := shared[offset].Copy()
@@ -373,6 +397,7 @@ func unpackGvGeneShares(
 		gvGene[position] = gvGeneShares{
 			wGtxSquare:   wGtxSquare,
 			privateXtb:   privateXtb,
+			burdenXtb:    burdenXtb,
 			burdenCross:  burdenCross,
 			burdenSquare: burdenSquare,
 		}

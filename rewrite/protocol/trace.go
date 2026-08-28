@@ -45,14 +45,15 @@ func prepareLocalPrivateTraceTerms(
 	x *mat.Dense,
 	privateSignedWeight []float64,
 	correctionProbe *mat.Dense,
+	invN float64,
 ) privateTraceValues {
 	/*
 		For one gene, define:
 
-		GpGv = Transpose(Gp) * Gv
-		XGv  = Transpose(X) * Gv
-		Dv²  = Diag(privateSignedWeight²)
-		H    = Dv² * Transpose(Gv) * Gv
+			GpGv = Transpose(Gp) * Gv / N
+			XGv  = Transpose(X) * Gv / N
+			Dv²  = Diag(privateSignedWeight²)
+			H    = Dv² * Transpose(Gv) * Gv / N
 
 		C_k(A,B) = A * H^k * Dv² * Transpose(B)
 
@@ -78,9 +79,11 @@ func prepareLocalPrivateTraceTerms(
 	}
 	xGv := new(mat.Dense)
 	xGv.Mul(x.T(), gv)
+	xGv.Scale(invN, xGv)
 
 	gvGtG := new(mat.Dense)
 	gvGtG.Mul(gv.T(), gv)
+	gvGtG.Scale(invN, gvGtG)
 	h := scaleDenseRows(gvGtG, privateWeightSquared)
 
 	hSquared := new(mat.Dense)
@@ -120,6 +123,7 @@ func prepareLocalPrivateTraceTerms(
 
 	gpGv := new(mat.Dense)
 	gpGv.Mul(gp.T(), gv)
+	gpGv.Scale(invN, gpGv)
 
 	gpGvH := new(mat.Dense)
 	gpGvH.Mul(gpGv, h)
@@ -202,6 +206,7 @@ func PreparePrivateTraceTerms(
 					x,
 					gvLocal[position].signedWeight,
 					correctionProbe[position],
+					1/float64(dataParams.N),
 				)
 		}
 	}
@@ -385,7 +390,7 @@ func ComputeDelta(
 	privateTerms privateTraceShares,
 	weightSquared mpc_core.RVec,
 	theta mpc_core.RMat,
-	xtxInv mpc_core.RMat,
+	omega mpc_core.RMat,
 	delta3Action mpc_core.RMat,
 	correctionProbe *mat.Dense,
 	correctionScale float64,
@@ -400,19 +405,19 @@ func ComputeDelta(
 	rtype := mpcObj.GetRType()
 	dataBits := mpcObj.GetDataBits()
 	fracBits := mpcObj.GetFracBits()
-	covariateCount, _ := xtxInv.Dims()
+	covariateCount, _ := omega.Dims()
 
 	// *************************
 	// 1. Compute privateTrace1, privateTrace2, and privateTrace3.
 	// *************************
-	// JQk = XTXInv * c_kXX
-	jQ0 := mpcObj.SSMultMat(xtxInv, privateTerms.c0XX)
+	// JQk = omega * c_kXX
+	jQ0 := mpcObj.SSMultMat(omega, privateTerms.c0XX)
 	jQ0 = mpcObj.TruncMat(jQ0, dataBits, fracBits)
 
-	jQ1 := mpcObj.SSMultMat(xtxInv, privateTerms.c1XX)
+	jQ1 := mpcObj.SSMultMat(omega, privateTerms.c1XX)
 	jQ1 = mpcObj.TruncMat(jQ1, dataBits, fracBits)
 
-	jQ2 := mpcObj.SSMultMat(xtxInv, privateTerms.c2XX)
+	jQ2 := mpcObj.SSMultMat(omega, privateTerms.c2XX)
 	jQ2 = mpcObj.TruncMat(jQ2, dataBits, fracBits)
 
 	// Compute the traces of JQ0, JQ1, JQ2, JQ0^2, JQ1JQ0, and JQ0^3.
@@ -531,12 +536,12 @@ func ComputeDelta(
 	// 4. Compute diag1.
 	// *************************
 	// diag1 = c1GpGpDiag
-	//       - Diag(c0GpX * xtxInv * Transpose(c0GpX))
-	//       - 2*Diag((c1GpX - c0GpX * xtxInv * c0XX) * Transpose(theta))
-	//       + Diag(theta * (c1XX - c0XX * xtxInv * c0XX) * Transpose(theta))
+	//       - Diag(c0GpX * omega * Transpose(c0GpX))
+	//       - 2*Diag((c1GpX - c0GpX * omega * c0XX) * Transpose(theta))
+	//       + Diag(theta * (c1XX - c0XX * omega * c0XX) * Transpose(theta))
 	p0J := mpcObj.SSMultMat(
 		privateTerms.c0GpX,
-		xtxInv,
+		omega,
 	)
 	p0J = mpcObj.TruncMat(
 		p0J,
@@ -762,10 +767,10 @@ func ApplyGtG(
 	rhsCount int,
 ) []mpc_core.RMat {
 	/*
-		Compute pooledGtG * rightMatrix using packed HE.
+		Compute normalized pooledGtG * rightMatrix using packed HE.
 
 		Inputs:
-		    localGtG[position]   = local Transpose(Gp) * Gp
+		    localGtG[position]   = local Transpose(Gp) * Gp / N
 		    rightMatrix[position] = shared right-hand-side matrix
 		    rhsCount             = number of right-hand-side columns
 
@@ -793,7 +798,7 @@ func ApplyGtG(
 
 		Output:
 		    gtgRightMatrix[position]
-		        = pooledGtG[position] * rightMatrix[position]
+		        = (pooledGtG[position] / N) * rightMatrix[position]
 	*/
 	slots := cryptoParams.Slots
 	nu := slots / batch.W
@@ -1023,10 +1028,10 @@ func PublicGtGAction(
 	rhsCount int,
 ) []mpc_core.RMat {
 	/*
-		Compute pooledGtG * rightMatrix.
+		Compute normalized pooledGtG * rightMatrix.
 
 		Inputs:
-		    localGtG   = cohort-local Transpose(Gp) * Gp
+		    localGtG   = cohort-local Transpose(Gp) * Gp / N
 		    rightMatrix = shared right-hand-side matrices
 		    rhsCount    = number of right-hand-side columns
 
@@ -1036,7 +1041,7 @@ func PublicGtGAction(
 
 		2. Compute the same semantic action:
 		    gtgRightMatrix
-		        = pooledGtG * rightMatrix
+		        = (pooledGtG / N) * rightMatrix
 
 		Output:
 		    shared gtgRightMatrix
@@ -1076,7 +1081,7 @@ func ComputeGeneBatchKernelStatistics(
 	localGtG []*mat.Dense,
 	gvLocal []gvLocalGene,
 	gvGene []gvGeneShares,
-	xtxInv mpc_core.RMat,
+	omega mpc_core.RMat,
 	weight []mpc_core.RVec,
 	signedWeight []mpc_core.RVec,
 	seed int64,
@@ -1091,20 +1096,20 @@ func ComputeGeneBatchKernelStatistics(
 		    localGtx, localGtG, gvLocal, gvGene
 
 		For each gene:
-		    pooledGtx = Transpose(Gp[A]) * X[A] + Transpose(Gp[B]) * X[B]
-		    pooledGtG = Transpose(Gp[A]) * Gp[A] + Transpose(Gp[B]) * Gp[B]
+		    pooledGtx = (Transpose(Gp[A]) * X[A] + Transpose(Gp[B]) * X[B]) / N
+		    pooledGtG = (Transpose(Gp[A]) * Gp[A] + Transpose(Gp[B]) * Gp[B]) / N
 
-		    S1 = Trace(K)
-		    S2 = Trace(K²)
-		    S3 = Trace(K³)
-		    V  = Burden variance
+		    S1 = Trace(K/N)
+		    S2 = Trace((K/N)²)
+		    S3 = Trace((K/N)³)
+		    V  = Burden variance / N
 
 		Outputs V, S1, S2, S3 remain secret-shared and use batch order.
 	*/
 	geneCount := len(batch.GeneIndices)
 
 	// 1. Share pooledGtx.
-	// pooledGtx = Transpose(Gp[A]) * X[A] + Transpose(Gp[B]) * X[B]
+	// pooledGtx = (Transpose(Gp[A]) * X[A] + Transpose(Gp[B]) * X[B]) / N
 	pooledGtx := SharePooledGtx(mpcObj, dataParams, batch, localGtx)
 
 	// 2. Share diagGtG.
@@ -1147,11 +1152,13 @@ func ComputeGeneBatchKernelStatistics(
 	// 3. Compute S1, S2, S3 and reuse the first GtG action for gtgWeight.
 	geneBatchS1, geneBatchS2, geneBatchS3, gtgWeight := ComputeKernelTraces(
 		mpcObj, heParams, dataParams, cryptoParams, batch, gp, gv, x, gvLocal,
-		localGtG, pooledGtx, diagGtG, xtxInv, weight, signedWeight, seed,
+		localGtG, pooledGtx, diagGtG, omega, weight, signedWeight, seed,
 	)
 
-	// 4. Compute the Burden variance using gtgWeight = pooledGtG * signedWeight.
-	geneBatchV = ComputeBurdenVariance(mpcObj, batch, pooledGtx, signedWeight, gtgWeight, gvGene, xtxInv)
+	// 4. Compute the normalized Burden variance using gtgWeight = pooledGtG * signedWeight.
+	geneBatchV = ComputeBurdenVariance(
+		mpcObj, batch, pooledGtx, signedWeight, gtgWeight, gvGene, omega,
+	)
 
 	return geneBatchV, geneBatchS1, geneBatchS2, geneBatchS3
 }
@@ -1169,7 +1176,7 @@ func ComputeKernelTraces(
 	localGtG []*mat.Dense,
 	pooledGtx []mpc_core.RMat,
 	diagGtG []mpc_core.RVec,
-	xtxInv mpc_core.RMat,
+	omega mpc_core.RMat,
 	weight []mpc_core.RVec,
 	signedWeight []mpc_core.RVec,
 	seed int64,
@@ -1211,7 +1218,7 @@ func ComputeKernelTraces(
 
 	// 3. Compute theta and weightSquared for each gene.
 	//
-	// theta         = pooledGtx * xtxInv
+	// theta         = pooledGtx * omega
 	// weightSquared = weight .* weight
 	batchWeight := make([]mpc_core.RVec, geneCount)
 	batchSignedWeight := make([]mpc_core.RVec, geneCount)
@@ -1226,7 +1233,7 @@ func ComputeKernelTraces(
 			continue
 		}
 
-		theta[position] = mpcObj.SSMultMat(pooledGtx[position], xtxInv)
+		theta[position] = mpcObj.SSMultMat(pooledGtx[position], omega)
 		theta[position] = mpcObj.TruncMat(theta[position], dataBits, fracBits)
 
 		weightSquared[position] = mpcObj.SSMultElemVec(batchWeight[position], batchWeight[position])
@@ -1318,7 +1325,7 @@ func ComputeKernelTraces(
 	// 6. Split the first action and compute kProbe and basisAction.
 	// kProbe = Kpp * traceProbe
 	// basisAction = Kpp * Diag(weight) * delta3Basis
-	// gtgWeight = pooledGtG * signedWeight
+	// gtgWeight = (pooled GtG / N) * signedWeight
 	kProbe := make([]mpc_core.RMat, geneCount)
 	basisAction := make([]mpc_core.RMat, geneCount)
 	gtgWeight = make([]mpc_core.RVec, geneCount)
@@ -1452,7 +1459,7 @@ func ComputeKernelTraces(
 	for position := range batch.GeneIndices {
 		delta1[position], delta2[position], delta3[position] = ComputeDelta(
 			mpcObj, privateTerms[position], weightSquared[position], theta[position],
-			xtxInv, delta3Action[position], correctionProbe[position], probeScale[position],
+			omega, delta3Action[position], correctionProbe[position], probeScale[position],
 		)
 	}
 

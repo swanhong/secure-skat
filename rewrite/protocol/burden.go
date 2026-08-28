@@ -13,8 +13,9 @@ func ComputeLocalGtG(
 ) []*mat.Dense {
 	/*
 		For each gene g:
-		localGtG[g] = Transpose(Gp[g]) * Gp[g]
+		localGtG[g] = Transpose(Gp[g]) * Gp[g] / N
 	*/
+	invN := 1 / float64(dataParams.N)
 	localGtG := make([]*mat.Dense, len(batch.GeneIndices))
 	for position, geneIndex := range batch.GeneIndices {
 		if dataParams.Genes[geneIndex].VariantCount == 0 {
@@ -22,6 +23,7 @@ func ComputeLocalGtG(
 		}
 		localGtG[position] = new(mat.Dense)
 		localGtG[position].Mul(gp[geneIndex].T(), gp[geneIndex])
+		localGtG[position].Scale(invN, localGtG[position])
 	}
 	return localGtG
 }
@@ -35,8 +37,8 @@ func SharePooledGtx(
 	/*
 		For each gene g:
 		pooledGtx[g]
-		    = Transpose(Gp[A,g]) * X[A]
-		    + Transpose(Gp[B,g]) * X[B]
+		    = (Transpose(Gp[A,g]) * X[A]
+		       + Transpose(Gp[B,g]) * X[B]) / N
 		The pooled result remains secret-shared.
 	*/
 	shapes := make([][2]int, len(batch.GeneIndices))
@@ -46,7 +48,9 @@ func SharePooledGtx(
 			dataParams.C,
 		}
 	}
-	return shareDenseMatrices(mpcObj, localGtx, shapes)
+	return shareDenseMatrices(
+		mpcObj, localGtx, shapes, 1/float64(dataParams.N),
+	)
 }
 
 func PublicGtGActionExact(
@@ -59,8 +63,8 @@ func PublicGtGActionExact(
 	/*
 		For each gene g and shared right-hand side R[g]:
 		pooledGtG[g]
-		    = Transpose(Gp[A,g]) * Gp[A,g]
-		    + Transpose(Gp[B,g]) * Gp[B,g]
+		    = (Transpose(Gp[A,g]) * Gp[A,g]
+		       + Transpose(Gp[B,g]) * Gp[B,g]) / N
 		gtgRight[g] = pooledGtG[g] * R[g]
 	*/
 	shapes := make([][2]int, len(batch.GeneIndices))
@@ -68,7 +72,7 @@ func PublicGtGActionExact(
 		variantCount := dataParams.Genes[geneIndex].VariantCount
 		shapes[position] = [2]int{variantCount, variantCount}
 	}
-	pooledGtG := shareDenseMatrices(mpcObj, localGtG, shapes)
+	pooledGtG := shareDenseMatrices(mpcObj, localGtG, shapes, 1)
 
 	gtgRightMatrix := make([]mpc_core.RMat, len(batch.GeneIndices))
 	for position, geneIndex := range batch.GeneIndices {
@@ -91,7 +95,7 @@ func ComputeBurdenQuadratic(
 ) mpc_core.RElem {
 	/*
 		For one gene g, with w = signedWeight:
-		gtgWeight = (Transpose(Gp) * Gp) * w
+		gtgWeight = (Transpose(Gp) * Gp / N) * w
 		quadratic
 		    = Dot(w, gtgWeight)
 		    + 2 * Dot(w, BurdenCross)
@@ -107,18 +111,20 @@ func ComputeBurdenProjectionTerm(
 	mpcObj *mpc.MPC,
 	pooledGtx mpc_core.RMat,
 	signedWeight mpc_core.RVec,
-	privateXtb mpc_core.RVec,
-	xtxInv mpc_core.RMat,
+	privateBurdenXtb mpc_core.RVec,
+	omega mpc_core.RMat,
 ) mpc_core.RElem {
 	/*
 		For one gene g, with w = signedWeight:
 
-		xtb = Transpose(pooledGtx) * w + privateXtb
-		projection = Dot(xtb, xtxInv * xtb)
+		xtb = Transpose(pooledGtx) * w + privateBurdenXtb
+		projection = Dot(xtb, omega * xtb)
 
-		This equals b^T X (X^T X)^-1 X^T b
+		With pooledGtx and privateBurdenXtb at 1/N and
+		omega = N * (X^T X)^-1, this equals
+		b^T X (X^T X)^-1 X^T b / N.
 	*/
-	xtb := privateXtb.Copy()
+	xtb := privateBurdenXtb.Copy()
 	if len(signedWeight) > 0 {
 		publicXtb := mpcObj.SSMultMat(
 			pooledGtx.Transpose(), burdenColumn(mpcObj, signedWeight),
@@ -131,7 +137,7 @@ func ComputeBurdenProjectionTerm(
 		}
 	}
 
-	projected := mpcObj.SSMultMat(xtxInv, burdenColumn(mpcObj, xtb))
+	projected := mpcObj.SSMultMat(omega, burdenColumn(mpcObj, xtb))
 	projected = mpcObj.TruncMat(
 		projected, mpcObj.GetDataBits(), mpcObj.GetFracBits(),
 	)
@@ -149,7 +155,7 @@ func ComputeBurdenVariance(
 	signedWeight []mpc_core.RVec,
 	gtgWeight []mpc_core.RVec,
 	gvGene []gvGeneShares,
-	xtxInv mpc_core.RMat,
+	omega mpc_core.RMat,
 ) mpc_core.RVec {
 	/*
 		For each gene g:
@@ -165,7 +171,7 @@ func ComputeBurdenVariance(
 		)
 		projection := ComputeBurdenProjectionTerm(
 			mpcObj, pooledGtx[position], signedWeight[geneIndex],
-			gvGene[position].privateXtb, xtxInv,
+			gvGene[position].burdenXtb, omega,
 		)
 		geneBatchV[position] = quadratic.Sub(projection)
 	}
@@ -184,6 +190,7 @@ func shareDenseMatrices(
 	mpcObj *mpc.MPC,
 	localMatrices []*mat.Dense,
 	shapes [][2]int,
+	scale float64,
 ) []mpc_core.RMat {
 	/*
 		For each batch position:
@@ -206,7 +213,7 @@ func shareDenseMatrices(
 		for position, shape := range shapes {
 			for row := 0; row < shape[0]; row++ {
 				for column := 0; column < shape[1]; column++ {
-					values[offset] = localMatrices[position].At(row, column)
+					values[offset] = scale * localMatrices[position].At(row, column)
 					offset++
 				}
 			}

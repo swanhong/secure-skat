@@ -15,6 +15,8 @@ The target workflow runs directly from a local terminal or an All of Us (AoU) Re
 3. Run R::SKAT on the same secure inputs
         ↓
 4. Compare the secure and R results
+        ↓
+5. Plot the comparison results
 ```
 
 ## Implementation status
@@ -26,9 +28,9 @@ The target workflow runs directly from a local terminal or an All of Us (AoU) Re
 | 2 | `secure-rvas run` | Implemented and validated with three local parties |
 | 3 | `run_reference.py` | Implemented for all configured chromosomes |
 | 4 | `compare_results.py` | Implemented with a one-to-one secure/R join |
+| 5 | `plot_results.py` | Implemented for scatter and Manhattan plots |
 
-The complete local terminal workflow is available. Scatter and Manhattan plot
-generation is not implemented yet and remains the next analysis step.
+The complete local terminal workflow is available.
 
 ## Step 0: Generate 1000 Genomes test data
 
@@ -247,6 +249,9 @@ fixture and do not indicate command failure.
 ```bash
 python3 rewrite/analysis/compare_results.py \
   --config run.1kg.conf
+
+python3 rewrite/analysis/plot_results.py \
+  --config run.1kg.conf
 ```
 
 The comparison requires a one-to-one match on chromosome, gene index, gene ID,
@@ -300,31 +305,32 @@ nohup go run -mod=vendor secure-rvas.go run \
   --config run.1kg.conf > run-1kg.log 2>&1 &
 ```
 
-Run the R reference and comparison after `secure/_SUCCESS` appears.
+Run the R reference, comparison, and plots after `secure/_SUCCESS` appears.
 
 ## Current end-to-end validation
 
-The command sequence above was validated from Step 0 through Step 4 on the
-current chromosome 21/22 fixture. It produced five genes per chromosome and two
-phenotypes, for 20 rows in each combined result file. All three success markers
-were created.
+The secure and R workflow was validated on chromosomes 21 and 22 with 20 genes
+per chromosome, two phenotypes, and 1,200 samples per cohort, for 80 comparison
+rows.
 
 The current run reported:
 
-- maximum Burden absolute difference: `3.13e-8`;
-- maximum secure WH versus R-Liu absolute difference among nondegenerate rows:
-  `0.0388124`;
-- 14 degenerate gene-phenotype rows, all with R SKAT and secure SKAT `p=1`;
-- no non-finite secure p-values.
+- Burden mean/maximum absolute difference: `3.34e-6` / `1.74e-5`;
+- secure WH versus R-Liu mean/maximum absolute difference: `0.00340` / `0.03733`;
+- phenotype/chromosome-level secure WH versus R-Liu R-squared:
+  `0.999086`–`0.999903`;
+- no nondegenerate secure SKAT result incorrectly fell back to `p=1`.
+
+The `W > R` Hutchinson path was also validated with a 245-variant gene. Its two
+secure WH versus R-Liu absolute differences were `0.00206` and `0.00104`.
 
 Repeated Step 0 generation with the same inputs and seeds produced identical
 gene-panel, annotation, phenotype, and covariate file hashes. Generated local
 outputs live under `output/` and are excluded from Git.
 
-Per-chromosome secure/plain scatter plots and combined-chromosome Manhattan
-plots are the next analysis feature. AoU localization and normalization,
-ancestry-specific execution, timing and memory measurement, resume support,
-chromosome parallelism, and independent MPC lanes remain later work.
+AoU input localization/normalization, ancestry-specific execution, timing and
+memory measurement, resume support, chromosome parallelism, and independent
+MPC lanes remain later work.
 
 ## Repository layout
 

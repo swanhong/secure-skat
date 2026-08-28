@@ -109,9 +109,9 @@ func ComputeKppRight(
 	/*
 		Compute Kpp * right from inputs:
 			weightedRight = Diag(weight) * right
-		    gtgRight      = pooledGtG * weightedRight
-		    pooledGtx     = Transpose(Gp) * X
-		    theta         = pooledGtx * xtxInv
+		    gtgRight      = (pooledGtG / N) * weightedRight
+		    pooledGtx     = Transpose(Gp) * X / N
+		    theta         = pooledGtx * Omega'
 
 		1. Remove the covariate projection:
 		    mppRight
@@ -161,7 +161,7 @@ func privateTraceContraction(
 	/*
 		C_k(A,B) = A * H^k * Dv^2 * Transpose(B)
 
-		H = Dv^2 * Transpose(Gv) * Gv
+		H = Dv^2 * Transpose(Gv) * Gv / N
 	*/
 	leftTimesPower := mat.DenseCopyOf(left)
 	for exponent := 0; exponent < power; exponent++ {

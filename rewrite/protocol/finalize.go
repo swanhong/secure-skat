@@ -17,6 +17,8 @@ func Finalize(
 ) {
 	/*
 		For every gene g and phenotype t:
+		Q and V are divided by N; L is divided by sqrt(N).
+		S1, S2, and S3 are moments of K/N.
 
 		alpha[t] = (N - C) / (2 * rss[t])
 

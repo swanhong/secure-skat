@@ -146,9 +146,9 @@ func ReduceQL(
 		For each gene g and current phenotype t,
 		with variants indexed by j:
 
-		u[g,j,t] = signedWeight[g,j] * score[g,j,t]
-		L[g,t]   = Σj u[g,j,t]
-		Q[g,t]   = Σj u[g,j,t]^2
+			u[g,j,t] = signedWeight[g,j] * score[g,j,t] / sqrt(N)
+			L[g,t]   = Σj u[g,j,t]
+			Q[g,t]   = Σj u[g,j,t]^2
 	*/
 	// u = weighted score
 	var encPackedU securecrypto.CipherVector
