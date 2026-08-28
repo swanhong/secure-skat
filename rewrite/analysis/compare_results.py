@@ -28,6 +28,26 @@ OUTPUT_COLUMNS = [
     "skat_davies_abs_error",
 ]
 
+R2_COMPARISONS = [
+    (
+        "Burden",
+        "secure_burden_p",
+        "r_burden_p",
+        None,
+    ),
+    (
+        "SKAT WH vs Liu",
+        "secure_skat_wh_p",
+        "r_skat_liu_p",
+        None,
+    ),
+    (
+        "SKAT WH vs Davies",
+        "secure_skat_wh_p",
+        "r_skat_davies_p",
+        "r_skat_davies_converged",
+    ),
+]
 
 def read_rows(
     path: Path,
@@ -68,6 +88,88 @@ def absolute_error(left: str, right: str) -> str:
 
     return format(abs(left_value - right_value), ".17g")
 
+def r_squared(
+        rows: list[dict[str, str]],
+        secure_column: str,
+        reference_column: str,
+) -> tuple[int, float | None]:
+    secure_values = []
+    reference_values = []
+
+    for row in rows:
+        try:
+            secure_value = float(row[secure_column])
+            reference_value = float(row[reference_column])
+        except ValueError:
+            continue
+
+        if math.isfinite(secure_value) and math.isfinite(reference_value):
+            secure_values.append(secure_value)
+            reference_values.append(reference_value)
+
+    if len(reference_values) < 2:
+        return len(reference_values), None
+
+    reference_mean = sum(reference_values) / len(reference_values)
+    total_sum_squares = sum(
+        (value - reference_mean) ** 2 for value in reference_values
+    )
+    if total_sum_squares == 0:
+        return len(reference_values), None
+
+    residual_sum_squares = sum(
+        (secure - reference) ** 2
+        for secure, reference in zip(secure_values, reference_values)
+    )
+    return (len(reference_values), 1 - residual_sum_squares / total_sum_squares)
+
+def print_r_squared_by_pheno_and_chr(
+        rows: list[dict[str, str]],
+) -> None:
+    grouped_rows = {}
+
+    for row in rows:
+        key = (
+            int(row["phenotype_index"]),
+            row["phenotype_name"],
+            int(row["chromosome"]),
+        )
+        grouped_rows.setdefault(key, []).append(row)
+
+    print("\n=== R^2 by phenotype and chromosome ===")
+    print(
+        f"  {'phenotype':<20} {'chr':>3} "
+        f"{'comparison':<20} {'n':>5} {'R^2':>12}"
+    )
+
+    for (_, phenotype_name, chromosome), group in sorted(
+        grouped_rows.items()
+    ):
+        for (
+            label,
+            secure_column,
+            reference_column,
+            convergence_column,
+        ) in R2_COMPARISONS:
+            eligible_rows = group
+            if convergence_column is not None:
+                eligible_rows = [
+                    row
+                    for row in group
+                    if row[convergence_column] == "1"
+                ]
+
+            count, score = r_squared(
+                eligible_rows,
+                secure_column,
+                reference_column,
+            )
+            score_text = "NA" if score is None else f"{score:.6f}"
+
+            print(
+                f"  {phenotype_name:<20} {chromosome:>3} "
+                f"{label:<20} {count:>5} {score_text:>12}"
+            )
 
 def compare_results(config_path: Path) -> None:
     with config_path.open("rb") as config_file:
@@ -148,6 +250,7 @@ def compare_results(config_path: Path) -> None:
 
     success_path.touch()
     print("Wrote secure/plain comparison to", output_path)
+    print_r_squared_by_pheno_and_chr(comparison_rows)
 
 
 def main() -> None:
