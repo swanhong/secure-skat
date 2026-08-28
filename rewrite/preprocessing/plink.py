@@ -22,6 +22,7 @@ def plink_extract(
         pgen_prefix: Path,
         sample_ids: tuple[str, ...],
         variant_keys: tuple[str, ...],
+        plink2_bin: str = "plink2",
 ) -> tuple[
     np.ndarray,
     tuple[str, ...],
@@ -61,7 +62,7 @@ def plink_extract(
         )
 
         completed = subprocess.run([
-                "plink2",
+                plink2_bin,
                 "--pfile", str(pgen_prefix),
                 "--keep", str(keep_path),
                 "--extract", str(extract_path),

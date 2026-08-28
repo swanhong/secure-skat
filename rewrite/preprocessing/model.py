@@ -1,4 +1,4 @@
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -72,27 +72,8 @@ class PrepInputs:
     variants: tuple[VariantRef, ...]
     annotations: tuple[AnnotationRef, ...]
     annotation_columns: tuple[str, ...]
-    phenotypes: Mapping[
-        str,
-        Mapping[str, float],
-    ]
-    covariates: Mapping[
-        str,
-        Mapping[str, float],
-    ]
-
 
 @dataclass(frozen=True)
-class PrepOptions:
-    chromosome: str
-    gene_selection: Collection[str] | Literal["all"]
-    mask: Mapping[
-        str,
-        str | Collection[str],
-    ]
-    phenotype_columns: tuple[str, ...]
-    covariate_columns: tuple[str, ...]
-    samples_per_cohort: int | Literal["all"]
-    sample_seed: int
-    role_seed: int
-    out_dir: Path
+class SampleInputs:
+    phenotypes: Mapping[str, Mapping[str, float]]
+    covariates: Mapping[str, Mapping[str, float]]

@@ -13,8 +13,6 @@ from .model import (
     PhenoCovRows,
     VariantRef,
     GenePlan,
-    PrepInputs,
-    PrepOptions,
 )
 
 from .output import write_outputs
@@ -315,6 +313,11 @@ def select_rows(
     samples_per_cohort: int | Literal["all"],
     sample_seed: int=42,
 ) -> tuple[PhenoCovRows, PhenoCovRows]:
+    print("Selecting rows for cohorts")
+    print("  phenotype columns:", ", ".join(phenotype_columns))
+    print("  covariate columns:", ", ".join(covariate_columns))
+    print("  samples per cohort:", samples_per_cohort)
+    print("  sample seed:", sample_seed)
     # filter samples
     #   - have both have both phenotypes and covariates,
     #   - all values are finite (not nan, inf, -inf, ...)
@@ -397,33 +400,17 @@ def select_rows(
     return rows_a, rows_b
 
 def prepare_blocks(
-        inputs: PrepInputs,
-        options: PrepOptions,
+        pgen_prefix: Path,
+        gene_variants: Sequence[GeneVariants],
+        rows_a: PhenoCovRows,
+        rows_b: PhenoCovRows,
+        role_seed: int,
+        out_dir: Path,
         extractor: GenotypeExtractor = plink_extract,
 ) -> Path:
-    gene_variants = select_gene_variants(
-        gene_panel=inputs.gene_panel,
-        variants=inputs.variants,
-        annotations=inputs.annotations,
-        annotation_columns=inputs.annotation_columns,
-        chromosome=options.chromosome,
-        gene_selection=options.gene_selection,
-        mask=options.mask,
-    )
-
-    rows_a, rows_b = select_rows(
-        psam_ids=inputs.psam_ids,
-        phenotypes=inputs.phenotypes,
-        covariates=inputs.covariates,
-        phenotype_columns=options.phenotype_columns,
-        covariate_columns=options.covariate_columns,
-        samples_per_cohort=options.samples_per_cohort,
-        sample_seed=options.sample_seed,
-    )
-
     plans = assign_roles(
         gene_variants=gene_variants,
-        role_seed=options.role_seed,
+        role_seed=role_seed,
     )
 
     (
@@ -433,7 +420,7 @@ def prepare_blocks(
         geno_b,
         key_column_b,
     ) = extract_genotypes(
-        pgen_prefix=inputs.pgen_prefix,
+        pgen_prefix=pgen_prefix,
         rows_a=rows_a,
         rows_b=rows_b,
         plans=plans,
@@ -452,7 +439,7 @@ def prepare_blocks(
         blocks=blocks,
         rows_a=rows_a,
         rows_b=rows_b,
-        out_dir=options.out_dir,
+        out_dir=out_dir,
     )
 
-    return options.out_dir
+    return out_dir

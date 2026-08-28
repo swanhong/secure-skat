@@ -1,6 +1,21 @@
+import csv
 from pathlib import Path
 import numpy as np
-from .model import GeneBlock, PhenoCovRows
+from .model import GeneBlock, GeneRef, PhenoCovRows
+
+def write_selected_genes(
+        path: Path,
+        genes: tuple[GeneRef, ...],
+) -> None:
+    with path.open("x", newline="") as file:
+        writer = csv.writer(
+            file,
+            delimiter="\t",
+            lineterminator="\n",
+        )
+        writer.writerow(("gene_id", "gene_symbol", "chromosome", "order_index"))
+        for gene in genes:
+            writer.writerow((gene.gene_id, gene.gene_symbol, gene.chromosome, str(gene.order_index)))
 
 def write_outputs(
     out_dir: Path,

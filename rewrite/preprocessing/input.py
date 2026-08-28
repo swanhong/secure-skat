@@ -6,6 +6,7 @@ from .model import (
     GeneRef,
     VariantRef,
     PrepInputs,
+    SampleInputs,
 )
 
 MISSING_VALUES = {"", "NA", "NaN", "nan", ".", None}
@@ -114,6 +115,7 @@ def read_annotations(
 def read_sample_table(
     table_path: Path,
     delimiter: str,
+    id_column: str,
 ) -> dict[str, dict[str, float]]:
     with table_path.open(newline="") as file:
         reader = csv.DictReader(
@@ -122,15 +124,19 @@ def read_sample_table(
         )
         if not reader.fieldnames:
             raise ValueError(f"no header in {table_path}")
+        if id_column not in reader.fieldnames:
+            raise ValueError(
+                f"missing {id_column} column in {table_path}"
+            )
 
         value_columns = tuple(
             column
             for column in reader.fieldnames
-            if column != "IID"
+            if column != id_column
         )
 
         return {
-            row["IID"]: {
+            row[id_column]: {
                 column: (
                     float("nan")
                     if row[column] in MISSING_VALUES
@@ -141,13 +147,33 @@ def read_sample_table(
             for row in reader
         }
 
+def load_sample_inputs(
+    phenotype_path: Path,
+    covariate_path: Path,
+    phenotype_id_column: str,
+    covariate_id_column: str,
+) -> SampleInputs:
+    print("Loading sample inputs")
+    print(f"  phenotype: {phenotype_path}")
+    print(f"  covariate: {covariate_path}")
+    return SampleInputs(
+        phenotypes=read_sample_table(
+            phenotype_path,
+            delimiter=",",
+            id_column=phenotype_id_column,
+        ),
+        covariates=read_sample_table(
+            covariate_path,
+            delimiter="\t",
+            id_column=covariate_id_column,
+        ),
+    )
+
 def load_inputs(
     pgen_prefix: Path,
     gene_panel_path: Path,
     annotation_path: Path,
-    phenotype_path: Path,
-    covariate_path: Path,
-) -> PrepInputs:
+) -> PrepInputs:    
     pvar_path = Path(f"{pgen_prefix}.pvar")
     psam_path = Path(f"{pgen_prefix}.psam")
 
@@ -162,12 +188,4 @@ def load_inputs(
         variants=read_pvar(pvar_path),
         annotations=annotations,
         annotation_columns=annotation_columns,
-        phenotypes=read_sample_table(
-            phenotype_path,
-            delimiter=",",
-        ),
-        covariates=read_sample_table(
-            covariate_path,
-            delimiter="\t",
-        ),
     )
