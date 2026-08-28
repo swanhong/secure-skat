@@ -217,6 +217,7 @@ def select_gene_variants(
         chromosome: str,
         gene_selection: Collection[str] | Literal["all"],
         mask: Mapping[str, str | Collection[str]],
+        max_maf: float | None
 ) -> tuple[GeneVariants, ...]:
     """Select variants for genes in a gene panel.
 
@@ -229,6 +230,7 @@ def select_gene_variants(
         gene_selection: Gene IDs to select. If "all", all genes are selected.
         mask: chosen annotation values to filter on.
             input example: {"LoF": "HC", "consequence": {"missense_variant", "stop_gained"}}
+        max_maf: Maximum minor allele frequency to filter variants. If None, no filtering is applied.
 
     Returns:
         A tuple of GeneVariants objects
@@ -236,6 +238,9 @@ def select_gene_variants(
     for column in mask:
         if column not in annotation_columns:
             raise ValueError(f"mask column not found: {column}")
+
+    if max_maf is not None and "MAF" not in annotation_columns:
+        raise ValueError("MAF not found")
 
     accepted_values_by_column = {
         column: (
@@ -293,6 +298,8 @@ def select_gene_variants(
                 annotation.values[column] not in accepted_values
                 for column, accepted_values in accepted_values_by_column.items()
             ):
+                continue
+            if max_maf is not None and float(annotation.values["MAF"]) > max_maf:
                 continue
             variants_by_gene[annotation.gene_id].append(variant)
 

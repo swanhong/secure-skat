@@ -32,6 +32,7 @@ type prepareRequest struct {
 	PhenotypeColumns  []string          `json:"phenotype_columns"`
 	CovariateColumns  []string          `json:"covariate_columns"`
 	Mask              map[string]string `json:"mask"`
+	MaxMAF            *float64          `json:"max_maf"`
 
 	SamplesPerCohort int64 `json:"samples_per_cohort"`
 	SampleSeed       int64 `json:"sample_seed"`
@@ -61,6 +62,7 @@ func prepareRequestFromConfig(config *Config) prepareRequest {
 		PhenotypeColumns:  config.PhenotypeColumns,
 		CovariateColumns:  config.CovariateColumns,
 		Mask:              mask,
+		MaxMAF:            config.MaxMAF,
 		SamplesPerCohort:  config.SamplesPerCohort,
 		SampleSeed:        config.SampleSeed,
 		RoleSeed:          config.RoleSeed,

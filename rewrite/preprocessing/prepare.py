@@ -54,6 +54,7 @@ class PrepareRequest:
     phenotype_columns: tuple[str, ...]
     covariate_columns: tuple[str, ...]
     mask: Mapping[str, str | Collection[str]]
+    max_maf: float | None
 
     samples_per_cohort: int
     sample_seed: int
@@ -79,6 +80,7 @@ def select_gene_groups(
     inputs: PrepInputs,
     chromosome: int,
     mask: Mapping[str, str | Collection[str]],
+    max_maf: float | None,
     file_genes: Collection[GeneRef],
 ) -> tuple[GeneVariants, ...]:
     chromosome_name = str(chromosome)
@@ -92,6 +94,7 @@ def select_gene_groups(
             chromosome=chromosome_name,
             gene_selection="all",
             mask=mask,
+            max_maf=max_maf,
         )
         return select_random_gene_groups(
             gene_groups=all_groups,
@@ -209,6 +212,7 @@ def prepare_chromosomes(
             inputs=inputs,
             chromosome=chromosome,
             mask=request.mask,
+            max_maf=request.max_maf,
             file_genes=file_genes,
         )
         chromosome_genes = tuple(
@@ -260,6 +264,7 @@ def read_prepare_request(
         phenotype_columns=tuple(payload["phenotype_columns"]),
         covariate_columns=tuple(payload["covariate_columns"]),
         mask=payload["mask"],
+        max_maf=payload["max_maf"],
         samples_per_cohort=payload["samples_per_cohort"],
         sample_seed=payload["sample_seed"],
         role_seed=payload["role_seed"],

@@ -24,6 +24,7 @@ type Config struct {
 	PhenotypeColumns     []string `toml:"phenotype_columns"`
 	CovariateColumns     []string `toml:"covariate_columns"`
 	Masks                []string `toml:"masks"`
+	MaxMAF               *float64 `toml:"max_maf"`
 
 	SamplesPerCohort int64 `toml:"samples_per_cohort"`
 	SampleSeed       int64 `toml:"sample_seed"`
@@ -148,6 +149,11 @@ func ValidateConfig(config *Config) error {
 			return fmt.Errorf("duplicate mask column %q", column)
 		}
 		seenMaskColumns[column] = true
+	}
+
+	if config.MaxMAF != nil &&
+		(*config.MaxMAF < 0 || *config.MaxMAF > 0.5) {
+		return fmt.Errorf("max_maf must be between 0 and 0.5")
 	}
 
 	if config.SamplesPerCohort < 0 {
