@@ -57,12 +57,17 @@ compute_skat_pvalues <- function(genotype, null_model) {
     r.corr = 0
   )
 
-  # 4. Return only the comparison outputs.
+  # 4. Preserve missing convergence for degenerate genes
+  davies_converged <- skat_davies$param$Is_Converged
+  if (length(davies_converged) == 0) {
+    davies_converged <- NA_integer_
+  }
+
+  # 5. Return only the comparison outputs.
   list(
     burden_p = burden$p.value,
     skat_davies_p = skat_davies$p.value,
-    skat_davies_converged =
-      skat_davies$param$Is_Converged,
+    skat_davies_converged = davies_converged,
     skat_liu_p = skat_liu$p.value
   )
 }

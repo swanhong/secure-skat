@@ -141,6 +141,34 @@ func WilsonHilferty(
 		return mpcObj.TruncVec(product, dataBits, fracBits)
 	}
 
+	publicVector := func(value float64) mpc_core.RVec {
+		result := mpc_core.InitRVec(rtype.Zero(), len(s2))
+		if mpcObj.GetPid() == mpcObj.GetHubPid() {
+			result.AddScalar(rtype.FromFloat64(value, fracBits))
+		}
+		return result
+	}
+
+	// check input for invSqrt is valid
+	momentFloor := rtype.FromFloat64(math.Ldexp(1, -fracBits), fracBits)
+	momentCeil := rtype.FromFloat64(math.Ldexp(1, dataBits-fracBits-2), fracBits)
+	booleanShares := mpcObj.GetBooleanShareFlag()
+
+	s2Positive := mpcObj.NotLessThanPublic(s2, momentFloor, booleanShares)
+	s3Positive := mpcObj.NotLessThanPublic(s3, momentFloor, booleanShares)
+	s2BelowCeil := mpcObj.LessThanPublic(s2, momentCeil, booleanShares)
+
+	valid := mpcObj.SSMultElemVec(s2Positive, s3Positive)
+	valid = mpcObj.SSMultElemVec(valid, s2BelowCeil)
+
+	publicZero := publicVector(0)
+	publicOne := publicVector(1)
+
+	qStatistic = mux(mpcObj, valid, qStatistic, publicZero)
+	s1 = mux(mpcObj, valid, s1, publicZero)
+	s2 = mux(mpcObj, valid, s2, publicOne)
+	s3 = mux(mpcObj, valid, s3, publicOne)
+
 	// 1. Compute gamma = S3 / S2^(3/2).
 	_, invSqrtS2 := mpcObj.SqrtAndSqrtInverse(s2, false)
 
@@ -175,8 +203,11 @@ func WilsonHilferty(
 		)
 	}
 
+	// 5. Return z = candidateZ if valid, else -9
+	// if z=-9, then final p-value will be 1
 	_, invSqrtEta := mpcObj.SqrtAndSqrtInverse(eta, false)
-	return multiply(numerator, invSqrtEta)
+	candidateZ := multiply(numerator, invSqrtEta)
+	return mux(mpcObj, valid, candidateZ, publicVector(-9))
 }
 
 func SecureCubeRoot(
