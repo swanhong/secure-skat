@@ -76,4 +76,4 @@ class PrepInputs:
 @dataclass(frozen=True)
 class SampleInputs:
     phenotypes: Mapping[str, Mapping[str, float]]
-    covariates: Mapping[str, Mapping[str, float]]
+    covariates: Mapping[str, tuple[float, ...]]

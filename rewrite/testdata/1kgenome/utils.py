@@ -365,45 +365,6 @@ def create_inputs_from_gencode(
     )
     return gene_panel_path, annotation_path
 
-    
-def create_covariates(
-        panel_path: Path,
-        psam_path: Path,
-        out_path: Path,
-) -> Path:
-    super_populations = {}
-
-    with panel_path.open() as panel:
-        columns = next(panel).split()
-        sample_column = columns.index("sample")
-        super_pop_column = columns.index("super_pop")
-
-        for line in panel:
-            fields = line.split()
-            super_populations[fields[sample_column]] = fields[super_pop_column]
-
-    with psam_path.open() as psam:
-        columns = next(psam).lstrip("#").split()
-        iid_column = columns.index("IID")
-        sample_ids = [line.split()[iid_column] for line in psam]
-
-    # SAS is left out on purpose: it is the reference level. With all five
-    # indicators the design would be collinear with the intercept the protocol
-    # adds as column 0 of X.
-    populations = ("AFR", "AMR", "EAS", "EUR")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with out_path.open("w") as output:
-        output.write("IID\t" + "\t".join(f"superpop_{pop}" for pop in populations) + "\n")
-
-        for sample_id in sample_ids:
-            super_pop = super_populations[sample_id]
-            indicators = (str(int(super_pop==pop)) for pop in populations)
-            output.write(f"{sample_id}\t" + "\t".join(indicators) + "\n")
-
-    print(f"created: {out_path}, ({len(sample_ids)} samples)")
-    return out_path
-
 
 def create_phenotype(
     psam_path: Path,

@@ -30,8 +30,9 @@ type prepareRequest struct {
 
 	PhenotypeIDColumn string            `json:"phenotype_id_column"`
 	CovariateIDColumn string            `json:"covariate_id_column"`
+	CovariateColumn   string            `json:"covariate_column"`
 	PhenotypeColumns  []string          `json:"phenotype_columns"`
-	CovariateColumns  []string          `json:"covariate_columns"`
+	NumCov            int               `json:"num_cov"`
 	Mask              map[string]string `json:"mask"`
 	MaxMAF            *float64          `json:"max_maf"`
 
@@ -60,8 +61,9 @@ func prepareRequestFromConfig(config *Config) prepareRequest {
 		Plink2Bin:         config.Plink2Bin,
 		PhenotypeIDColumn: config.PhenotypeIDColumn,
 		CovariateIDColumn: config.CovariateIDColumn,
+		CovariateColumn:   config.CovariateColumn,
 		PhenotypeColumns:  config.PhenotypeColumns,
-		CovariateColumns:  config.CovariateColumns,
+		NumCov:            config.NumCov,
 		Mask:              mask,
 		MaxMAF:            config.MaxMAF,
 		SamplesPerCohort:  config.SamplesPerCohort,

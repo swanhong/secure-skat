@@ -92,7 +92,7 @@ func openSession(
 			NA:             nA,
 			NB:             nB,
 			N:              nA + nB,
-			C:              len(config.CovariateColumns) + 1,
+			C:              config.NumCov + 1,
 			PhenotypeCount: len(config.PhenotypeColumns),
 		}
 	}

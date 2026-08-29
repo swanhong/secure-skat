@@ -51,8 +51,9 @@ class PrepareRequest:
 
     phenotype_id_column: str
     covariate_id_column: str
+    covariate_column: str
     phenotype_columns: tuple[str, ...]
-    covariate_columns: tuple[str, ...]
+    num_cov: int
     mask: Mapping[str, str | Collection[str]]
     max_maf: float | None
 
@@ -149,6 +150,8 @@ def prepare_chromosomes(
         covariate_path=request.covariate,
         phenotype_id_column=request.phenotype_id_column,
         covariate_id_column=request.covariate_id_column,
+        covariate_column=request.covariate_column,
+        num_cov=request.num_cov,
     )
 
     if request.samples_per_cohort == 0:
@@ -197,7 +200,6 @@ def prepare_chromosomes(
                 phenotypes=sample_inputs.phenotypes,
                 covariates=sample_inputs.covariates,
                 phenotype_columns=request.phenotype_columns,
-                covariate_columns=request.covariate_columns,
                 samples_per_cohort=samples_per_cohort,
                 sample_seed=request.sample_seed,
             )
@@ -261,8 +263,9 @@ def read_prepare_request(
         plink2_bin=payload["plink2_bin"],
         phenotype_id_column=payload["phenotype_id_column"],
         covariate_id_column=payload["covariate_id_column"],
+        covariate_column=payload["covariate_column"],
         phenotype_columns=tuple(payload["phenotype_columns"]),
-        covariate_columns=tuple(payload["covariate_columns"]),
+        num_cov=payload["num_cov"],
         mask=payload["mask"],
         max_maf=payload["max_maf"],
         samples_per_cohort=payload["samples_per_cohort"],

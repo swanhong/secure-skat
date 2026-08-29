@@ -126,7 +126,6 @@ def prepare_1kgenome(root: Path, args) -> None:
         out_path=generated / "ancestry_pred.tsv",
     )
     sample_path = pgen_prefixes[0].with_suffix(".psam")
-    utils.create_covariates(panel, sample_path, generated / "covariates.tsv")
     utils.create_phenotype(
         sample_path,
         generated / "phenotype.csv",

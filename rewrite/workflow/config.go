@@ -18,13 +18,13 @@ type Config struct {
 	Phenotype  string `toml:"phenotype"`
 	Covariate  string `toml:"covariate"`
 
-	PhenotypeIDColumn    string   `toml:"phenotype_id_column"`
-	CovariateIDColumn    string   `toml:"covariate_id_column"`
-	CovariateArrayColumn string   `toml:"covariate_array_column"`
-	PhenotypeColumns     []string `toml:"phenotype_columns"`
-	CovariateColumns     []string `toml:"covariate_columns"`
-	Masks                []string `toml:"masks"`
-	MaxMAF               *float64 `toml:"max_maf"`
+	PhenotypeIDColumn string   `toml:"phenotype_id_column"`
+	CovariateIDColumn string   `toml:"covariate_id_column"`
+	CovariateColumn   string   `toml:"covariate_column"`
+	PhenotypeColumns  []string `toml:"phenotype_columns"`
+	NumCov            int      `toml:"num_cov"`
+	Masks             []string `toml:"masks"`
+	MaxMAF            *float64 `toml:"max_maf"`
 
 	SamplesPerCohort int64 `toml:"samples_per_cohort"`
 	SampleSeed       int64 `toml:"sample_seed"`
@@ -70,6 +70,7 @@ func ValidateConfig(config *Config) error {
 		{"covariate", config.Covariate},
 		{"phenotype_id_column", config.PhenotypeIDColumn},
 		{"covariate_id_column", config.CovariateIDColumn},
+		{"covariate_column", config.CovariateColumn},
 		{"ckks", config.CKKS},
 		{"plink2_bin", config.Plink2Bin},
 	}
@@ -98,35 +99,23 @@ func ValidateConfig(config *Config) error {
 		seenChromosomes[chromosome] = true
 	}
 
-	columnGroups := []struct {
-		name    string
-		columns []string
-	}{
-		{"phenotype_columns", config.PhenotypeColumns},
-		{"covariate_columns", config.CovariateColumns},
+	if len(config.PhenotypeColumns) == 0 {
+		return fmt.Errorf("phenotype_columns is required")
 	}
-	for _, group := range columnGroups {
-		// at least one column is required for pheno/cov
-		if len(group.columns) == 0 {
-			return fmt.Errorf("%s is required", group.name)
+	seenColumns := make(map[string]bool, len(config.PhenotypeColumns))
+	for _, column := range config.PhenotypeColumns {
+		column = strings.TrimSpace(column)
+		if column == "" {
+			return fmt.Errorf("phenotype_columns contains an empty value")
 		}
+		if seenColumns[column] {
+			return fmt.Errorf("duplicate phenotype_columns value %q", column)
+		}
+		seenColumns[column] = true
+	}
 
-		// check for empty or duplicate values
-		seenColumns := make(map[string]bool, len(group.columns))
-		for _, column := range group.columns {
-			column = strings.TrimSpace(column)
-			if column == "" {
-				return fmt.Errorf("%s contains an empty value", group.name)
-			}
-			if seenColumns[column] {
-				return fmt.Errorf(
-					"duplicate %s value %q",
-					group.name,
-					column,
-				)
-			}
-			seenColumns[column] = true
-		}
+	if config.NumCov < 1 {
+		return fmt.Errorf("num_cov must be positive")
 	}
 
 	if len(config.Masks) == 0 {

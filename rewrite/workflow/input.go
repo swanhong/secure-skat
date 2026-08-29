@@ -226,7 +226,7 @@ func loadPartyInput(
 		)
 		input.X, input.Y, err = readRows(
 			firstDirectory,
-			len(config.CovariateColumns),
+			config.NumCov,
 			len(config.PhenotypeColumns),
 		)
 		if err != nil {
@@ -249,7 +249,7 @@ func loadPartyInput(
 
 		dataParams := protocol.DataParams{
 			Genes:          genes,
-			C:              len(config.CovariateColumns) + 1,
+			C:              config.NumCov + 1,
 			PhenotypeCount: len(config.PhenotypeColumns),
 		}
 		cryptoParams, err := protocol.BuildCryptoParams(

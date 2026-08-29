@@ -314,22 +314,19 @@ def select_gene_variants(
 def select_rows(
     psam_ids: Sequence[str],
     phenotypes: Mapping[str, Mapping[str, float]],
-    covariates: Mapping[str, Mapping[str, float]],
+    covariates: Mapping[str, tuple[float, ...]],
     phenotype_columns: Sequence[str],
-    covariate_columns: Sequence[str],
     samples_per_cohort: int | Literal["all"],
     sample_seed: int=42,
 ) -> tuple[PhenoCovRows, PhenoCovRows]:
     print("Selecting rows for cohorts")
     print("  phenotype columns:", ", ".join(phenotype_columns))
-    print("  covariate columns:", ", ".join(covariate_columns))
     print("  samples per cohort:", samples_per_cohort)
     print("  sample seed:", sample_seed)
     # filter samples
     #   - have both have both phenotypes and covariates,
     #   - all values are finite (not nan, inf, -inf, ...)
     require_columns(phenotypes, phenotype_columns, "phenotype")
-    require_columns(covariates, covariate_columns, "covariate")
 
     eligible = []
     for sample_id in psam_ids:
@@ -340,10 +337,7 @@ def select_rows(
             phenotypes[sample_id][column]
             for column in phenotype_columns
         )
-        covariate_values = tuple(
-            covariates[sample_id][column]
-            for column in covariate_columns
-        )
+        covariate_values = covariates[sample_id]
 
         if not all(
             math.isfinite(value)

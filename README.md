@@ -137,8 +137,12 @@ rewrite/testdata/1kgenome/generated/
 ├── annotation/
 │   └── chr{chromosome}.tsv
 ├── phenotype.csv
-├── covariates.tsv
-└── work/phase3.keep
+├── ancestry_pred.tsv
+└── work/
+    ├── phase3.keep
+    └── pca/chr{chromosomes}/
+        ├── pca.eigenvec
+        └── pca.eigenval
 ```
 
 The generator enforces the following contract:
@@ -151,8 +155,10 @@ The generator enforces the following contract:
   every variant-gene row.
 - `phenotype1`, `phenotype2`, and subsequent columns contain seed-fixed
   Gaussian test phenotypes.
-- Covariates are AFR, AMR, EAS, and EUR super-population indicators. SAS is the
-  reference level to avoid collinearity with the intercept.
+- The requested chromosome PGENs are merged, filtered with `--maf 0.05` and
+  `--geno 0.02`, LD-pruned, and used for a 16-component PLINK2 PCA.
+- `ancestry_pred.tsv` combines those PC scores with 1000 Genomes super-population
+  labels in the five-column AoU ancestry-table format.
 
 The annotation is a synthetic protocol-testing fixture. It uses overlaps
 between PVAR variants and GENCODE genes and real frequencies computed from the
@@ -174,6 +180,16 @@ go run -mod=vendor secure-rvas.go prepare \
 Step 0 outputs, or user-provided local data that follows the same source-input
 contract. The command reads `run.1kg.conf` by default; another configuration can
 be selected with `--config`.
+
+The 1KG configuration reads the first 16 values from the `pca_features` array
+in `ancestry_pred.tsv` as numeric covariates:
+
+```toml
+covariate = "rewrite/testdata/1kgenome/generated/ancestry_pred.tsv"
+covariate_id_column = "research_id"
+covariate_column = "pca_features"
+num_cov = 16
+```
 
 The current 1KG configuration applies all equality masks and then the optional
 MAF threshold:

@@ -1,4 +1,5 @@
 import csv
+import math
 from pathlib import Path
 
 from .model import (
@@ -112,7 +113,7 @@ def read_annotations(
 
         return annotations, annotation_columns
 
-def read_sample_table(
+def read_phenotype_table(
     table_path: Path,
     delimiter: str,
     id_column: str,
@@ -147,25 +148,71 @@ def read_sample_table(
             for row in reader
         }
 
+
+def read_covariate_table(
+    table_path: Path,
+    delimiter: str,
+    id_column: str,
+    covariate_column: str,
+    num_cov: int,
+) -> dict[str, tuple[float, ...]]:
+    with table_path.open(newline="") as file:
+        reader = csv.DictReader(file, delimiter=delimiter)
+        if not reader.fieldnames:
+            raise ValueError(f"no header in {table_path}")
+        for column in (id_column, covariate_column):
+            if column not in reader.fieldnames:
+                raise ValueError(f"missing {column} column in {table_path}")
+
+        covariates = {}
+        for row in reader:
+            encoded = row[covariate_column].strip()
+            if not encoded.startswith("[") or not encoded.endswith("]"):
+                raise ValueError(
+                    f"invalid {covariate_column} value for {row[id_column]}"
+                )
+
+            contents = encoded[1:-1]
+            fields = contents.split(",") if contents else []
+            if len(fields) < num_cov:
+                raise ValueError(
+                    f"{covariate_column} for {row[id_column]} has "
+                    f"{len(fields)} values, need {num_cov}"
+                )
+
+            values = tuple(float(value.strip()) for value in fields[:num_cov])
+            if not all(math.isfinite(value) for value in values):
+                raise ValueError(
+                    f"non-finite {covariate_column} value for {row[id_column]}"
+                )
+            covariates[row[id_column]] = values
+
+        return covariates
+
+
 def load_sample_inputs(
     phenotype_path: Path,
     covariate_path: Path,
     phenotype_id_column: str,
     covariate_id_column: str,
+    covariate_column: str,
+    num_cov: int,
 ) -> SampleInputs:
     print("Loading sample inputs")
     print(f"  phenotype: {phenotype_path}")
     print(f"  covariate: {covariate_path}")
     return SampleInputs(
-        phenotypes=read_sample_table(
+        phenotypes=read_phenotype_table(
             phenotype_path,
             delimiter=",",
             id_column=phenotype_id_column,
         ),
-        covariates=read_sample_table(
+        covariates=read_covariate_table(
             covariate_path,
             delimiter="\t",
             id_column=covariate_id_column,
+            covariate_column=covariate_column,
+            num_cov=num_cov,
         ),
     )
 
