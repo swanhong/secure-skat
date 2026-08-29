@@ -23,6 +23,7 @@ type session struct {
 	networks   []*mpc.Network
 	heContext  *securecrypto.CryptoParams
 	mpcObject  *mpc.MPC
+	metrics    *metricRecorder
 	dataParams []protocol.DataParams
 	beta       mpc_core.RMat
 	xtxInv     mpc_core.RMat
@@ -34,6 +35,7 @@ func openSession(
 	partyID int,
 	input *PartyInput,
 	sharedKeysPath string,
+	metrics *metricRecorder,
 ) (*session, error) {
 	if sharedKeysPath == "" {
 		return nil, fmt.Errorf("shared keys path is required")
@@ -52,6 +54,7 @@ func openSession(
 		input.Chromosomes,
 	)
 
+	done := metrics.start("network_init", 0, nil)
 	networks := mpc.InitCommunication(
 		"127.0.0.1",
 		localhostServers(config.PortBase),
@@ -60,11 +63,24 @@ func openSession(
 		numThreads,
 		sharedKeysPath,
 	)
+	done()
+
+	parallelNetworks := mpc.ParallelNetworks(networks)
+	for _, network := range networks {
+		network.EnableLogging()
+	}
+
+	done = metrics.start(
+		"sample_count_exchange",
+		0,
+		parallelNetworks,
+	)
 	nA, nB := exchangeSampleCounts(
 		networks[0],
 		partyID,
 		input.SampleCount,
 	)
+	done()
 
 	dataParams := make(
 		[]protocol.DataParams,
@@ -81,7 +97,8 @@ func openSession(
 		}
 	}
 
-	heContext := mpc.ParallelNetworks(networks).CollectiveInit(
+	done = metrics.start("collective_setup", 0, parallelNetworks)
+	heContext := parallelNetworks.CollectiveInit(
 		&heParameters,
 		mpcFieldBits,
 		true,
@@ -95,18 +112,22 @@ func openSession(
 	)[0]
 	mpcObject.SetHubPid(cohortAPartyID)
 	mpcObject.SetDivSqrtMaxLen(divSqrtMaxLength)
+	done()
 
+	done = metrics.start("setup_null", 0, parallelNetworks)
 	beta, xtxInv, rss := protocol.SetupNull(
 		mpcObject,
 		dataParams[0],
 		input.X,
 		input.Y,
 	)
+	done()
 
 	return &session{
 		networks:   networks,
 		heContext:  heContext,
 		mpcObject:  mpcObject,
+		metrics:    metrics,
 		dataParams: dataParams,
 		beta:       beta,
 		xtxInv:     xtxInv,

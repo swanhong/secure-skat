@@ -2,7 +2,9 @@ package workflow
 
 import (
 	"fmt"
+	"path/filepath"
 
+	"github.com/hhcho/sfgwas/mpc"
 	"github.com/hhcho/sfgwas/rewrite/protocol"
 )
 
@@ -21,14 +23,26 @@ func runChromosome(
 ) chromosomeResult {
 	chromosome := input.Chromosomes[chromosomeIndex]
 	dataParams := secureSession.dataParams[chromosomeIndex]
+	networks := mpc.ParallelNetworks(secureSession.networks)
 
+	done := secureSession.metrics.start(
+		"compute_weights",
+		chromosome.Chromosome,
+		networks,
+	)
 	weight, signedWeight := protocol.ComputeWeights(
 		secureSession.mpcObject,
 		secureSession.heContext,
 		dataParams,
 		chromosome.PublicGenotypes,
 	)
+	done()
 
+	done = secureSession.metrics.start(
+		"packed_statistics",
+		chromosome.Chromosome,
+		networks,
+	)
 	gpQ, gpL, gvQ, gvL, geneV, geneS1, geneS2, geneS3 :=
 		protocol.ComputePackedStatistics(
 			secureSession.mpcObject,
@@ -45,7 +59,13 @@ func runChromosome(
 			signedWeight,
 			seed,
 		)
+	done()
 
+	done = secureSession.metrics.start(
+		"finalize",
+		chromosome.Chromosome,
+		networks,
+	)
 	b, z := protocol.Finalize(
 		secureSession.mpcObject,
 		dataParams,
@@ -59,6 +79,13 @@ func runChromosome(
 		geneS2,
 		geneS3,
 	)
+	done()
+
+	done = secureSession.metrics.start(
+		"release",
+		chromosome.Chromosome,
+		networks,
+	)
 	burdenP, skatWHP := protocol.Release(
 		secureSession.mpcObject,
 		secureSession.heContext,
@@ -66,6 +93,7 @@ func runChromosome(
 		b,
 		z,
 	)
+	done()
 
 	return chromosomeResult{
 		Chromosome: chromosome.Chromosome,
@@ -84,6 +112,11 @@ func runParty(
 		return fmt.Errorf("validate config: %w", err)
 	}
 
+	metrics := newMetricRecorder(
+		fmt.Sprintf("party%d", partyID),
+		partyID == cohortAPartyID,
+	)
+
 	input, err := loadPartyInput(config, partyID)
 	if err != nil {
 		return fmt.Errorf(
@@ -98,6 +131,7 @@ func runParty(
 		partyID,
 		input,
 		sharedKeysPath,
+		metrics,
 	)
 	if err != nil {
 		return fmt.Errorf(
@@ -113,24 +147,48 @@ func runParty(
 		0,
 		len(input.Chromosomes),
 	)
+	networks := mpc.ParallelNetworks(secureSession.networks)
 	for chromosomeIndex := range input.Chromosomes {
+		chromosome := input.Chromosomes[chromosomeIndex].Chromosome
+		done := metrics.start(
+			"chromosome_total",
+			chromosome,
+			networks,
+		)
 		result := runChromosome(
 			secureSession,
 			input,
 			chromosomeIndex,
 			config.Seed,
 		)
+		done()
 		if partyID == cohortAPartyID {
 			results = append(results, result)
 		}
 	}
 
+	var resultErr error
 	if partyID == cohortAPartyID {
-		return writeSecureResults(
+		done := metrics.start("write_results", 0, nil)
+		resultErr = writeSecureResults(
 			config.RunDir,
 			results,
 			config.PhenotypeColumns,
 		)
+		done()
+	}
+
+	metricsPath := filepath.Join(
+		config.RunDir,
+		"metrics",
+		fmt.Sprintf("metrics_party%d.csv", partyID),
+	)
+	metricsErr := metrics.writeCSV(metricsPath)
+	if resultErr != nil {
+		return resultErr
+	}
+	if metricsErr != nil {
+		return fmt.Errorf("write party %d metrics: %w", partyID, metricsErr)
 	}
 	return nil
 }

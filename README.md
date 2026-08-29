@@ -1,5 +1,28 @@
 # Secure RVAS
 
+## Quick command reference
+
+```bash
+python3 rewrite/testdata/1kgenome/prepare_1kgenome.py \
+  --chromosome 21 22 \
+  --num-pheno 2
+
+go run -mod=vendor secure-rvas.go prepare \
+  --config run.1kg.conf
+
+go run -mod=vendor secure-rvas.go run \
+  --config run.1kg.conf
+
+python3 rewrite/analysis/run_reference.py \
+  --config run.1kg.conf
+
+python3 rewrite/analysis/compare_results.py \
+  --config run.1kg.conf
+
+python3 rewrite/analysis/plot_results.py \
+  --config run.1kg.conf
+```
+
 Secure RVAS is a protocol for privacy-preserving Burden and SKAT rare-variant association tests.
 It reuses the Lattigo v6-based MHE and MPC primitives in `crypto/` and `mpc/`, while the new preprocessing and secure protocol are implemented under `rewrite/`.
 
