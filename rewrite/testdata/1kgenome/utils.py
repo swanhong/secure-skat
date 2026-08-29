@@ -1,8 +1,11 @@
+import csv
+import gzip
+import json
+import math
+import random
 import subprocess
 from pathlib import Path
-import gzip
-import random
-import csv
+
 
 def download_if_missing(url: str, destination: Path) -> Path:
     if destination.exists():
@@ -90,6 +93,128 @@ def create_allele_frequencies(
     )
     print(f"created: {frequency_path}")
     return frequency_path
+
+
+def create_pca(
+    pgen_prefixes: list[Path],
+    work_dir: Path,
+    num_components: int = 16,
+) -> Path:
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    if len(pgen_prefixes) == 1:
+        pca_input = pgen_prefixes[0]
+    else:
+        merge_list = work_dir / "pmerge_list.txt"
+        merge_list.write_text(
+            "".join(f"{prefix.resolve()}\n" for prefix in pgen_prefixes)
+        )
+        pca_input = work_dir / "merged"
+        merged_files = [
+            Path(f"{pca_input}.pgen"),
+            Path(f"{pca_input}.pvar"),
+            Path(f"{pca_input}.psam"),
+        ]
+        if not all(path.exists() for path in merged_files):
+            subprocess.run(
+                [
+                    "plink2",
+                    "--pmerge-list", str(merge_list),
+                    "--out", str(pca_input),
+                ],
+                check=True,
+            )
+
+    prune_prefix = work_dir / "pruned"
+    prune_in = Path(f"{prune_prefix}.prune.in")
+    if not prune_in.exists():
+        subprocess.run(
+            [
+                "plink2", "--pfile", str(pca_input),
+                "--maf", "0.05",
+                "--geno", "0.02",
+                "--rm-dup", "force-first",
+                "--indep-pairwise", "200", "50", "0.2",
+                "--out", str(prune_prefix),
+            ],
+            check=True,
+        )
+
+    pca_prefix = work_dir / "pca"
+    eigenvec = Path(f"{pca_prefix}.eigenvec")
+    eigenval = Path(f"{pca_prefix}.eigenval")
+    if eigenvec.exists() and eigenval.exists():
+        print(f"exists: {eigenvec}, {eigenval}")
+        return eigenvec
+
+    subprocess.run(
+        [
+            "plink2", "--pfile", str(pca_input),
+            "--extract", str(prune_in),
+            "--rm-dup", "force-first",
+            "--pca", str(num_components),
+            "--out", str(pca_prefix),
+        ],
+        check=True,
+    )
+    print(f"created: {eigenvec}, {eigenval}")
+    return eigenvec
+
+
+def create_ancestry_table(
+    panel_path: Path,
+    eigenvec_path: Path,
+    sample_ids: tuple[str, ...],
+    out_path: Path,
+    num_components: int = 16,
+) -> Path:
+    ancestries = {}
+    with panel_path.open() as panel:
+        columns = next(panel).split()
+        sample_column = columns.index("sample")
+        super_pop_column = columns.index("super_pop")
+        for line in panel:
+            fields = line.split()
+            ancestries[fields[sample_column]] = fields[super_pop_column]
+
+    pca_values = {}
+    with eigenvec_path.open() as eigenvec:
+        columns = next(eigenvec).lstrip("#").split()
+        iid_column = columns.index("IID")
+        pc_columns = [
+            columns.index(f"PC{index}")
+            for index in range(1, num_components + 1)
+        ]
+        for line in eigenvec:
+            fields = line.split()
+            values = tuple(float(fields[index]) for index in pc_columns)
+            if not all(math.isfinite(value) for value in values):
+                raise ValueError(f"non-finite PCA value for {fields[iid_column]}")
+            pca_values[fields[iid_column]] = values
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", newline="") as output:
+        writer = csv.writer(output, delimiter="\t", lineterminator="\n")
+        writer.writerow(
+            [
+                "research_id",
+                "ancestry_pred",
+                "probabilities",
+                "pca_features",
+                "ancestry_pred_other",
+            ]
+        )
+        for sample_id in sample_ids:
+            ancestry = ancestries[sample_id]
+            features = json.dumps(
+                pca_values[sample_id],
+                separators=(",", ":"),
+            )
+            writer.writerow([sample_id, ancestry, "", features, ancestry])
+
+    print(f"created: {out_path}, ({len(sample_ids)} samples)")
+    return out_path
+
 
 def create_inputs_from_gencode(
         gtf_path: Path,

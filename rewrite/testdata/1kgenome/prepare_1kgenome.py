@@ -71,6 +71,7 @@ def read_psam_ids(path: Path) -> tuple[str, ...]:
         iid_column = columns.index("IID")
         return tuple(line.split()[iid_column] for line in file if line.strip())
 
+
 def prepare_1kgenome(root: Path, args) -> None:
     chromosomes = parse_chromosomes(args.chromosome)
     generated = root / "generated"
@@ -78,9 +79,9 @@ def prepare_1kgenome(root: Path, args) -> None:
     panel = utils.download_if_missing(PANEL_URL, raw / PANEL_NAME)
     gtf = utils.download_if_missing(GTF_URL, raw / GTF_NAME)
 
-    psam_ids = None
-    first_psam = None
-    for chromosome in chromosomes:
+    psam_ids = ()
+    pgen_prefixes = []
+    for index, chromosome in enumerate(chromosomes):
         vcf_name = VCF_TEMPLATE.format(chromosome=chromosome)
         vcf = utils.download_if_missing(VCF_BASE_URL + vcf_name, raw / vcf_name)
         prefix = utils.create_pgen(
@@ -89,14 +90,14 @@ def prepare_1kgenome(root: Path, args) -> None:
             out_prefix=generated / "genotype" / f"chr{chromosome}",
             keep_path=generated / "work" / "phase3.keep",
         )
+        pgen_prefixes.append(prefix)
         frequency = utils.create_allele_frequencies(
             pgen_prefix=prefix,
             out_prefix=generated / "genotype" / f"chr{chromosome}",
         )
         current_ids = read_psam_ids(prefix.with_suffix(".psam"))
-        if psam_ids is None:
+        if index == 0:
             psam_ids = current_ids
-            first_psam = prefix.with_suffix(".psam")
         elif current_ids != psam_ids:
             raise ValueError(
                 f"ordered PSAM IDs differ for chr{chromosomes[0]} and chr{chromosome}"
@@ -112,11 +113,24 @@ def prepare_1kgenome(root: Path, args) -> None:
             chromosome=str(chromosome),
             frequency_path=frequency,
         )
-    utils.create_covariates(panel, first_psam, generated / "covariates.tsv")
+
+    chromosome_set = "chr" + "_".join(str(value) for value in chromosomes)
+    eigenvec = utils.create_pca(
+        pgen_prefixes=pgen_prefixes,
+        work_dir=generated / "work" / "pca" / chromosome_set,
+    )
+    utils.create_ancestry_table(
+        panel_path=panel,
+        eigenvec_path=eigenvec,
+        sample_ids=psam_ids,
+        out_path=generated / "ancestry_pred.tsv",
+    )
+    sample_path = pgen_prefixes[0].with_suffix(".psam")
+    utils.create_covariates(panel, sample_path, generated / "covariates.tsv")
     utils.create_phenotype(
-        first_psam, 
-        generated / "phenotype.csv", 
-        num_pheno=args.num_pheno, 
+        sample_path,
+        generated / "phenotype.csv",
+        num_pheno=args.num_pheno,
         seed=42,
     )
 
