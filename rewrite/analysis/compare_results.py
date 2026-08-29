@@ -125,9 +125,18 @@ def r_squared(
         except ValueError:
             continue
 
-        if math.isfinite(secure_value) and math.isfinite(reference_value):
-            secure_values.append(secure_value)
-            reference_values.append(reference_value)
+        if (
+            math.isfinite(secure_value)
+            and math.isfinite(reference_value)
+            and secure_value >= 0
+            and reference_value >= 0
+        ):
+            secure_values.append(
+                -math.log10(max(secure_value, 1e-300))
+            )
+            reference_values.append(
+                -math.log10(max(reference_value, 1e-300))
+            )
 
     return r_squared_values(secure_values, reference_values)
 
@@ -145,10 +154,10 @@ def print_r_squared_by_pheno_and_chr(
         )
         grouped_rows.setdefault(key, []).append(row)
 
-    print("\n=== R^2 by phenotype and chromosome ===")
+    print("\n=== R^2 on -log10(p) by phenotype and chromosome ===")
     print(
         f"  {'phenotype':<20} {'chr':>3} "
-        f"{'comparison':<20} {'n':>5} {'R^2':>12}"
+        f"{'comparison':<20} {'n':>5} {'R^2 (-log10 p)':>15}"
     )
 
     for (_, phenotype_name, chromosome), group in sorted(
@@ -177,7 +186,7 @@ def print_r_squared_by_pheno_and_chr(
 
             print(
                 f"  {phenotype_name:<20} {chromosome:>3} "
-                f"{label:<20} {count:>5} {score_text:>12}"
+                f"{label:<20} {count:>5} {score_text:>15}"
             )
 
 def compare_ancestry(

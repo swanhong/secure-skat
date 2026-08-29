@@ -28,6 +28,10 @@ func runChromosome(
 		chromosome.Chromosome,
 		networks,
 	)
+	observeBatch := secureSession.metrics.observePackedWidth(
+		chromosome.Chromosome,
+		chromosome.CryptoParams.R,
+	)
 
 	done := secureSession.metrics.start(
 		"compute_weights",
@@ -63,6 +67,7 @@ func runChromosome(
 			signedWeight,
 			seed,
 			observe,
+			observeBatch,
 		)
 	done()
 

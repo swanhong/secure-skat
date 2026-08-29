@@ -34,6 +34,7 @@ func ComputePackedStatistics(
 	signedWeight []mpc_core.RVec,
 	seed int64,
 	observe func(stage string) func(),
+	observeBatch func(width, geneCount int) func(),
 ) (
 	gpQ, gpL, gvQ, gvL mpc_core.RMat,
 	geneV, geneS1, geneS2, geneS3 mpc_core.RVec,
@@ -86,6 +87,8 @@ func ComputePackedStatistics(
 	done()
 
 	for _, batch := range cryptoParams.Batches {
+		doneBatch := observeBatch(batch.W, len(batch.GeneIndices))
+
 		// 2. Prepare the phenotype-independent values for this gene batch.
 		done = observe("batch_preparation")
 		terms := PrepareGeneBatch(
@@ -138,6 +141,8 @@ func ComputePackedStatistics(
 			geneS2[geneIndex] = batchS2[position].Copy()
 			geneS3[geneIndex] = batchS3[position].Copy()
 		}
+
+		doneBatch()
 	}
 
 	return gpQ, gpL, gvQ, gvL, geneV, geneS1, geneS2, geneS3

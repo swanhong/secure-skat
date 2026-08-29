@@ -11,7 +11,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from compare_results import read_rows, r_squared_values
+from compare_results import read_rows, r_squared
 
 
 SCATTER_COMPARISONS = [
@@ -90,9 +90,10 @@ def write_scatter_plot(
         secure_column,
         reference_column,
     )
-    count, score = r_squared_values(
-        secure_values,
-        reference_values,
+    count, score = r_squared(
+        rows,
+        secure_column,
+        reference_column,
     )
     score_text = "NA" if score is None else f"{score:.6f}"
 
@@ -120,7 +121,9 @@ def write_scatter_plot(
     axis.set_ylim(limits)
     axis.set_xlabel("R -log10(p)")
     axis.set_ylabel("Secure -log10(p)")
-    axis.set_title(f"{title}\nn={count}, $R^2$={score_text}")
+    axis.set_title(
+        f"{title}\nn={count}, $R^2$ (-log10 p)={score_text}"
+    )
     axis.grid(alpha=0.2)
 
     figure.tight_layout()

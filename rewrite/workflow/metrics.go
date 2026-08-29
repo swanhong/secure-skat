@@ -69,12 +69,22 @@ type processMetric struct {
 	peakRSSBytes uint64
 }
 
+type packedWidthMetric struct {
+	chromosome      int
+	width           int
+	probeCount      int
+	geneCount       int
+	ciphertextCount int
+	duration        time.Duration
+}
+
 type metricRecorder struct {
-	process     string
-	ancestry    string
-	printEvents bool
-	startedAt   time.Time
-	events      []metricEvent
+	process      string
+	ancestry     string
+	printEvents  bool
+	startedAt    time.Time
+	events       []metricEvent
+	packedWidths []packedWidthMetric
 }
 
 func newMetricRecorder(
@@ -104,6 +114,38 @@ func (recorder *metricRecorder) observe(
 ) func(stage string) func() {
 	return func(stage string) func() {
 		return recorder.startEvent(stage, chromosome, networks, false)
+	}
+}
+
+func (recorder *metricRecorder) observePackedWidth(
+	chromosome int,
+	probeCount int,
+) func(width, geneCount int) func() {
+	return func(width, geneCount int) func() {
+		startedAt := time.Now()
+		return func() {
+			metric := packedWidthMetric{
+				chromosome:      chromosome,
+				width:           width,
+				probeCount:      probeCount,
+				geneCount:       geneCount,
+				ciphertextCount: 1,
+				duration:        time.Since(startedAt),
+			}
+
+			for index := range recorder.packedWidths {
+				current := &recorder.packedWidths[index]
+				if current.chromosome != chromosome || current.width != width {
+					continue
+				}
+				current.geneCount += metric.geneCount
+				current.ciphertextCount += metric.ciphertextCount
+				current.duration += metric.duration
+				return
+			}
+
+			recorder.packedWidths = append(recorder.packedWidths, metric)
+		}
 	}
 }
 
@@ -321,6 +363,39 @@ func (recorder *metricRecorder) timeTree(total time.Duration) string {
 	fmt.Fprintf(&tree, "  ├─ write results          %v\n", format(writeResults))
 	fmt.Fprintf(&tree, "  ├─ other overhead         %v\n", format(other))
 	fmt.Fprintf(&tree, "  └─ TOTAL                  %v\n", format(total))
+
+	for _, chromosomeEvent := range recorder.events {
+		if chromosomeEvent.stage != "chromosome_total" {
+			continue
+		}
+		chromosome := chromosomeEvent.chromosome
+		fmt.Fprintf(
+			&tree,
+			"\n[%s %s] chr%d packed statistics:\n",
+			recorder.process,
+			recorder.ancestry,
+			chromosome,
+		)
+		fmt.Fprintf(&tree, "  W      mode       genes   ctxt  duration(s)\n")
+		for _, metric := range recorder.packedWidths {
+			if metric.chromosome != chromosome {
+				continue
+			}
+			mode := "exact"
+			if metric.width > metric.probeCount {
+				mode = "hutch"
+			}
+			fmt.Fprintf(
+				&tree,
+				"  %-6d %-7s %8d %6d %12.3f\n",
+				metric.width,
+				mode,
+				metric.geneCount,
+				metric.ciphertextCount,
+				metric.duration.Seconds(),
+			)
+		}
+	}
 	return tree.String()
 }
 
