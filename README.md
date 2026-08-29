@@ -23,6 +23,14 @@ python3 rewrite/analysis/plot_results.py \
   --config run.1kg.conf
 ```
 
+To rerun preprocessing from a clean `run_dir`, add `--clear`:
+
+```bash
+go run -mod=vendor secure-rvas.go prepare \
+  --config run.1kg.conf \
+  --clear
+```
+
 Secure RVAS is a protocol for privacy-preserving Burden and SKAT rare-variant association tests.
 It reuses the Lattigo v6-based MHE and MPC primitives in `crypto/` and `mpc/`, while the new preprocessing and secure protocol are implemented under `rewrite/`.
 

@@ -2073,7 +2073,7 @@ func (mpcObj *MPC) SqrtAndSqrtInverse(a mpc_core.RVec, binaryVersion bool) (b, b
 }
 
 func (mpcObj *MPC) Divide(a, b mpc_core.RVec, binaryVersion bool) mpc_core.RVec {
-	log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("MPC Divide called (n = %d) divSqrtMaxLen %d", len(a), mpcObj.divSqrtMaxLen))
+	// log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("MPC Divide called (n = %d) divSqrtMaxLen %d", len(a), mpcObj.divSqrtMaxLen))
 
 	if len(a) > mpcObj.divSqrtMaxLen {
 		n := len(a)

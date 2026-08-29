@@ -37,6 +37,11 @@ func runPrepareCommand(args []string) error {
 		"run.1kg.conf",
 		"path to the run configuration",
 	)
+	clearOutputs := flags.Bool(
+		"clear",
+		false,
+		"remove generated outputs before preprocessing",
+	)
 
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse prepare arguments: %w", err)
@@ -51,6 +56,15 @@ func runPrepareCommand(args []string) error {
 	config, err := LoadConfig(*configPath)
 	if err != nil {
 		return err
+	}
+	if *clearOutputs {
+		if err := ValidateConfig(config); err != nil {
+			return fmt.Errorf("validate config: %w", err)
+		}
+		if err := clearGeneratedOutputs(config.RunDir); err != nil {
+			return err
+		}
+		fmt.Printf("Cleared generated outputs from %s\n", config.RunDir)
 	}
 
 	fmt.Println("Running secure-rvas::prepare")

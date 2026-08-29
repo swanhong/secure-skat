@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -73,6 +74,45 @@ func prepareRequestFromConfig(config *Config) prepareRequest {
 			Path:          config.GeneSelection.Path,
 		},
 	}
+}
+
+func clearGeneratedOutputs(runDir string) error {
+	root, err := filepath.Abs(runDir)
+	if err != nil {
+		return fmt.Errorf("resolve run directory: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("resolve run directory symlinks: %w", err)
+	}
+
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get working directory: %w", err)
+	}
+	homeDirectory, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("get home directory: %w", err)
+	}
+	volumeRoot := filepath.VolumeName(root) + string(filepath.Separator)
+	if root == volumeRoot || root == workingDirectory || root == homeDirectory {
+		return fmt.Errorf("refuse to clear unsafe run directory %s", root)
+	}
+
+	for _, name := range []string{
+		"selected_genes.tsv",
+		"prepared",
+		"secure",
+		"reference",
+		"comparison",
+		"metrics",
+	} {
+		if err := os.RemoveAll(filepath.Join(root, name)); err != nil {
+			return fmt.Errorf("remove generated output %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func Prepare(config *Config) error {

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/aead/chacha20/chacha"
 )
@@ -97,11 +98,16 @@ func runPartyProcesses(
 	executable string,
 	configPath string,
 	sharedKeysPath string,
-) error {
+) ([]processMetric, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	results := make(chan error, partyCount)
+	type partyResult struct {
+		partyID int
+		metric  processMetric
+		err     error
+	}
+	results := make(chan partyResult, partyCount)
 
 	for partyID := 0; partyID < partyCount; partyID++ {
 		go func(partyID int) {
@@ -116,29 +122,48 @@ func runPartyProcesses(
 			command.Stdout = os.Stdout
 			command.Stderr = os.Stderr
 
-			if err := command.Run(); err != nil {
-				results <- fmt.Errorf(
-					"party %d failed: %w",
-					partyID,
-					err,
-				)
-				cancel()
-				return
+			startedAt := time.Now()
+			runErr := command.Run()
+			peakRSS, peakRSSErr := childProcessPeakRSSBytes(
+				command.ProcessState,
+			)
+			result := partyResult{
+				partyID: partyID,
+				metric: processMetric{
+					process:      fmt.Sprintf("party%d", partyID),
+					duration:     time.Since(startedAt),
+					peakRSSBytes: peakRSS,
+				},
 			}
-			results <- nil
+			switch {
+			case runErr != nil:
+				result.err = fmt.Errorf("party %d failed: %w", partyID, runErr)
+			case peakRSSErr != nil:
+				result.err = fmt.Errorf("party %d peak RSS: %w", partyID, peakRSSErr)
+			}
+
+			results <- result
+			if result.err != nil {
+				cancel()
+			}
 		}(partyID)
 	}
 
+	metrics := make([]processMetric, partyCount)
 	var firstError error
 	for party := 0; party < partyCount; party++ {
-		if err := <-results; err != nil && firstError == nil {
-			firstError = err
+		result := <-results
+		metrics[result.partyID] = result.metric
+		if result.err != nil && firstError == nil {
+			firstError = result.err
 		}
 	}
-	return firstError
+	return metrics, firstError
 }
 
 func Run(configPath string) error {
+	startedAt := time.Now()
+
 	config, err := LoadConfig(configPath)
 	if err != nil {
 		return err
@@ -167,13 +192,46 @@ func Run(configPath string) error {
 	}
 	defer os.RemoveAll(sharedKeysPath)
 
-	if err := runPartyProcesses(
+	partyMetrics, err := runPartyProcesses(
 		executable,
 		configPath,
 		sharedKeysPath,
+	)
+	if err != nil {
+		return err
+	}
+
+	parentPeakRSS, err := currentProcessPeakRSSBytes()
+	if err != nil {
+		return fmt.Errorf("read parent peak RSS: %w", err)
+	}
+	parentMetric := processMetric{
+		process:      "parent",
+		duration:     time.Since(startedAt),
+		peakRSSBytes: parentPeakRSS,
+	}
+	processMetrics := append(
+		[]processMetric{parentMetric},
+		partyMetrics...,
+	)
+	if err := writeProcessMetricsCSV(
+		filepath.Join(config.RunDir, "metrics", "process_summary.csv"),
+		processMetrics,
 	); err != nil {
 		return err
 	}
+
+	fmt.Printf(
+		"[parent] secure_run_total: %.3fs, peak_rss: %d bytes\n",
+		parentMetric.duration.Seconds(),
+		parentMetric.peakRSSBytes,
+	)
+	cohortAMetric := partyMetrics[cohortAPartyID]
+	fmt.Printf(
+		"[party1] process_total: %.3fs, peak_rss: %d bytes\n",
+		cohortAMetric.duration.Seconds(),
+		cohortAMetric.peakRSSBytes,
+	)
 
 	if err := os.MkdirAll(filepath.Dir(successPath), 0o755); err != nil {
 		return fmt.Errorf("create secure directory: %w", err)

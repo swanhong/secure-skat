@@ -190,5 +190,6 @@ func runParty(
 	if metricsErr != nil {
 		return fmt.Errorf("write party %d metrics: %w", partyID, metricsErr)
 	}
+	metrics.printTimeTree()
 	return nil
 }
