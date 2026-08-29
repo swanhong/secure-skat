@@ -104,6 +104,9 @@ func openSession(
 		true,
 		galoisElements,
 	)
+	metrics.addDuration("pubkey_gen", 0, mpc.SetupTiming.PubKey)
+	metrics.addDuration("relin_key_gen", 0, mpc.SetupTiming.RelinKey)
+	metrics.addDuration("rotkey_gen", 0, mpc.SetupTiming.RotKey)
 	mpcObject := mpc.InitParallelMPCEnv(
 		networks,
 		mpc_core.LElem256Zero,
@@ -114,12 +117,13 @@ func openSession(
 	mpcObject.SetDivSqrtMaxLen(divSqrtMaxLength)
 	done()
 
-	done = metrics.start("setup_null", 0, parallelNetworks)
+	done = metrics.start("null_model", 0, parallelNetworks)
 	beta, xtxInv, rss := protocol.SetupNull(
 		mpcObject,
 		dataParams[0],
 		input.X,
 		input.Y,
+		metrics.observe(0, parallelNetworks),
 	)
 	done()
 

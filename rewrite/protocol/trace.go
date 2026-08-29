@@ -1085,6 +1085,7 @@ func ComputeGeneBatchKernelStatistics(
 	weight []mpc_core.RVec,
 	signedWeight []mpc_core.RVec,
 	seed int64,
+	observe func(stage string) func(),
 ) (geneBatchV, geneBatchS1, geneBatchS2, geneBatchS3 mpc_core.RVec) {
 	/*
 		Compute the phenotype-independent kernel statistics for one gene batch.
@@ -1110,6 +1111,7 @@ func ComputeGeneBatchKernelStatistics(
 
 	// 1. Share pooledGtx.
 	// pooledGtx = (Transpose(Gp[A]) * X[A] + Transpose(Gp[B]) * X[B]) / N
+	done := observe("kernel_inputs")
 	pooledGtx := SharePooledGtx(mpcObj, dataParams, batch, localGtx)
 
 	// 2. Share diagGtG.
@@ -1148,17 +1150,20 @@ func ComputeGeneBatchKernelStatistics(
 			offset += variantCount
 		}
 	}
+	done()
 
 	// 3. Compute S1, S2, S3 and reuse the first GtG action for gtgWeight.
 	geneBatchS1, geneBatchS2, geneBatchS3, gtgWeight := ComputeKernelTraces(
 		mpcObj, heParams, dataParams, cryptoParams, batch, gp, gv, x, gvLocal,
-		localGtG, pooledGtx, diagGtG, omega, weight, signedWeight, seed,
+		localGtG, pooledGtx, diagGtG, omega, weight, signedWeight, seed, observe,
 	)
 
 	// 4. Compute the normalized Burden variance using gtgWeight = pooledGtG * signedWeight.
+	done = observe("burden_variance")
 	geneBatchV = ComputeBurdenVariance(
 		mpcObj, batch, pooledGtx, signedWeight, gtgWeight, gvGene, omega,
 	)
+	done()
 
 	return geneBatchV, geneBatchS1, geneBatchS2, geneBatchS3
 }
@@ -1180,6 +1185,7 @@ func ComputeKernelTraces(
 	weight []mpc_core.RVec,
 	signedWeight []mpc_core.RVec,
 	seed int64,
+	observe func(stage string) func(),
 ) (geneBatchS1, geneBatchS2, geneBatchS3 mpc_core.RVec, gtgWeight []mpc_core.RVec) {
 	/*
 		Compute the three kernel traces and the public GtG burden action.
@@ -1317,10 +1323,12 @@ func ComputeKernelTraces(
 	// firstGtgAction = pooledGtG * firstRight
 	// Hutchinson rhsCount = 2*R + 2*C + 1.
 	// Exact mode ignores rhsCount because its widths are gene-specific.
+	done := observe("first_gtg_action")
 	firstGtgAction := PublicGtGAction(
 		mpcObj, heParams, dataParams, cryptoParams, batch, localGtG, firstRight,
 		2*cryptoParams.R+2*covariateCount+1,
 	)
+	done()
 
 	// 6. Split the first action and compute kProbe and basisAction.
 	// kProbe = Kpp * traceProbe
@@ -1378,10 +1386,12 @@ func ComputeKernelTraces(
 		weightedKProbe[position] = scaleSharedRows(mpcObj, batchWeight[position], kProbe[position])
 	}
 
+	done = observe("second_gtg_action")
 	secondGtgAction := PublicGtGAction(
 		mpcObj, heParams, dataParams, cryptoParams, batch,
 		localGtG, weightedKProbe, cryptoParams.R,
 	)
+	done()
 
 	kSquaredProbe := make([]mpc_core.RMat, geneCount)
 	for position, geneIndex := range batch.GeneIndices {
@@ -1456,12 +1466,14 @@ func ComputeKernelTraces(
 	delta2 := mpc_core.InitRVec(rtype.Zero(), geneCount)
 	delta3 := mpc_core.InitRVec(rtype.Zero(), geneCount)
 
+	done = observe("private_trace_correction")
 	for position := range batch.GeneIndices {
 		delta1[position], delta2[position], delta3[position] = ComputeDelta(
 			mpcObj, privateTerms[position], weightSquared[position], theta[position],
 			omega, delta3Action[position], correctionProbe[position], probeScale[position],
 		)
 	}
+	done()
 
 	// 10. Assemble and return the final traces.
 	//

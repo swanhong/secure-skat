@@ -12,6 +12,7 @@ func Finalize(
 	dataParams DataParams,
 	gpQ, gpL, gvQ, gvL mpc_core.RMat,
 	rss, geneV, geneS1, geneS2, geneS3 mpc_core.RVec,
+	observe func(stage string) func(),
 ) (
 	b, z mpc_core.RVec,
 ) {
@@ -44,6 +45,7 @@ func Finalize(
 	}
 
 	// 1. Compute alpha[t] = (N - C) / (2 * rss[t]).
+	done := observe("alpha_score_assembly")
 	alphaNumerator := mpc_core.InitRVec(rtype.Zero(), phenotypeCount)
 	if mpcObj.GetPid() == mpcObj.GetHubPid() {
 		alphaNumerator.AddScalar(
@@ -89,8 +91,10 @@ func Finalize(
 
 	burdenLinearSquared := multiply(burdenLinear, burdenLinear)
 	burdenQuadratic := multiply(alphaByGene, burdenLinearSquared)
+	done()
 
 	// 4. Compute b = sqrt(Qb) / sqrt(V).
+	done = observe("burden_statistic")
 	sqrtBurdenQuadratic, _ := mpcObj.SqrtAndSqrtInverse(
 		burdenQuadratic,
 		false,
@@ -103,8 +107,10 @@ func Finalize(
 		sqrtBurdenQuadratic,
 		invSqrtVariance,
 	)
+	done()
 
 	// 5. Compute the Wilson-Hilferty SKAT pivot.
+	done = observe("skat_wilson_hilferty")
 	z = WilsonHilferty(
 		mpcObj,
 		scoreQuadratic,
@@ -112,6 +118,7 @@ func Finalize(
 		s2,
 		s3,
 	)
+	done()
 
 	return b, z
 }

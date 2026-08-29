@@ -13,6 +13,7 @@ func Release(
 	heParams *securecrypto.CryptoParams,
 	dataParams DataParams,
 	b, z mpc_core.RVec,
+	observe func(stage string) func(),
 ) (
 	burdenP, skatP []float64,
 ) {
@@ -35,6 +36,7 @@ func Release(
 			dataParams.PhenotypeCount
 
 	// 1. Convert the two released vectors from shares to ciphertexts.
+	done := observe("shares_to_ciphertext")
 	encryptedB := mpcObj.SSToCVec(heParams, b)
 	encryptedZ := mpcObj.SSToCVec(heParams, z)
 
@@ -54,8 +56,10 @@ func Release(
 			tail,
 		)
 	}
+	done()
 
 	// 3. Collectively decrypt only b and z.
+	done = observe("collective_decrypt")
 	plainB := mpcObj.Network.CollectiveDecryptVec(
 		heParams,
 		encryptedB,
@@ -66,11 +70,13 @@ func Release(
 		encryptedZ,
 		0,
 	)
+	done()
 
 	if mpcObj.GetPid() == auxiliaryPartyID {
 		return nil, nil
 	}
 
+	done = observe("local_pvalues")
 	releasedB := securecrypto.DecodeFloatVector(
 		heParams,
 		plainB,
@@ -89,6 +95,7 @@ func Release(
 		skatP[index] =
 			0.5 * math.Erfc(releasedZ[index]/math.Sqrt2)
 	}
+	done()
 
 	return burdenP, skatP
 }

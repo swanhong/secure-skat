@@ -11,6 +11,7 @@ func SetupNull(
 	dataParams DataParams,
 	x *mat.Dense,
 	y0 *mat.Dense,
+	observe func(stage string) func(),
 ) (
 	beta mpc_core.RMat,
 	xtxInv mpc_core.RMat,
@@ -23,6 +24,7 @@ func SetupNull(
 	var localXty *mat.Dense
 	var localYty *mat.Dense
 
+	done := observe("null_local_equations")
 	if mpcObj.GetPid() != auxiliaryPartyID {
 		localXtx = new(mat.Dense)
 		localXtx.Mul(x.T(), x)
@@ -36,11 +38,15 @@ func SetupNull(
 			localYty.Set(0, pheno, mat.Dot(column, column))
 		}
 	}
+	done()
 
+	done = observe("null_aggregate_shares")
 	xtx := ShareSum(mpcObj, localXtx, covariateCount, covariateCount)
 	xty := ShareSum(mpcObj, localXty, covariateCount, phenotypeCount)
 	yty := ShareSum(mpcObj, localYty, 1, phenotypeCount)[0]
+	done()
 
+	done = observe("null_factor_solve")
 	lower, diagInv := FactorSPD(mpcObj, xtx)
 	beta = SolveSPD(mpcObj, lower, diagInv, xty)
 
@@ -53,7 +59,9 @@ func SetupNull(
 		}
 	}
 	xtxInv = SolveSPD(mpcObj, lower, diagInv, identity)
+	done()
 
+	done = observe("null_rss")
 	dataBits := mpcObj.GetDataBits()
 	fracBits := mpcObj.GetFracBits()
 
@@ -76,5 +84,6 @@ func SetupNull(
 		}
 		rss[pheno] = value
 	}
+	done()
 	return beta, xtxInv, rss
 }

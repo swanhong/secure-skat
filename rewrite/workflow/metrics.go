@@ -14,11 +14,53 @@ import (
 	"github.com/hhcho/sfgwas/mpc"
 )
 
+type stageDefinition struct {
+	parent          string
+	measurementKind string
+}
+
+var stageDefinitions = map[string]stageDefinition{
+	"input_loading":            {measurementKind: "leaf"},
+	"network_init":             {parent: "session_setup", measurementKind: "leaf"},
+	"sample_count_exchange":    {parent: "session_setup", measurementKind: "leaf"},
+	"collective_setup":         {parent: "session_setup", measurementKind: "inclusive"},
+	"pubkey_gen":               {parent: "collective_setup", measurementKind: "leaf"},
+	"relin_key_gen":            {parent: "collective_setup", measurementKind: "leaf"},
+	"rotkey_gen":               {parent: "collective_setup", measurementKind: "leaf"},
+	"null_model":               {parent: "session_setup", measurementKind: "inclusive"},
+	"null_local_equations":     {parent: "null_model", measurementKind: "leaf"},
+	"null_aggregate_shares":    {parent: "null_model", measurementKind: "leaf"},
+	"null_factor_solve":        {parent: "null_model", measurementKind: "leaf"},
+	"null_rss":                 {parent: "null_model", measurementKind: "leaf"},
+	"chromosome_total":         {measurementKind: "inclusive"},
+	"compute_weights":          {parent: "chromosome_total", measurementKind: "leaf"},
+	"packed_statistics":        {parent: "chromosome_total", measurementKind: "inclusive"},
+	"beta_packing":             {parent: "packed_statistics", measurementKind: "leaf"},
+	"batch_preparation":        {parent: "packed_statistics", measurementKind: "leaf"},
+	"public_ql":                {parent: "packed_statistics", measurementKind: "leaf"},
+	"private_ql":               {parent: "packed_statistics", measurementKind: "leaf"},
+	"kernel_inputs":            {parent: "packed_statistics", measurementKind: "leaf"},
+	"first_gtg_action":         {parent: "packed_statistics", measurementKind: "leaf"},
+	"second_gtg_action":        {parent: "packed_statistics", measurementKind: "leaf"},
+	"private_trace_correction": {parent: "packed_statistics", measurementKind: "leaf"},
+	"burden_variance":          {parent: "packed_statistics", measurementKind: "leaf"},
+	"finalize":                 {parent: "chromosome_total", measurementKind: "inclusive"},
+	"alpha_score_assembly":     {parent: "finalize", measurementKind: "leaf"},
+	"burden_statistic":         {parent: "finalize", measurementKind: "leaf"},
+	"skat_wilson_hilferty":     {parent: "finalize", measurementKind: "leaf"},
+	"release":                  {parent: "chromosome_total", measurementKind: "inclusive"},
+	"shares_to_ciphertext":     {parent: "release", measurementKind: "leaf"},
+	"collective_decrypt":       {parent: "release", measurementKind: "leaf"},
+	"local_pvalues":            {parent: "release", measurementKind: "leaf"},
+	"write_results":            {measurementKind: "leaf"},
+}
+
 type metricEvent struct {
 	stage         string
 	chromosome    int
 	duration      time.Duration
 	communication mpc.CommunicationStats
+	count         int
 }
 
 type processMetric struct {
@@ -47,6 +89,24 @@ func (recorder *metricRecorder) start(
 	chromosome int,
 	networks mpc.ParallelNetworks,
 ) func() {
+	return recorder.startEvent(stage, chromosome, networks, true)
+}
+
+func (recorder *metricRecorder) observe(
+	chromosome int,
+	networks mpc.ParallelNetworks,
+) func(stage string) func() {
+	return func(stage string) func() {
+		return recorder.startEvent(stage, chromosome, networks, false)
+	}
+}
+
+func (recorder *metricRecorder) startEvent(
+	stage string,
+	chromosome int,
+	networks mpc.ParallelNetworks,
+	printEvent bool,
+) func() {
 	startedAt := time.Now()
 	var startCommunication mpc.CommunicationStats
 	if len(networks) > 0 {
@@ -66,10 +126,11 @@ func (recorder *metricRecorder) start(
 			chromosome:    chromosome,
 			duration:      time.Since(startedAt),
 			communication: communication,
+			count:         1,
 		}
-		recorder.events = append(recorder.events, event)
+		recorder.addEvent(event)
 
-		if !recorder.printEvents {
+		if !recorder.printEvents || !printEvent {
 			return
 		}
 		if event.chromosome == 0 {
@@ -91,9 +152,41 @@ func (recorder *metricRecorder) start(
 	}
 }
 
+func (recorder *metricRecorder) addDuration(
+	stage string,
+	chromosome int,
+	duration time.Duration,
+) {
+	recorder.addEvent(metricEvent{
+		stage:      stage,
+		chromosome: chromosome,
+		duration:   duration,
+		count:      1,
+	})
+}
+
+func (recorder *metricRecorder) addEvent(event metricEvent) {
+	for index := range recorder.events {
+		current := &recorder.events[index]
+		if current.stage != event.stage || current.chromosome != event.chromosome {
+			continue
+		}
+
+		current.duration += event.duration
+		current.communication.SentBytes += event.communication.SentBytes
+		current.communication.ReceivedBytes += event.communication.ReceivedBytes
+		current.communication.SentMessages += event.communication.SentMessages
+		current.communication.ReceivedMessages += event.communication.ReceivedMessages
+		current.count += event.count
+		return
+	}
+	recorder.events = append(recorder.events, event)
+}
+
 func (recorder *metricRecorder) writeCSV(path string) error {
 	rows := make([][]string, 0, len(recorder.events))
 	for _, event := range recorder.events {
+		definition := stageDefinitions[event.stage]
 		chromosome := ""
 		if event.chromosome != 0 {
 			chromosome = strconv.Itoa(event.chromosome)
@@ -102,7 +195,10 @@ func (recorder *metricRecorder) writeCSV(path string) error {
 		rows = append(rows, []string{
 			recorder.process,
 			event.stage,
+			definition.parent,
+			definition.measurementKind,
 			chromosome,
+			strconv.Itoa(event.count),
 			strconv.FormatFloat(
 				event.duration.Seconds(),
 				'f',
@@ -119,7 +215,10 @@ func (recorder *metricRecorder) writeCSV(path string) error {
 	return writeCSV(path, []string{
 		"process",
 		"stage",
+		"parent_stage",
+		"measurement_kind",
 		"chromosome",
+		"count",
 		"duration_seconds",
 		"sent_bytes",
 		"received_bytes",
@@ -151,17 +250,26 @@ func (recorder *metricRecorder) timeTree(total time.Duration) string {
 	setup := stageDuration("network_init", 0) +
 		stageDuration("sample_count_exchange", 0) +
 		stageDuration("collective_setup", 0) +
-		stageDuration("setup_null", 0)
+		stageDuration("null_model", 0)
+	inputLoading := stageDuration("input_loading", 0)
 	writeResults := stageDuration("write_results", 0)
-	classified := setup + writeResults
+	classified := inputLoading + setup + writeResults
 
 	var tree strings.Builder
 	fmt.Fprintf(&tree, "\n[%s] timing tree:\n", recorder.process)
+	fmt.Fprintf(&tree, "  ├─ input loading          %v\n", format(inputLoading))
 	fmt.Fprintf(&tree, "  ├─ session setup          %v\n", format(setup))
 	fmt.Fprintf(&tree, "  │  ├─ network init         %v\n", format(stageDuration("network_init", 0)))
 	fmt.Fprintf(&tree, "  │  ├─ sample count exchange %v\n", format(stageDuration("sample_count_exchange", 0)))
 	fmt.Fprintf(&tree, "  │  ├─ collective setup     %v\n", format(stageDuration("collective_setup", 0)))
-	fmt.Fprintf(&tree, "  │  └─ setup null           %v\n", format(stageDuration("setup_null", 0)))
+	fmt.Fprintf(&tree, "  │  │  ├─ PubKeyGen          %v\n", format(stageDuration("pubkey_gen", 0)))
+	fmt.Fprintf(&tree, "  │  │  ├─ RelinKeyGen        %v\n", format(stageDuration("relin_key_gen", 0)))
+	fmt.Fprintf(&tree, "  │  │  └─ RotKeyGen          %v\n", format(stageDuration("rotkey_gen", 0)))
+	fmt.Fprintf(&tree, "  │  └─ null model           %v\n", format(stageDuration("null_model", 0)))
+	fmt.Fprintf(&tree, "  │     ├─ local XTX/XTY/YTY  %v\n", format(stageDuration("null_local_equations", 0)))
+	fmt.Fprintf(&tree, "  │     ├─ aggregate shares   %v\n", format(stageDuration("null_aggregate_shares", 0)))
+	fmt.Fprintf(&tree, "  │     ├─ factor and solve   %v\n", format(stageDuration("null_factor_solve", 0)))
+	fmt.Fprintf(&tree, "  │     └─ RSS                %v\n", format(stageDuration("null_rss", 0)))
 
 	for _, event := range recorder.events {
 		if event.stage != "chromosome_total" {
@@ -170,14 +278,33 @@ func (recorder *metricRecorder) timeTree(total time.Duration) string {
 		chromosome := event.chromosome
 		classified += event.duration
 		fmt.Fprintf(&tree, "  ├─ chr%-19d %v\n", chromosome, format(event.duration))
-		fmt.Fprintf(&tree, "  │  ├─ compute weights      %v\n", format(stageDuration("compute_weights", chromosome)))
+		fmt.Fprintf(&tree, "  │  ├─ weights              %v\n", format(stageDuration("compute_weights", chromosome)))
 		fmt.Fprintf(&tree, "  │  ├─ packed statistics    %v\n", format(stageDuration("packed_statistics", chromosome)))
+		fmt.Fprintf(&tree, "  │  │  ├─ beta packing       %v\n", format(stageDuration("beta_packing", chromosome)))
+		fmt.Fprintf(&tree, "  │  │  ├─ batch preparation  %v\n", format(stageDuration("batch_preparation", chromosome)))
+		fmt.Fprintf(&tree, "  │  │  ├─ public Q/L         %v\n", format(stageDuration("public_ql", chromosome)))
+		fmt.Fprintf(&tree, "  │  │  ├─ private Q/L        %v\n", format(stageDuration("private_ql", chromosome)))
+		fmt.Fprintf(&tree, "  │  │  ├─ kernel inputs      %v\n", format(stageDuration("kernel_inputs", chromosome)))
+		fmt.Fprintf(&tree, "  │  │  ├─ first GtG action   %v\n", format(stageDuration("first_gtg_action", chromosome)))
+		fmt.Fprintf(&tree, "  │  │  ├─ second GtG action  %v\n", format(stageDuration("second_gtg_action", chromosome)))
+		fmt.Fprintf(&tree, "  │  │  ├─ private trace correction %v\n", format(stageDuration("private_trace_correction", chromosome)))
+		fmt.Fprintf(&tree, "  │  │  └─ burden variance    %v\n", format(stageDuration("burden_variance", chromosome)))
 		fmt.Fprintf(&tree, "  │  ├─ finalize             %v\n", format(stageDuration("finalize", chromosome)))
+		fmt.Fprintf(&tree, "  │  │  ├─ alpha and score assembly %v\n", format(stageDuration("alpha_score_assembly", chromosome)))
+		fmt.Fprintf(&tree, "  │  │  ├─ burden statistic   %v\n", format(stageDuration("burden_statistic", chromosome)))
+		fmt.Fprintf(&tree, "  │  │  └─ SKAT Wilson-Hilferty %v\n", format(stageDuration("skat_wilson_hilferty", chromosome)))
 		fmt.Fprintf(&tree, "  │  └─ release              %v\n", format(stageDuration("release", chromosome)))
+		fmt.Fprintf(&tree, "  │     ├─ shares to ciphertext %v\n", format(stageDuration("shares_to_ciphertext", chromosome)))
+		fmt.Fprintf(&tree, "  │     ├─ collective decrypt %v\n", format(stageDuration("collective_decrypt", chromosome)))
+		fmt.Fprintf(&tree, "  │     └─ local p-values     %v\n", format(stageDuration("local_pvalues", chromosome)))
 	}
 
+	other := total - classified
+	if other < 0 {
+		other = 0
+	}
 	fmt.Fprintf(&tree, "  ├─ write results          %v\n", format(writeResults))
-	fmt.Fprintf(&tree, "  ├─ other overhead         %v\n", format(total-classified))
+	fmt.Fprintf(&tree, "  ├─ other overhead         %v\n", format(other))
 	fmt.Fprintf(&tree, "  └─ TOTAL                  %v\n", format(total))
 	return tree.String()
 }

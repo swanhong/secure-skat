@@ -24,6 +24,10 @@ func runChromosome(
 	chromosome := input.Chromosomes[chromosomeIndex]
 	dataParams := secureSession.dataParams[chromosomeIndex]
 	networks := mpc.ParallelNetworks(secureSession.networks)
+	observe := secureSession.metrics.observe(
+		chromosome.Chromosome,
+		networks,
+	)
 
 	done := secureSession.metrics.start(
 		"compute_weights",
@@ -58,6 +62,7 @@ func runChromosome(
 			weight,
 			signedWeight,
 			seed,
+			observe,
 		)
 	done()
 
@@ -78,6 +83,7 @@ func runChromosome(
 		geneS1,
 		geneS2,
 		geneS3,
+		observe,
 	)
 	done()
 
@@ -92,6 +98,7 @@ func runChromosome(
 		dataParams,
 		b,
 		z,
+		observe,
 	)
 	done()
 
@@ -117,7 +124,9 @@ func runParty(
 		partyID == cohortAPartyID,
 	)
 
+	done := metrics.start("input_loading", 0, nil)
 	input, err := loadPartyInput(config, partyID)
+	done()
 	if err != nil {
 		return fmt.Errorf(
 			"load party %d input: %w",

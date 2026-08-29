@@ -33,6 +33,7 @@ func ComputePackedStatistics(
 	weight []mpc_core.RVec,
 	signedWeight []mpc_core.RVec,
 	seed int64,
+	observe func(stage string) func(),
 ) (
 	gpQ, gpL, gvQ, gvL mpc_core.RMat,
 	geneV, geneS1, geneS2, geneS3 mpc_core.RVec,
@@ -74,6 +75,7 @@ func ComputePackedStatistics(
 	betaByPhenotype := make([]mpc_core.RVec, phenotypeCount)
 	packedBeta := make([]securecrypto.CipherVector, phenotypeCount)
 
+	done := observe("beta_packing")
 	for phenotype := 0; phenotype < phenotypeCount; phenotype++ {
 		betaByPhenotype[phenotype] = mpc_core.InitRVec(rtype.Zero(), dataParams.C)
 		for covariate := 0; covariate < dataParams.C; covariate++ {
@@ -81,13 +83,16 @@ func ComputePackedStatistics(
 		}
 		packedBeta[phenotype] = PackBeta(mpcObj, heParams, betaByPhenotype[phenotype])
 	}
+	done()
 
 	for _, batch := range cryptoParams.Batches {
 		// 2. Prepare the phenotype-independent values for this gene batch.
+		done = observe("batch_preparation")
 		terms := PrepareGeneBatch(
 			mpcObj, heParams, dataParams, cryptoParams, batch,
 			gp, gv, x, signedWeight,
 		)
+		done()
 
 		// 3. Compute and store the phenotype-dependent public/private Q and L.
 		for phenotype := 0; phenotype < phenotypeCount; phenotype++ {
@@ -96,15 +101,20 @@ func ComputePackedStatistics(
 				yColumn = y0.ColView(phenotype)
 			}
 
+			done = observe("public_ql")
 			batchGpQ, batchGpL := ComputeGpQL(
 				mpcObj, heParams, dataParams, cryptoParams, batch,
 				gp, yColumn, terms.gtxEncoded, packedBeta[phenotype],
 				terms.packedWeight, terms.activeMask,
 			)
+			done()
+
+			done = observe("private_ql")
 			batchGvQ, batchGvL := ComputeGvQL(
 				mpcObj, dataParams, batch, gv, yColumn,
 				terms.gvLocal, terms.gvGene, betaByPhenotype[phenotype],
 			)
+			done()
 
 			for position, geneIndex := range batch.GeneIndices {
 				gpQ[geneIndex][phenotype] = batchGpQ[position].Copy()
@@ -119,7 +129,7 @@ func ComputePackedStatistics(
 			mpcObj, heParams, dataParams, cryptoParams, batch,
 			gp, gv, x, terms.localGtx, terms.localGtG,
 			terms.gvLocal, terms.gvGene, omega,
-			weight, signedWeight, seed,
+			weight, signedWeight, seed, observe,
 		)
 
 		for position, geneIndex := range batch.GeneIndices {
