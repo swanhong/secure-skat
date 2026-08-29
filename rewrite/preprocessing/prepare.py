@@ -154,6 +154,7 @@ def prepare_chromosomes(
         covariate_path=request.covariate,
         ancestry_path=request.ancestry,
         phenotype_id_column=request.phenotype_id_column,
+        phenotype_columns=request.phenotype_columns,
         covariate_id_column=request.covariate_id_column,
         covariate_column=request.covariate_column,
         ancestry_id_column=request.ancestry_id_column,

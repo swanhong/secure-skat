@@ -117,6 +117,7 @@ def read_phenotype_table(
     table_path: Path,
     delimiter: str,
     id_column: str,
+    value_columns: tuple[str, ...],
 ) -> dict[str, dict[str, float]]:
     with table_path.open(newline="") as file:
         reader = csv.DictReader(
@@ -125,16 +126,18 @@ def read_phenotype_table(
         )
         if not reader.fieldnames:
             raise ValueError(f"no header in {table_path}")
-        if id_column not in reader.fieldnames:
-            raise ValueError(
-                f"missing {id_column} column in {table_path}"
-            )
 
-        value_columns = tuple(
+        required_columns = (id_column, *value_columns)
+        missing_columns = [
             column
-            for column in reader.fieldnames
-            if column != id_column
-        )
+            for column in required_columns
+            if column not in reader.fieldnames
+        ]
+        if missing_columns:
+            raise ValueError(
+                f"missing columns in {table_path}: "
+                f"{', '.join(missing_columns)}"
+            )
 
         return {
             row[id_column]: {
@@ -215,6 +218,7 @@ def load_sample_inputs(
     covariate_path: Path,
     ancestry_path: Path,
     phenotype_id_column: str,
+    phenotype_columns: tuple[str, ...],
     covariate_id_column: str,
     covariate_column: str,
     ancestry_id_column: str,
@@ -230,6 +234,7 @@ def load_sample_inputs(
             phenotype_path,
             delimiter=",",
             id_column=phenotype_id_column,
+            value_columns=phenotype_columns,
         ),
         covariates=read_covariate_table(
             covariate_path,
