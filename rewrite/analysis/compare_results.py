@@ -88,10 +88,32 @@ def absolute_error(left: str, right: str) -> str:
 
     return format(abs(left_value - right_value), ".17g")
 
+
+def r_squared_values(
+    secure_values: list[float],
+    reference_values: list[float],
+) -> tuple[int, float | None]:
+    if len(reference_values) < 2:
+        return len(reference_values), None
+
+    reference_mean = sum(reference_values) / len(reference_values)
+    total_sum_squares = sum(
+        (value - reference_mean) ** 2 for value in reference_values
+    )
+    if total_sum_squares == 0:
+        return len(reference_values), None
+
+    residual_sum_squares = sum(
+        (secure - reference) ** 2
+        for secure, reference in zip(secure_values, reference_values)
+    )
+    return len(reference_values), 1 - residual_sum_squares / total_sum_squares
+
+
 def r_squared(
-        rows: list[dict[str, str]],
-        secure_column: str,
-        reference_column: str,
+    rows: list[dict[str, str]],
+    secure_column: str,
+    reference_column: str,
 ) -> tuple[int, float | None]:
     secure_values = []
     reference_values = []
@@ -107,21 +129,8 @@ def r_squared(
             secure_values.append(secure_value)
             reference_values.append(reference_value)
 
-    if len(reference_values) < 2:
-        return len(reference_values), None
+    return r_squared_values(secure_values, reference_values)
 
-    reference_mean = sum(reference_values) / len(reference_values)
-    total_sum_squares = sum(
-        (value - reference_mean) ** 2 for value in reference_values
-    )
-    if total_sum_squares == 0:
-        return len(reference_values), None
-
-    residual_sum_squares = sum(
-        (secure - reference) ** 2
-        for secure, reference in zip(secure_values, reference_values)
-    )
-    return (len(reference_values), 1 - residual_sum_squares / total_sum_squares)
 
 def print_r_squared_by_pheno_and_chr(
         rows: list[dict[str, str]],

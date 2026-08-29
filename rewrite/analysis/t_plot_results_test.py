@@ -6,12 +6,44 @@ import plot_results
 
 
 class PlotResultsTest(unittest.TestCase):
+    def test_scatter_values_use_negative_log10_p(self) -> None:
+        secure, reference = plot_results.negative_log10_p_value_pairs(
+            [
+                {"secure": "0.01", "reference": "0.001"},
+                {"secure": "0", "reference": "1"},
+                {"secure": "-0.1", "reference": "0.1"},
+            ],
+            "secure",
+            "reference",
+        )
+
+        self.assertEqual(len(secure), 2)
+        self.assertAlmostEqual(secure[0], 2)
+        self.assertAlmostEqual(reference[0], 3)
+        self.assertAlmostEqual(secure[1], 300)
+        self.assertAlmostEqual(reference[1], 0)
+
     def test_writes_scatter_plots(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             temp_dir = Path(directory)
             run_dir = temp_dir / "run"
             comparison_dir = run_dir / "comparison"
             comparison_dir.mkdir(parents=True)
+            chromosome_dir = run_dir / "prepared" / "chr21"
+            chromosome_dir.mkdir(parents=True)
+
+            (chromosome_dir / "genes.txt").write_text(
+                "GENE1\nGENE2\n",
+                encoding="utf-8",
+            )
+            (chromosome_dir / "block_sizes.txt").write_text(
+                "1\n1\n",
+                encoding="utf-8",
+            )
+            (chromosome_dir / "pos.txt").write_text(
+                "21 100\n21 200\n",
+                encoding="utf-8",
+            )
 
             config_path = temp_dir / "run.conf"
             config_path.write_text(

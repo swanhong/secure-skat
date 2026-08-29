@@ -11,7 +11,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from compare_results import read_rows, r_squared
+from compare_results import read_rows, r_squared_values
 
 
 SCATTER_COMPARISONS = [
@@ -47,7 +47,11 @@ MANHATTAN_COMPARISONS = [
     ),
 ]
 
-def finite_p_value_pairs(
+def negative_log10(p_value: float) -> float:
+    return -math.log10(max(p_value, 1e-300))
+
+
+def negative_log10_p_value_pairs(
     rows: list[dict[str, str]],
     secure_column: str,
     reference_column: str,
@@ -65,9 +69,11 @@ def finite_p_value_pairs(
         if (
             math.isfinite(secure_value)
             and math.isfinite(reference_value)
+            and secure_value >= 0
+            and reference_value >= 0
         ):
-            secure_values.append(secure_value)
-            reference_values.append(reference_value)
+            secure_values.append(negative_log10(secure_value))
+            reference_values.append(negative_log10(reference_value))
 
     return secure_values, reference_values
 
@@ -79,17 +85,22 @@ def write_scatter_plot(
     title: str,
     output_path: Path,
 ) -> None:
-    secure_values, reference_values = finite_p_value_pairs(
+    secure_values, reference_values = negative_log10_p_value_pairs(
         rows,
         secure_column,
         reference_column,
     )
-    count, score = r_squared(
-        rows,
-        secure_column,
-        reference_column,
+    count, score = r_squared_values(
+        secure_values,
+        reference_values,
     )
     score_text = "NA" if score is None else f"{score:.6f}"
+
+    plot_values = [0.0, *secure_values, *reference_values]
+    lower = min(plot_values)
+    upper = max(plot_values)
+    padding = max(0.02 * (upper - lower), 0.02)
+    limits = [lower - padding, upper + padding]
 
     figure, axis = plt.subplots(figsize=(5, 5))
     axis.scatter(
@@ -99,22 +110,23 @@ def write_scatter_plot(
         s=24,
     )
     axis.plot(
-        [0, 1],
-        [0, 1],
+        limits,
+        limits,
         color="#c00000",
         linestyle="--",
         linewidth=1,
     )
-    axis.set_xlim(-0.02, 1.02)
-    axis.set_ylim(-0.02, 1.02)
-    axis.set_xlabel("R p-value")
-    axis.set_ylabel("Secure p-value")
+    axis.set_xlim(limits)
+    axis.set_ylim(limits)
+    axis.set_xlabel("R -log10(p)")
+    axis.set_ylabel("Secure -log10(p)")
     axis.set_title(f"{title}\nn={count}, $R^2$={score_text}")
     axis.grid(alpha=0.2)
 
     figure.tight_layout()
     figure.savefig(output_path, dpi=150)
     plt.close(figure)
+
 
 def read_gene_positions(
     run_dir: Path,
@@ -181,10 +193,6 @@ def read_gene_positions(
             )
 
     return gene_positions
-
-
-def negative_log10(p_value: float) -> float:
-    return -math.log10(max(p_value, 1e-300))
 
 
 def write_manhattan_plot(
