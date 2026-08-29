@@ -26,12 +26,16 @@ type prepareRequest struct {
 	Annotation string `json:"annotation"`
 	Phenotype  string `json:"phenotype"`
 	Covariate  string `json:"covariate"`
+	Ancestry   string `json:"ancestry"`
 	Plink2Bin  string `json:"plink2_bin"`
 
 	PhenotypeIDColumn string            `json:"phenotype_id_column"`
 	CovariateIDColumn string            `json:"covariate_id_column"`
 	CovariateColumn   string            `json:"covariate_column"`
+	AncestryIDColumn  string            `json:"ancestry_id_column"`
+	AncestryColumn    string            `json:"ancestry_column"`
 	PhenotypeColumns  []string          `json:"phenotype_columns"`
+	Ancestries        []string          `json:"ancestries"`
 	NumCov            int               `json:"num_cov"`
 	Mask              map[string]string `json:"mask"`
 	MaxMAF            *float64          `json:"max_maf"`
@@ -58,11 +62,15 @@ func prepareRequestFromConfig(config *Config) prepareRequest {
 		Annotation:        config.Annotation,
 		Phenotype:         config.Phenotype,
 		Covariate:         config.Covariate,
+		Ancestry:          config.Ancestry,
 		Plink2Bin:         config.Plink2Bin,
 		PhenotypeIDColumn: config.PhenotypeIDColumn,
 		CovariateIDColumn: config.CovariateIDColumn,
 		CovariateColumn:   config.CovariateColumn,
+		AncestryIDColumn:  config.AncestryIDColumn,
+		AncestryColumn:    config.AncestryColumn,
 		PhenotypeColumns:  config.PhenotypeColumns,
+		Ancestries:        config.Ancestries,
 		NumCov:            config.NumCov,
 		Mask:              mask,
 		MaxMAF:            config.MaxMAF,

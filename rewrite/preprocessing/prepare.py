@@ -47,12 +47,16 @@ class PrepareRequest:
     annotation: str
     phenotype: Path
     covariate: Path
+    ancestry: Path
     plink2_bin: str
 
     phenotype_id_column: str
     covariate_id_column: str
     covariate_column: str
+    ancestry_id_column: str
+    ancestry_column: str
     phenotype_columns: tuple[str, ...]
+    ancestries: tuple[str, ...]
     num_cov: int
     mask: Mapping[str, str | Collection[str]]
     max_maf: float | None
@@ -148,9 +152,12 @@ def prepare_chromosomes(
     sample_inputs = load_sample_inputs(
         phenotype_path=request.phenotype,
         covariate_path=request.covariate,
+        ancestry_path=request.ancestry,
         phenotype_id_column=request.phenotype_id_column,
         covariate_id_column=request.covariate_id_column,
         covariate_column=request.covariate_column,
+        ancestry_id_column=request.ancestry_id_column,
+        ancestry_column=request.ancestry_column,
         num_cov=request.num_cov,
     )
 
@@ -170,9 +177,11 @@ def prepare_chromosomes(
         )
 
     selected_genes = []
+    rows_by_ancestry = {}
     print(
         f"Running preprocessing for "
-        f"{len(request.chromosomes)} chromosomes...",
+        f"{len(request.chromosomes)} chromosomes and "
+        f"{len(request.ancestries)} ancestries...",
         flush=True,
     )
     for index, chromosome in enumerate(request.chromosomes):
@@ -195,14 +204,17 @@ def prepare_chromosomes(
             reference_chromosome = chromosome
             reference_psam_ids = inputs.psam_ids
 
-            rows_a, rows_b = select_rows(
-                psam_ids=reference_psam_ids,
-                phenotypes=sample_inputs.phenotypes,
-                covariates=sample_inputs.covariates,
-                phenotype_columns=request.phenotype_columns,
-                samples_per_cohort=samples_per_cohort,
-                sample_seed=request.sample_seed,
-            )
+            for ancestry in request.ancestries:
+                rows_by_ancestry[ancestry] = select_rows(
+                    psam_ids=reference_psam_ids,
+                    phenotypes=sample_inputs.phenotypes,
+                    covariates=sample_inputs.covariates,
+                    ancestries=sample_inputs.ancestries,
+                    ancestry=ancestry,
+                    phenotype_columns=request.phenotype_columns,
+                    samples_per_cohort=samples_per_cohort,
+                    sample_seed=request.sample_seed,
+                )
         elif inputs.psam_ids != reference_psam_ids:
             raise ValueError(
                 f"ordered PSAM IDs differ for chromosome "
@@ -222,19 +234,22 @@ def prepare_chromosomes(
         )
         selected_genes.extend(chromosome_genes)
 
-        prepare_blocks(
-            pgen_prefix=inputs.pgen_prefix,
-            gene_variants=chromosome_groups,
-            rows_a=rows_a,
-            rows_b=rows_b,
-            role_seed=request.role_seed,
-            out_dir=(
-                request.run_dir 
-                / "prepared" 
-                / f"chr{chromosome}"
-            ),
-            extractor=extractor,
-        )
+        for ancestry in request.ancestries:
+            rows_a, rows_b = rows_by_ancestry[ancestry]
+            prepare_blocks(
+                pgen_prefix=inputs.pgen_prefix,
+                gene_variants=chromosome_groups,
+                rows_a=rows_a,
+                rows_b=rows_b,
+                role_seed=request.role_seed,
+                out_dir=(
+                    request.run_dir
+                    / "prepared"
+                    / ancestry
+                    / f"chr{chromosome}"
+                ),
+                extractor=extractor,
+            )
 
     selected_genes = tuple(selected_genes)
     if request.gene_selection.mode != "all":
@@ -260,11 +275,18 @@ def read_prepare_request(
         annotation=payload["annotation"],
         phenotype=Path(payload["phenotype"]),
         covariate=Path(payload["covariate"]),
+        ancestry=Path(payload["ancestry"]),
         plink2_bin=payload["plink2_bin"],
         phenotype_id_column=payload["phenotype_id_column"],
         covariate_id_column=payload["covariate_id_column"],
         covariate_column=payload["covariate_column"],
+        ancestry_id_column=payload["ancestry_id_column"],
+        ancestry_column=payload["ancestry_column"],
         phenotype_columns=tuple(payload["phenotype_columns"]),
+        ancestries=tuple(
+            ancestry.strip().upper()
+            for ancestry in payload["ancestries"]
+        ),
         num_cov=payload["num_cov"],
         mask=payload["mask"],
         max_maf=payload["max_maf"],

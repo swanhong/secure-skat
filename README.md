@@ -10,17 +10,7 @@ python3 rewrite/testdata/1kgenome/prepare_1kgenome.py \
 go run -mod=vendor secure-rvas.go prepare \
   --config run.1kg.conf
 
-go run -mod=vendor secure-rvas.go run \
-  --config run.1kg.conf
-
-python3 rewrite/analysis/run_reference.py \
-  --config run.1kg.conf
-
-python3 rewrite/analysis/compare_results.py \
-  --config run.1kg.conf
-
-python3 rewrite/analysis/plot_results.py \
-  --config run.1kg.conf
+# The ancestry-aware run/reference/analysis commands are the next step.
 ```
 
 To rerun preprocessing from a clean `run_dir`, add `--clear`:
@@ -55,13 +45,13 @@ The target workflow runs directly from a local terminal or an All of Us (AoU) Re
 | Step | Tool | Status |
 |---|---|---|
 | 0 | `prepare_1kgenome.py` | Implemented |
-| 1 | `secure-rvas prepare` | Implemented for local filesystem inputs |
-| 2 | `secure-rvas run` | Implemented and validated with three local parties |
-| 3 | `run_reference.py` | Implemented for all configured chromosomes |
-| 4 | `compare_results.py` | Implemented with a one-to-one secure/R join |
-| 5 | `plot_results.py` | Implemented for scatter and Manhattan plots |
+| 1 | `secure-rvas prepare` | Implemented for EUR/AFR/AMR local inputs |
+| 2 | `secure-rvas run` | Pooled runner implemented; ancestry path update pending |
+| 3 | `run_reference.py` | Ancestry path update pending |
+| 4 | `compare_results.py` | Ancestry result join update pending |
+| 5 | `plot_results.py` | Ancestry plot update pending |
 
-The complete local terminal workflow is available.
+The ancestry-aware workflow is complete through preprocessing.
 
 ## Step 0: Generate 1000 Genomes test data
 
@@ -189,6 +179,12 @@ covariate = "rewrite/testdata/1kgenome/generated/ancestry_pred.tsv"
 covariate_id_column = "research_id"
 covariate_column = "pca_features"
 num_cov = 16
+
+ancestry = "rewrite/testdata/1kgenome/generated/ancestry_pred.tsv"
+ancestry_id_column = "research_id"
+ancestry_column = "ancestry_pred_other"
+ancestries = ["EUR", "AFR", "AMR"]
+samples_per_cohort = 0
 ```
 
 The current 1KG configuration applies all equality masks and then the optional
@@ -207,33 +203,44 @@ The command produces:
 ```text
 <run_dir>/
 ├── selected_genes.tsv      # Present when gene selection mode is not `all`
-├── prepared/
-│   ├── chr21/
-│   │   ├── A/
-│   │   │   ├── geno/block.<gene-index>.bin
-│   │   │   ├── cov.txt
-│   │   │   └── pheno.txt
-│   │   ├── B/
-│   │   │   ├── geno/block.<gene-index>.bin
-│   │   │   ├── private/block.<gene-index>.bin
-│   │   │   ├── cov.txt
-│   │   │   └── pheno.txt
-│   │   ├── genes.txt
-│   │   ├── block_sizes.txt
-│   │   └── pos.txt
-│   └── chr22/
+└── prepared/
+│   ├── EUR/
+│   │   ├── chr21/
+│   │   │   ├── A/
+│   │   │   │   ├── geno/block.<gene-index>.bin
+│   │   │   │   ├── cov.txt
+│   │   │   │   └── pheno.txt
+│   │   │   ├── B/
+│   │   │   │   ├── geno/block.<gene-index>.bin
+│   │   │   │   ├── private/block.<gene-index>.bin
+│   │   │   │   ├── cov.txt
+│   │   │   │   └── pheno.txt
+│   │   │   ├── genes.txt
+│   │   │   ├── block_sizes.txt
+│   │   │   └── pos.txt
+│   │   └── chr22/
+│   ├── AFR/
+│   │   ├── chr21/
+│   │   └── chr22/
+│   └── AMR/
+│       ├── chr21/
+│       └── chr22/
 ```
 
-Phenotypes and covariates are loaded once. The A/B sample split and row
-order are also selected once and reused across every configured
-chromosome.
+Phenotypes, PCA covariates, and ancestry labels are loaded once. Each ancestry
+uses all eligible samples when `samples_per_cohort = 0`, performs its own seeded
+A/B split, and reuses that split across every configured chromosome. Gene and
+annotation selection is shared across ancestries.
 
 Gene selection supports `random`, `file`, and `all` modes. In `random` mode,
 `per_chromosome` is the number selected independently for each chromosome.
 
 ## Step 2: Run secure Burden and SKAT
 
-Run three local parties from one parent command:
+The secure runner still reads the former pooled `prepared/chrN` layout. Updating
+it to run `EUR`, `AFR`, and `AMR` sequentially is the next implementation step.
+
+After that update, the command will remain:
 
 ```bash
 go run -mod=vendor secure-rvas.go run \
@@ -320,10 +327,10 @@ It writes:
 The CSV retains all raw p-values and absolute errors. A missing Davies error is
 preserved as an empty field rather than converted into an ordinary p-value.
 
-## Complete local workflow
+## Target local workflow
 
-Use a fresh `run_dir` in `run.1kg.conf` for a new preprocessing run, then execute
-the following commands from the repository root:
+The commands after `secure-rvas prepare` are not yet ancestry-aware. Once the
+runner and analysis paths are updated, the complete workflow will be:
 
 ```bash
 set -euo pipefail
@@ -354,7 +361,7 @@ nohup go run -mod=vendor secure-rvas.go run \
 
 Run the R reference, comparison, and plots after `secure/_SUCCESS` appears.
 
-## Current end-to-end validation
+## Previous pooled end-to-end validation
 
 The secure and R workflow was validated on chromosomes 21 and 22 with 20 genes
 per chromosome, two phenotypes, and 1,200 samples per cohort, for 80 comparison

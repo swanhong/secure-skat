@@ -190,17 +190,41 @@ def read_covariate_table(
         return covariates
 
 
+def read_ancestry_table(
+    table_path: Path,
+    delimiter: str,
+    id_column: str,
+    ancestry_column: str,
+) -> dict[str, str]:
+    with table_path.open(newline="") as file:
+        reader = csv.DictReader(file, delimiter=delimiter)
+        if not reader.fieldnames:
+            raise ValueError(f"no header in {table_path}")
+        for column in (id_column, ancestry_column):
+            if column not in reader.fieldnames:
+                raise ValueError(f"missing {column} column in {table_path}")
+
+        return {
+            row[id_column]: row[ancestry_column].strip().upper()
+            for row in reader
+        }
+
+
 def load_sample_inputs(
     phenotype_path: Path,
     covariate_path: Path,
+    ancestry_path: Path,
     phenotype_id_column: str,
     covariate_id_column: str,
     covariate_column: str,
+    ancestry_id_column: str,
+    ancestry_column: str,
     num_cov: int,
 ) -> SampleInputs:
     print("Loading sample inputs")
     print(f"  phenotype: {phenotype_path}")
     print(f"  covariate: {covariate_path}")
+    print(f"  ancestry: {ancestry_path}")
     return SampleInputs(
         phenotypes=read_phenotype_table(
             phenotype_path,
@@ -213,6 +237,12 @@ def load_sample_inputs(
             id_column=covariate_id_column,
             covariate_column=covariate_column,
             num_cov=num_cov,
+        ),
+        ancestries=read_ancestry_table(
+            ancestry_path,
+            delimiter="\t",
+            id_column=ancestry_id_column,
+            ancestry_column=ancestry_column,
         ),
     )
 

@@ -315,11 +315,14 @@ def select_rows(
     psam_ids: Sequence[str],
     phenotypes: Mapping[str, Mapping[str, float]],
     covariates: Mapping[str, tuple[float, ...]],
+    ancestries: Mapping[str, str],
+    ancestry: str,
     phenotype_columns: Sequence[str],
     samples_per_cohort: int | Literal["all"],
     sample_seed: int=42,
 ) -> tuple[PhenoCovRows, PhenoCovRows]:
     print("Selecting rows for cohorts")
+    print("  ancestry:", ancestry)
     print("  phenotype columns:", ", ".join(phenotype_columns))
     print("  samples per cohort:", samples_per_cohort)
     print("  sample seed:", sample_seed)
@@ -330,7 +333,11 @@ def select_rows(
 
     eligible = []
     for sample_id in psam_ids:
-        if sample_id not in phenotypes or sample_id not in covariates:
+        if (
+            sample_id not in phenotypes
+            or sample_id not in covariates
+            or ancestries.get(sample_id) != ancestry
+        ):
             continue
 
         phenotype_values = tuple(

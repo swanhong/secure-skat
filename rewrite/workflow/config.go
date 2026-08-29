@@ -17,11 +17,15 @@ type Config struct {
 	Annotation string `toml:"annotation"`
 	Phenotype  string `toml:"phenotype"`
 	Covariate  string `toml:"covariate"`
+	Ancestry   string `toml:"ancestry"`
 
 	PhenotypeIDColumn string   `toml:"phenotype_id_column"`
 	CovariateIDColumn string   `toml:"covariate_id_column"`
 	CovariateColumn   string   `toml:"covariate_column"`
+	AncestryIDColumn  string   `toml:"ancestry_id_column"`
+	AncestryColumn    string   `toml:"ancestry_column"`
 	PhenotypeColumns  []string `toml:"phenotype_columns"`
+	Ancestries        []string `toml:"ancestries"`
 	NumCov            int      `toml:"num_cov"`
 	Masks             []string `toml:"masks"`
 	MaxMAF            *float64 `toml:"max_maf"`
@@ -68,9 +72,12 @@ func ValidateConfig(config *Config) error {
 		{"annotation", config.Annotation},
 		{"phenotype", config.Phenotype},
 		{"covariate", config.Covariate},
+		{"ancestry", config.Ancestry},
 		{"phenotype_id_column", config.PhenotypeIDColumn},
 		{"covariate_id_column", config.CovariateIDColumn},
 		{"covariate_column", config.CovariateColumn},
+		{"ancestry_id_column", config.AncestryIDColumn},
+		{"ancestry_column", config.AncestryColumn},
 		{"ckks", config.CKKS},
 		{"plink2_bin", config.Plink2Bin},
 	}
@@ -116,6 +123,20 @@ func ValidateConfig(config *Config) error {
 
 	if config.NumCov < 1 {
 		return fmt.Errorf("num_cov must be positive")
+	}
+	if len(config.Ancestries) == 0 {
+		return fmt.Errorf("ancestries is required")
+	}
+	seenAncestries := make(map[string]bool, len(config.Ancestries))
+	for _, ancestry := range config.Ancestries {
+		ancestry = strings.ToUpper(strings.TrimSpace(ancestry))
+		if ancestry == "" {
+			return fmt.Errorf("ancestries contains an empty value")
+		}
+		if seenAncestries[ancestry] {
+			return fmt.Errorf("duplicate ancestry %q", ancestry)
+		}
+		seenAncestries[ancestry] = true
 	}
 
 	if len(config.Masks) == 0 {

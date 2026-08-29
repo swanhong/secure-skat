@@ -77,3 +77,4 @@ class PrepInputs:
 class SampleInputs:
     phenotypes: Mapping[str, Mapping[str, float]]
     covariates: Mapping[str, tuple[float, ...]]
+    ancestries: Mapping[str, str]
