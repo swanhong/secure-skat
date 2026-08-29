@@ -180,23 +180,16 @@ def print_r_squared_by_pheno_and_chr(
                 f"{label:<20} {count:>5} {score_text:>12}"
             )
 
-def compare_results(config_path: Path) -> None:
-    with config_path.open("rb") as config_file:
-        config = tomllib.load(config_file)
-
-    run_dir = Path(config["run_dir"])
-    comparison_dir = run_dir / "comparison"
-    comparison_dir.mkdir(parents=True, exist_ok=True)
-
-    success_path = comparison_dir / "_SUCCESS"
-    success_path.unlink(missing_ok=True)
-
+def compare_ancestry(
+    run_dir: Path,
+    ancestry: str,
+) -> None:
     secure_rows = read_rows(
-        run_dir / "secure" / "all_secure_results.tsv",
+        run_dir / "secure" / ancestry / "all_secure_results.tsv",
         delimiter="\t",
     )
     reference_rows = read_rows(
-        run_dir / "reference" / "all_r_results.csv"
+        run_dir / "reference" / ancestry / "all_r_results.csv"
     )
 
     secure_by_key = index_rows(secure_rows, "secure")
@@ -243,6 +236,8 @@ def compare_results(config_path: Path) -> None:
             }
         )
 
+    comparison_dir = run_dir / "comparison" / ancestry
+    comparison_dir.mkdir(parents=True, exist_ok=True)
     output_path = comparison_dir / "all_comparison.csv"
     with output_path.open(
         "w",
@@ -257,9 +252,26 @@ def compare_results(config_path: Path) -> None:
         writer.writeheader()
         writer.writerows(comparison_rows)
 
-    success_path.touch()
     print("Wrote secure/plain comparison to", output_path)
+    print(f"\n=== {ancestry} ===")
     print_r_squared_by_pheno_and_chr(comparison_rows)
+
+
+def compare_results(config_path: Path) -> None:
+    with config_path.open("rb") as config_file:
+        config = tomllib.load(config_file)
+
+    run_dir = Path(config["run_dir"])
+    comparison_root = run_dir / "comparison"
+    comparison_root.mkdir(parents=True, exist_ok=True)
+
+    success_path = comparison_root / "_SUCCESS"
+    success_path.unlink(missing_ok=True)
+
+    for ancestry in config["ancestries"]:
+        compare_ancestry(run_dir, ancestry)
+
+    success_path.touch()
 
 
 def main() -> None:

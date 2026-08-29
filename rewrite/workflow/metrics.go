@@ -71,14 +71,20 @@ type processMetric struct {
 
 type metricRecorder struct {
 	process     string
+	ancestry    string
 	printEvents bool
 	startedAt   time.Time
 	events      []metricEvent
 }
 
-func newMetricRecorder(process string, printEvents bool) *metricRecorder {
+func newMetricRecorder(
+	process string,
+	ancestry string,
+	printEvents bool,
+) *metricRecorder {
 	return &metricRecorder{
 		process:     process,
+		ancestry:    ancestry,
 		printEvents: printEvents,
 		startedAt:   time.Now(),
 	}
@@ -135,15 +141,17 @@ func (recorder *metricRecorder) startEvent(
 		}
 		if event.chromosome == 0 {
 			fmt.Printf(
-				"[%s] %s: %.3fs\n",
+				"[%s %s] %s: %.3fs\n",
 				recorder.process,
+				recorder.ancestry,
 				event.stage,
 				event.duration.Seconds(),
 			)
 		} else {
 			fmt.Printf(
-				"[%s] chr%d %s: %.3fs\n",
+				"[%s %s] chr%d %s: %.3fs\n",
 				recorder.process,
+				recorder.ancestry,
 				event.chromosome,
 				event.stage,
 				event.duration.Seconds(),
@@ -194,6 +202,7 @@ func (recorder *metricRecorder) writeCSV(path string) error {
 		communication := event.communication
 		rows = append(rows, []string{
 			recorder.process,
+			recorder.ancestry,
 			event.stage,
 			definition.parent,
 			definition.measurementKind,
@@ -214,6 +223,7 @@ func (recorder *metricRecorder) writeCSV(path string) error {
 
 	return writeCSV(path, []string{
 		"process",
+		"ancestry",
 		"stage",
 		"parent_stage",
 		"measurement_kind",
@@ -256,7 +266,12 @@ func (recorder *metricRecorder) timeTree(total time.Duration) string {
 	classified := inputLoading + setup + writeResults
 
 	var tree strings.Builder
-	fmt.Fprintf(&tree, "\n[%s] timing tree:\n", recorder.process)
+	fmt.Fprintf(
+		&tree,
+		"\n[%s %s] timing tree:\n",
+		recorder.process,
+		recorder.ancestry,
+	)
 	fmt.Fprintf(&tree, "  ├─ input loading          %v\n", format(inputLoading))
 	fmt.Fprintf(&tree, "  ├─ session setup          %v\n", format(setup))
 	fmt.Fprintf(&tree, "  │  ├─ network init         %v\n", format(stageDuration("network_init", 0)))

@@ -58,6 +58,9 @@ func LoadConfig(path string) (*Config, error) {
 	if _, err := toml.DecodeFile(path, config); err != nil {
 		return nil, fmt.Errorf("decode config %q, %w", path, err)
 	}
+	for index, ancestry := range config.Ancestries {
+		config.Ancestries[index] = strings.ToUpper(strings.TrimSpace(ancestry))
+	}
 	return config, nil
 }
 

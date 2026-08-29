@@ -41,31 +41,30 @@ def write_csv(path: Path, rows: list[dict[str, str]]) -> None:
         writer.writerows(rows)
 
 
-def run_reference(config_path: Path) -> None:
-    with config_path.open("rb") as config_file:
-        config = tomllib.load(config_file)
-
-    run_dir = Path(config["run_dir"])
-    chromosomes = config["chromosomes"]
-    phenotype_names = config["phenotype_columns"]
-
-    reference_dir = run_dir / "reference"
+def run_ancestry_reference(
+    run_dir: Path,
+    r_script: Path,
+    ancestry: str,
+    chromosomes: list[int],
+    phenotype_names: list[str],
+) -> None:
+    reference_dir = run_dir / "reference" / ancestry
     reference_dir.mkdir(parents=True, exist_ok=True)
-
-    success_path = reference_dir / "_SUCCESS"
-    success_path.unlink(missing_ok=True)
-
-    r_script = Path(__file__).resolve().with_name("main.R")
     all_rows: list[dict[str, str]] = []
 
     for chromosome in chromosomes:
-        print(f"Running R::SKAT for chromosome {chromosome}")
+        print(f"Running R::SKAT for {ancestry} chromosome {chromosome}")
 
         completed = subprocess.run(
             [
                 "Rscript",
                 str(r_script),
-                str(run_dir / "prepared" / f"chr{chromosome}"),
+                str(
+                    run_dir
+                    / "prepared"
+                    / ancestry
+                    / f"chr{chromosome}"
+                ),
             ],
             check=True,
             stdout=subprocess.PIPE,
@@ -110,13 +109,33 @@ def run_reference(config_path: Path) -> None:
         )
         all_rows.extend(chromosome_rows)
 
-    write_csv(reference_dir / "all_r_results.csv", all_rows)
-    success_path.touch()
+    output_path = reference_dir / "all_r_results.csv"
+    write_csv(output_path, all_rows)
+    print("Wrote R reference results to", output_path)
 
-    print(
-        "Wrote R reference results to",
-        reference_dir / "all_r_results.csv",
-    )
+
+def run_reference(config_path: Path) -> None:
+    with config_path.open("rb") as config_file:
+        config = tomllib.load(config_file)
+
+    run_dir = Path(config["run_dir"])
+    reference_root = run_dir / "reference"
+    reference_root.mkdir(parents=True, exist_ok=True)
+
+    success_path = reference_root / "_SUCCESS"
+    success_path.unlink(missing_ok=True)
+
+    r_script = Path(__file__).resolve().with_name("main.R")
+    for ancestry in config["ancestries"]:
+        run_ancestry_reference(
+            run_dir,
+            r_script,
+            ancestry,
+            config["chromosomes"],
+            config["phenotype_columns"],
+        )
+
+    success_path.touch()
 
 
 def main() -> None:

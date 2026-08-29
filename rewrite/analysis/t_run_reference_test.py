@@ -23,6 +23,7 @@ class RunReferenceTest(unittest.TestCase):
             config_path.write_text(
                 f'run_dir = "{run_dir.as_posix()}"\n'
                 "chromosomes = [21, 22]\n"
+                'ancestries = ["EUR"]\n'
                 'phenotype_columns = ["phenotype1", "phenotype2"]\n',
                 encoding="utf-8",
             )
@@ -47,9 +48,14 @@ class RunReferenceTest(unittest.TestCase):
             ) as run_r:
                 run_reference.run_reference(config_path)
 
-            reference_dir = run_dir / "reference"
-            self.assertTrue((reference_dir / "_SUCCESS").exists())
+            reference_root = run_dir / "reference"
+            reference_dir = reference_root / "EUR"
+            self.assertTrue((reference_root / "_SUCCESS").exists())
             self.assertEqual(run_r.call_count, 2)
+            self.assertEqual(
+                run_r.call_args_list[0].args[0][-1],
+                str(run_dir / "prepared" / "EUR" / "chr21"),
+            )
 
             with (reference_dir / "all_r_results.csv").open(
                 newline="",

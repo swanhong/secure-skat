@@ -10,10 +10,11 @@ import (
 
 func writeSecureResults(
 	runDir string,
+	ancestry string,
 	results []chromosomeResult,
 	phenotypeNames []string,
 ) error {
-	secureDir := filepath.Join(runDir, "secure")
+	secureDir := filepath.Join(runDir, "secure", ancestry)
 	if err := os.MkdirAll(secureDir, 0o755); err != nil {
 		return err
 	}

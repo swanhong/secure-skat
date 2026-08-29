@@ -27,9 +27,10 @@ class PlotResultsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             temp_dir = Path(directory)
             run_dir = temp_dir / "run"
-            comparison_dir = run_dir / "comparison"
+            comparison_root = run_dir / "comparison"
+            comparison_dir = comparison_root / "EUR"
             comparison_dir.mkdir(parents=True)
-            chromosome_dir = run_dir / "prepared" / "chr21"
+            chromosome_dir = run_dir / "prepared" / "EUR" / "chr21"
             chromosome_dir.mkdir(parents=True)
 
             (chromosome_dir / "genes.txt").write_text(
@@ -47,7 +48,8 @@ class PlotResultsTest(unittest.TestCase):
 
             config_path = temp_dir / "run.conf"
             config_path.write_text(
-                f'run_dir = "{run_dir.as_posix()}"\n',
+                f'run_dir = "{run_dir.as_posix()}"\n'
+                'ancestries = ["EUR"]\n',
                 encoding="utf-8",
             )
 
@@ -71,6 +73,9 @@ class PlotResultsTest(unittest.TestCase):
                 (plots_dir / "scatter_skat_liu_pheno0_chr21.png").exists()
             )
             self.assertTrue((plots_dir / "_SUCCESS").exists())
+            self.assertTrue(
+                (comparison_root / "_PLOTS_SUCCESS").exists()
+            )
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ import (
 	"github.com/aead/chacha20/chacha"
 )
 
-func createSharedPRGKeys() (string, error) {
+func createSharedPRGKeys(ancestries []string) (string, error) {
 	directory, err := os.MkdirTemp("", "secure-rvas-keys-")
 	if err != nil {
 		return "", fmt.Errorf("create shared PRG key directory: %w", err)
@@ -27,19 +27,39 @@ func createSharedPRGKeys() (string, error) {
 		"shared_key_1_2.bin",
 	}
 
-	for _, name := range keyNames {
-		key := make([]byte, chacha.KeySize)
-		if _, err := rand.Read(key); err != nil {
+	for _, ancestry := range ancestries {
+		ancestryDirectory := filepath.Join(directory, ancestry)
+		if err := os.Mkdir(ancestryDirectory, 0o700); err != nil {
 			os.RemoveAll(directory)
-			return "", fmt.Errorf("generate shared PRG key %s: %w", name, err)
+			return "", fmt.Errorf(
+				"create shared PRG key directory for %s: %w",
+				ancestry,
+				err,
+			)
 		}
-		if err := os.WriteFile(
-			filepath.Join(directory, name),
-			key,
-			0o600,
-		); err != nil {
-			os.RemoveAll(directory)
-			return "", fmt.Errorf("write shared PRG key %s: %w", name, err)
+
+		for _, name := range keyNames {
+			key := make([]byte, chacha.KeySize)
+			if _, err := rand.Read(key); err != nil {
+				os.RemoveAll(directory)
+				return "", fmt.Errorf(
+					"generate shared PRG key for %s: %w",
+					ancestry,
+					err,
+				)
+			}
+			if err := os.WriteFile(
+				filepath.Join(ancestryDirectory, name),
+				key,
+				0o600,
+			); err != nil {
+				os.RemoveAll(directory)
+				return "", fmt.Errorf(
+					"write shared PRG key for %s: %w",
+					ancestry,
+					err,
+				)
+			}
 		}
 	}
 	return directory, nil
@@ -186,7 +206,7 @@ func Run(configPath string) error {
 		return fmt.Errorf("get executable path: %w", err)
 	}
 
-	sharedKeysPath, err := createSharedPRGKeys()
+	sharedKeysPath, err := createSharedPRGKeys(config.Ancestries)
 	if err != nil {
 		return err
 	}

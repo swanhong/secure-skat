@@ -187,6 +187,7 @@ func readGenotypes(
 func loadPartyInput(
 	config *Config,
 	partyID int,
+	ancestry string,
 ) (*PartyInput, error) {
 	cohort := ""
 	switch partyID {
@@ -221,6 +222,7 @@ func loadPartyInput(
 		firstDirectory := filepath.Join(
 			config.RunDir,
 			"prepared",
+			ancestry,
 			fmt.Sprintf("chr%d", config.Chromosomes[0]),
 			cohort,
 		)
@@ -239,6 +241,7 @@ func loadPartyInput(
 		directory := filepath.Join(
 			config.RunDir,
 			"prepared",
+			ancestry,
 			fmt.Sprintf("chr%d", chromosome),
 		)
 

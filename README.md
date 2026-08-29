@@ -3,6 +3,19 @@
 ## Quick command reference
 
 ```bash
+./run_1kg_workflow.sh
+```
+
+The script runs every local 1KG step through ancestry-specific plots. To replace
+an existing configured `run_dir`, opt in to preprocessing cleanup:
+
+```bash
+CLEAR_RUN_DIR=1 ./run_1kg_workflow.sh
+```
+
+The equivalent individual commands are:
+
+```bash
 python3 rewrite/testdata/1kgenome/prepare_1kgenome.py \
   --chromosome 21 22 \
   --num-pheno 2
@@ -10,7 +23,17 @@ python3 rewrite/testdata/1kgenome/prepare_1kgenome.py \
 go run -mod=vendor secure-rvas.go prepare \
   --config run.1kg.conf
 
-# The ancestry-aware run/reference/analysis commands are the next step.
+go run -mod=vendor secure-rvas.go run \
+  --config run.1kg.conf
+
+python3 rewrite/analysis/run_reference.py \
+  --config run.1kg.conf
+
+python3 rewrite/analysis/compare_results.py \
+  --config run.1kg.conf
+
+python3 rewrite/analysis/plot_results.py \
+  --config run.1kg.conf
 ```
 
 To rerun preprocessing from a clean `run_dir`, add `--clear`:
@@ -46,12 +69,12 @@ The target workflow runs directly from a local terminal or an All of Us (AoU) Re
 |---|---|---|
 | 0 | `prepare_1kgenome.py` | Implemented |
 | 1 | `secure-rvas prepare` | Implemented for EUR/AFR/AMR local inputs |
-| 2 | `secure-rvas run` | Pooled runner implemented; ancestry path update pending |
-| 3 | `run_reference.py` | Ancestry path update pending |
-| 4 | `compare_results.py` | Ancestry result join update pending |
-| 5 | `plot_results.py` | Ancestry plot update pending |
+| 2 | `secure-rvas run` | Implemented for sequential EUR/AFR/AMR execution |
+| 3 | `run_reference.py` | Implemented per ancestry |
+| 4 | `compare_results.py` | Implemented per ancestry |
+| 5 | `plot_results.py` | Implemented per ancestry |
 
-The ancestry-aware workflow is complete through preprocessing.
+The local ancestry-aware workflow is implemented end to end.
 
 ## Step 0: Generate 1000 Genomes test data
 
@@ -237,31 +260,49 @@ Gene selection supports `random`, `file`, and `all` modes. In `random` mode,
 
 ## Step 2: Run secure Burden and SKAT
 
-The secure runner still reads the former pooled `prepared/chrN` layout. Updating
-it to run `EUR`, `AFR`, and `AMR` sequentially is the next implementation step.
-
-After that update, the command will remain:
-
 ```bash
 go run -mod=vendor secure-rvas.go run \
   --config run.1kg.conf
 ```
 
 The parent creates temporary shared PRG keys, starts parties 0, 1, and 2, and
-waits for all three processes. Each party opens one network and one MPC session,
-`SetupNull` runs once for all configured chromosomes, and chromosomes run
-sequentially in configuration order. No chromosome worker or independent MPC
-lane is used.
+waits for all three processes. Each party processes `ancestries` in configuration
+order. For every ancestry it loads the matching `prepared/<ancestry>` inputs,
+opens an independent network/MPC session, runs its own `SetupNull` once, and then
+processes all configured chromosomes sequentially with that ancestry's null
+shares. Ancestries and chromosomes are not run in parallel, and no independent
+MPC lane is used.
 
 The command writes:
 
 ```text
 <run_dir>/secure/
-├── chr21.tsv
-├── chr22.tsv
-├── all_secure_results.tsv
+├── EUR/
+│   ├── chr21.tsv
+│   ├── chr22.tsv
+│   └── all_secure_results.tsv
+├── AFR/
+│   └── ...
+├── AMR/
+│   └── ...
 └── _SUCCESS
 ```
+
+Timing and communication metrics are separated by ancestry:
+
+```text
+<run_dir>/metrics/
+├── EUR/metrics_party0.csv
+├── EUR/metrics_party1.csv
+├── EUR/metrics_party2.csv
+├── AFR/...
+├── AMR/...
+└── process_summary.csv
+```
+
+Party 1 prints one timing tree per ancestry, headed by `[party1 EUR]`,
+`[party1 AFR]`, or `[party1 AMR]`. `process_summary.csv` remains the overall
+parent/party process time and peak RSS summary for the complete secure run.
 
 `_SUCCESS` is created only after all parties and chromosomes finish. The result
 columns contain the secure Burden p-value and trace-based Wilson-Hilferty SKAT
@@ -281,13 +322,18 @@ python3 rewrite/analysis/run_reference.py \
   --config run.1kg.conf
 ```
 
-The wrapper runs every configured chromosome in order and writes:
+The wrapper runs every configured ancestry and chromosome in order and writes:
 
 ```text
 <run_dir>/reference/
-├── chr21.csv
-├── chr22.csv
-├── all_r_results.csv
+├── EUR/
+│   ├── chr21.csv
+│   ├── chr22.csv
+│   └── all_r_results.csv
+├── AFR/
+│   └── ...
+├── AMR/
+│   └── ...
 └── _SUCCESS
 ```
 
@@ -303,9 +349,6 @@ fixture and do not indicate command failure.
 ```bash
 python3 rewrite/analysis/compare_results.py \
   --config run.1kg.conf
-
-python3 rewrite/analysis/plot_results.py \
-  --config run.1kg.conf
 ```
 
 The comparison requires a one-to-one match on chromosome, gene index, gene ID,
@@ -320,17 +363,43 @@ It writes:
 
 ```text
 <run_dir>/comparison/
-├── all_comparison.csv
+├── EUR/all_comparison.csv
+├── AFR/all_comparison.csv
+├── AMR/all_comparison.csv
 └── _SUCCESS
 ```
 
 The CSV retains all raw p-values and absolute errors. A missing Davies error is
 preserved as an empty field rather than converted into an ordinary p-value.
 
-## Target local workflow
+## Step 5: Generate plots
 
-The commands after `secure-rvas prepare` are not yet ancestry-aware. Once the
-runner and analysis paths are updated, the complete workflow will be:
+```bash
+python3 rewrite/analysis/plot_results.py \
+  --config run.1kg.conf
+```
+
+Each ancestry receives chromosome-level Burden and SKAT scatter plots and
+phenotype-level Manhattan plots across all configured chromosomes:
+
+```text
+<run_dir>/comparison/<ancestry>/plots/
+├── scatter_burden_pheno<q>_chr<c>.png
+├── scatter_skat_liu_pheno<q>_chr<c>.png
+├── manhattan_burden_pheno<q>.png
+├── manhattan_skat_liu_pheno<q>.png
+└── _SUCCESS
+```
+
+## Complete local workflow
+
+Run the complete sequence with:
+
+```bash
+./run_1kg_workflow.sh
+```
+
+Its contents are equivalent to:
 
 ```bash
 set -euo pipefail
@@ -349,6 +418,9 @@ python3 rewrite/analysis/run_reference.py \
   --config run.1kg.conf
 
 python3 rewrite/analysis/compare_results.py \
+  --config run.1kg.conf
+
+python3 rewrite/analysis/plot_results.py \
   --config run.1kg.conf
 ```
 
@@ -382,9 +454,8 @@ Repeated Step 0 generation with the same inputs and seeds produced identical
 gene-panel, annotation, phenotype, and covariate file hashes. Generated local
 outputs live under `output/` and are excluded from Git.
 
-AoU input localization/normalization, ancestry-specific execution, timing and
-memory measurement, resume support, chromosome parallelism, and independent
-MPC lanes remain later work.
+AoU input localization/normalization, workflow-level timing, resume support,
+chromosome parallelism, and independent MPC lanes remain later work.
 
 ## Repository layout
 
@@ -406,10 +477,11 @@ run.aou.conf                    Draft AoU configuration; not yet compatible
 - `rewrite/protocol/` directly reuses primitives from `crypto/` and `mpc/`.
 - Secure protocol computation, including `Finalize` and `Release`, remains
   separate from workflow orchestration.
-- The initial runner uses one MPC session and processes chromosomes
-  sequentially. It does not use chromosome workers or independent MPC lanes.
-- AoU-specific conversion, timing and memory instrumentation, ancestry splits,
-  resume support, and parallel MPC lanes remain separate later work.
+- The runner uses one MPC session per ancestry and processes ancestries and
+  chromosomes sequentially. It does not use chromosome workers or independent
+  MPC lanes.
+- AoU-specific conversion, workflow-level timing, resume support, and parallel
+  MPC lanes remain separate later work.
 
 ## License and attribution
 

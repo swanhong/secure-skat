@@ -118,14 +118,33 @@ func runParty(
 	if err := ValidateConfig(config); err != nil {
 		return fmt.Errorf("validate config: %w", err)
 	}
+	for _, ancestry := range config.Ancestries {
+		if err := runAncestry(
+			config,
+			partyID,
+			filepath.Join(sharedKeysPath, ancestry),
+			ancestry,
+		); err != nil {
+			return fmt.Errorf("run ancestry %s: %w", ancestry, err)
+		}
+	}
+	return nil
+}
 
+func runAncestry(
+	config *Config,
+	partyID int,
+	sharedKeysPath string,
+	ancestry string,
+) error {
 	metrics := newMetricRecorder(
 		fmt.Sprintf("party%d", partyID),
+		ancestry,
 		partyID == cohortAPartyID,
 	)
 
 	done := metrics.start("input_loading", 0, nil)
-	input, err := loadPartyInput(config, partyID)
+	input, err := loadPartyInput(config, partyID, ancestry)
 	done()
 	if err != nil {
 		return fmt.Errorf(
@@ -181,6 +200,7 @@ func runParty(
 		done := metrics.start("write_results", 0, nil)
 		resultErr = writeSecureResults(
 			config.RunDir,
+			ancestry,
 			results,
 			config.PhenotypeColumns,
 		)
@@ -190,6 +210,7 @@ func runParty(
 	metricsPath := filepath.Join(
 		config.RunDir,
 		"metrics",
+		ancestry,
 		fmt.Sprintf("metrics_party%d.csv", partyID),
 	)
 	metricsErr := metrics.writeCSV(metricsPath)

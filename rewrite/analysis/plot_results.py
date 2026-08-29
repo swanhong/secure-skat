@@ -130,12 +130,18 @@ def write_scatter_plot(
 
 def read_gene_positions(
     run_dir: Path,
+    ancestry: str,
     chromosomes: list[int],
 ) -> dict[tuple[str, str, str], float]:
     gene_positions = {}
 
     for chromosome in chromosomes:
-        chromosome_dir = run_dir / "prepared" / f"chr{chromosome}"
+        chromosome_dir = (
+            run_dir
+            / "prepared"
+            / ancestry
+            / f"chr{chromosome}"
+        )
 
         gene_ids = (
             chromosome_dir / "genes.txt"
@@ -333,12 +339,8 @@ def write_manhattan_plot(
     figure.savefig(output_path, dpi=150)
     plt.close(figure)
 
-def plot_results(config_path: Path) -> None:
-    with config_path.open("rb") as config_file:
-        config = tomllib.load(config_file)
-
-    run_dir = Path(config["run_dir"])
-    comparison_dir = run_dir / "comparison"
+def plot_ancestry(run_dir: Path, ancestry: str) -> None:
+    comparison_dir = run_dir / "comparison" / ancestry
     plots_dir = comparison_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
 
@@ -352,6 +354,7 @@ def plot_results(config_path: Path) -> None:
     })
     gene_positions = read_gene_positions(
         run_dir,
+        ancestry,
         chromosomes,
     )
 
@@ -436,6 +439,20 @@ def plot_results(config_path: Path) -> None:
 
     success_path.touch()
     print(f"Wrote {len(written)} plots to {plots_dir}")
+
+
+def plot_results(config_path: Path) -> None:
+    with config_path.open("rb") as config_file:
+        config = tomllib.load(config_file)
+
+    run_dir = Path(config["run_dir"])
+    success_path = run_dir / "comparison" / "_PLOTS_SUCCESS"
+    success_path.unlink(missing_ok=True)
+
+    for ancestry in config["ancestries"]:
+        plot_ancestry(run_dir, ancestry)
+
+    success_path.touch()
 
 
 def main() -> None:
