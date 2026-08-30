@@ -3,9 +3,11 @@ package workflow
 import (
 	"fmt"
 	"path/filepath"
+	"runtime"
 
 	"github.com/hhcho/sfgwas/mpc"
 	"github.com/hhcho/sfgwas/rewrite/protocol"
+	"gonum.org/v1/gonum/mat"
 )
 
 type chromosomeResult struct {
@@ -20,7 +22,7 @@ func runChromosome(
 	input *PartyInput,
 	chromosomeIndex int,
 	seed int64,
-) chromosomeResult {
+) (chromosomeResult, error) {
 	chromosome := input.Chromosomes[chromosomeIndex]
 	dataParams := secureSession.dataParams[chromosomeIndex]
 	networks := mpc.ParallelNetworks(secureSession.networks)
@@ -33,6 +35,19 @@ func runChromosome(
 		chromosome.CryptoParams.R,
 	)
 
+	var localDosage *mat.Dense
+	if chromosome.GenotypeDirectory != "" {
+		var err error
+		localDosage, err = readPublicDosageSums(
+			chromosome.GenotypeDirectory,
+			chromosome.Genes,
+			input.SampleCount,
+		)
+		if err != nil {
+			return chromosomeResult{}, err
+		}
+	}
+
 	done := secureSession.metrics.start(
 		"compute_weights",
 		chromosome.Chromosome,
@@ -42,9 +57,23 @@ func runChromosome(
 		secureSession.mpcObject,
 		secureSession.heContext,
 		dataParams,
-		chromosome.PublicGenotypes,
+		localDosage,
 	)
 	done()
+
+	var public, private []*mat.Dense
+	if chromosome.GenotypeDirectory != "" {
+		var err error
+		public, private, err = readGenotypes(
+			chromosome.GenotypeDirectory,
+			chromosome.Genes,
+			input.SampleCount,
+			secureSession.mpcObject.GetPid() == cohortBPartyID,
+		)
+		if err != nil {
+			return chromosomeResult{}, err
+		}
+	}
 
 	done = secureSession.metrics.start(
 		"packed_statistics",
@@ -57,8 +86,8 @@ func runChromosome(
 			secureSession.heContext,
 			dataParams,
 			chromosome.CryptoParams,
-			chromosome.PublicGenotypes,
-			chromosome.PrivateGenotypes,
+			public,
+			private,
 			input.X,
 			input.Y,
 			secureSession.beta,
@@ -112,7 +141,7 @@ func runChromosome(
 		Genes:      dataParams.Genes,
 		BurdenP:    burdenP,
 		SKATWHP:    skatWHP,
-	}
+	}, nil
 }
 
 func runParty(
@@ -188,16 +217,20 @@ func runAncestry(
 			chromosome,
 			networks,
 		)
-		result := runChromosome(
+		result, err := runChromosome(
 			secureSession,
 			input,
 			chromosomeIndex,
 			config.Seed,
 		)
 		done()
+		if err != nil {
+			return fmt.Errorf("run chromosome %d: %w", chromosome, err)
+		}
 		if partyID == cohortAPartyID {
 			results = append(results, result)
 		}
+		runtime.GC()
 	}
 
 	var resultErr error

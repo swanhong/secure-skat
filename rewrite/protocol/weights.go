@@ -29,7 +29,7 @@ func ComputeWeights(
 	mpcObj *mpc.MPC,
 	heParams *securecrypto.CryptoParams,
 	dataParams DataParams,
-	gp []*mat.Dense,
+	localDosage *mat.Dense,
 ) (weight, signedWeight []mpc_core.RVec) {
 	total := 0
 	for _, gene := range dataParams.Genes {
@@ -43,17 +43,6 @@ func ComputeWeights(
 			signedWeight[geneIndex] = mpc_core.RVec{}
 		}
 		return weight, signedWeight
-	}
-
-	var localDosage *mat.Dense
-	if mpcObj.GetPid() != auxiliaryPartyID {
-		flatDosage := make([]float64, 0, total)
-		for geneIndex, gene := range dataParams.Genes {
-			for variantIndex := 0; variantIndex < gene.VariantCount; variantIndex++ {
-				flatDosage = append(flatDosage, mat.Sum(gp[geneIndex].ColView(variantIndex)))
-			}
-		}
-		localDosage = mat.NewDense(1, total, flatDosage)
 	}
 
 	count := ShareSum(mpcObj, localDosage, 1, total)[0]

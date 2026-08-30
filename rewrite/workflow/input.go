@@ -20,11 +20,10 @@ const (
 )
 
 type ChromosomeInput struct {
-	Chromosome       int
-	Genes            []protocol.Gene
-	CryptoParams     protocol.CryptoParams
-	PublicGenotypes  []*mat.Dense
-	PrivateGenotypes []*mat.Dense
+	Chromosome        int
+	GenotypeDirectory string
+	Genes             []protocol.Gene
+	CryptoParams      protocol.CryptoParams
 }
 
 type PartyInput struct {
@@ -184,6 +183,48 @@ func readGenotypes(
 	return public, private, nil
 }
 
+func readPublicDosageSums(
+	directory string,
+	genes []protocol.Gene,
+	rows int,
+) (*mat.Dense, error) {
+	total := 0
+	for _, gene := range genes {
+		total += gene.VariantCount
+	}
+	if total == 0 {
+		return nil, nil
+	}
+
+	dosageSums := make([]float64, total)
+	offset := 0
+	for geneIndex, gene := range genes {
+		if gene.VariantCount == 0 {
+			continue
+		}
+
+		data, err := os.ReadFile(filepath.Join(
+			directory,
+			"geno",
+			fmt.Sprintf("block.%d.bin", geneIndex),
+		))
+		if err != nil {
+			return nil, err
+		}
+
+		for row := 0; row < rows; row++ {
+			rowOffset := row * gene.VariantCount
+			for variant := 0; variant < gene.VariantCount; variant++ {
+				dosageSums[offset+variant] +=
+					float64(int8(data[rowOffset+variant]))
+			}
+		}
+		offset += gene.VariantCount
+	}
+
+	return mat.NewDense(1, total, dosageSums), nil
+}
+
 func loadPartyInput(
 	config *Config,
 	partyID int,
@@ -264,25 +305,16 @@ func loadPartyInput(
 			return nil, err
 		}
 
-		var public, private []*mat.Dense
+		genotypeDirectory := ""
 		if cohort != "" {
-			public, private, err = readGenotypes(
-				filepath.Join(directory, cohort),
-				genes,
-				input.SampleCount,
-				partyID == cohortBPartyID,
-			)
-			if err != nil {
-				return nil, err
-			}
+			genotypeDirectory = filepath.Join(directory, cohort)
 		}
 
 		input.Chromosomes[index] = ChromosomeInput{
-			Chromosome:       chromosome,
-			Genes:            genes,
-			CryptoParams:     cryptoParams,
-			PublicGenotypes:  public,
-			PrivateGenotypes: private,
+			Chromosome:        chromosome,
+			GenotypeDirectory: genotypeDirectory,
+			Genes:             genes,
+			CryptoParams:      cryptoParams,
 		}
 	}
 
