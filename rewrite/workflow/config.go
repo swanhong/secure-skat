@@ -6,6 +6,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	securecrypto "github.com/hhcho/sfgwas/crypto"
+	"github.com/hhcho/sfgwas/mpc"
 )
 
 type Config struct {
@@ -35,15 +36,18 @@ type Config struct {
 	RoleSeed         int64 `toml:"role_seed"`
 
 	CKKS           string `toml:"ckks"`
+	MpcNumThreads  int    `toml:"mpc_num_threads"`
 	DataBits       int    `toml:"data_bits"`
 	FractionalBits int    `toml:"fractional_bits"`
 	Probes         int    `toml:"probes"`
 	Seed           int64  `toml:"seed"`
-	PortBase       int    `toml:"port_base"`
 
 	Plink2Bin string `toml:"plink2_bin"`
 
 	GeneSelection GeneSelection `toml:"gene_selection"`
+
+	BindingIP string `toml:"binding_ipaddr"`
+	Servers   map[string]mpc.Server
 }
 
 type GeneSelection struct {
@@ -179,6 +183,9 @@ func ValidateConfig(config *Config) error {
 			config.CKKS,
 		)
 	}
+	if config.MpcNumThreads < 1 {
+		return fmt.Errorf("mpc_num_threads must be positive")
+	}
 
 	if config.DataBits < 1 {
 		return fmt.Errorf("data_bits must be positive")
@@ -191,9 +198,6 @@ func ValidateConfig(config *Config) error {
 	}
 	if config.Probes < 1 {
 		return fmt.Errorf("probes must be positive")
-	}
-	if config.PortBase < 1 || config.PortBase > 65533 {
-		return fmt.Errorf("port_base must be between 1 and 65533")
 	}
 
 	switch config.GeneSelection.Mode {

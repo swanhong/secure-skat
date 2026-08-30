@@ -26,14 +26,19 @@ func runChromosome(
 	chromosome := input.Chromosomes[chromosomeIndex]
 	dataParams := secureSession.dataParams[chromosomeIndex]
 	networks := mpc.ParallelNetworks(secureSession.networks)
-	observe := secureSession.metrics.observe(
-		chromosome.Chromosome,
-		networks,
-	)
+	laneObservers := make([]func(stage string) func(), len(networks))
+	for lane, network := range networks {
+		laneObservers[lane] = secureSession.metrics.observe(
+			chromosome.Chromosome,
+			mpc.ParallelNetworks{network},
+		)
+	}
+	observe := laneObservers[0]
 	observeBatch := secureSession.metrics.observePackedWidth(
 		chromosome.Chromosome,
 		chromosome.CryptoParams.R,
 	)
+	mpcObject := secureSession.mpcObjects[0]
 
 	var localDosage *mat.Dense
 	if chromosome.GenotypeDirectory != "" {
@@ -54,7 +59,7 @@ func runChromosome(
 		networks,
 	)
 	weight, signedWeight := protocol.ComputeWeights(
-		secureSession.mpcObject,
+		mpcObject,
 		secureSession.heContext,
 		dataParams,
 		localDosage,
@@ -69,7 +74,7 @@ func runChromosome(
 			chromosome.Genes,
 			batch,
 			input.SampleCount,
-			secureSession.mpcObject.GetPid() == cohortBPartyID,
+			mpcObject.GetPid() == cohortBPartyID,
 		)
 	}
 
@@ -80,7 +85,7 @@ func runChromosome(
 	)
 	gpQ, gpL, gvQ, gvL, geneV, geneS1, geneS2, geneS3, err :=
 		protocol.ComputePackedStatistics(
-			secureSession.mpcObject,
+			secureSession.mpcObjects,
 			secureSession.heContext,
 			dataParams,
 			chromosome.CryptoParams,
@@ -92,7 +97,7 @@ func runChromosome(
 			weight,
 			signedWeight,
 			seed,
-			observe,
+			laneObservers,
 			observeBatch,
 		)
 	done()
@@ -106,7 +111,7 @@ func runChromosome(
 		networks,
 	)
 	b, z := protocol.Finalize(
-		secureSession.mpcObject,
+		secureSession.mpcObjects,
 		dataParams,
 		gpQ,
 		gpL,
@@ -127,7 +132,7 @@ func runChromosome(
 		networks,
 	)
 	burdenP, skatWHP := protocol.Release(
-		secureSession.mpcObject,
+		mpcObject,
 		secureSession.heContext,
 		dataParams,
 		b,

@@ -3,7 +3,6 @@ package workflow
 import (
 	"fmt"
 	"sort"
-	"strconv"
 
 	mpc_core "github.com/hhcho/mpc-core"
 	securecrypto "github.com/hhcho/sfgwas/crypto"
@@ -14,7 +13,6 @@ import (
 
 const (
 	partyCount       = 3
-	numThreads       = 1
 	mpcFieldBits     = 256
 	divSqrtMaxLength = 64
 )
@@ -22,7 +20,7 @@ const (
 type session struct {
 	networks   []*mpc.Network
 	heContext  *securecrypto.CryptoParams
-	mpcObject  *mpc.MPC
+	mpcObjects []*mpc.MPC
 	metrics    *metricRecorder
 	dataParams []protocol.DataParams
 	beta       mpc_core.RMat
@@ -56,11 +54,11 @@ func openSession(
 
 	done := metrics.start("network_init", 0, nil)
 	networks := mpc.InitCommunication(
-		"127.0.0.1",
-		localhostServers(config.PortBase),
+		config.BindingIP,
+		config.Servers,
 		partyID,
 		partyCount,
-		numThreads,
+		config.MpcNumThreads,
 		sharedKeysPath,
 	)
 	done()
@@ -107,19 +105,24 @@ func openSession(
 	metrics.addDuration("pubkey_gen", 0, mpc.SetupTiming.PubKey)
 	metrics.addDuration("relin_key_gen", 0, mpc.SetupTiming.RelinKey)
 	metrics.addDuration("rotkey_gen", 0, mpc.SetupTiming.RotKey)
-	mpcObject := mpc.InitParallelMPCEnv(
+	mpcObjects := mpc.InitParallelMPCEnv(
 		networks,
 		mpc_core.LElem256Zero,
 		config.DataBits,
 		config.FractionalBits,
-	)[0]
-	mpcObject.SetHubPid(cohortAPartyID)
-	mpcObject.SetDivSqrtMaxLen(divSqrtMaxLength)
+	)
+
+	booleanShares := mpcObjects[0].GetBooleanShareFlag()
+	for _, mpcObject := range mpcObjects {
+		mpcObject.SetHubPid(cohortAPartyID)
+		mpcObject.SetBooleanShareFlag(booleanShares)
+		mpcObject.SetDivSqrtMaxLen(divSqrtMaxLength)
+	}
 	done()
 
 	done = metrics.start("null_model", 0, parallelNetworks)
 	beta, xtxInv, rss := protocol.SetupNull(
-		mpcObject,
+		mpcObjects[0],
 		dataParams[0],
 		input.X,
 		input.Y,
@@ -130,7 +133,7 @@ func openSession(
 	return &session{
 		networks:   networks,
 		heContext:  heContext,
-		mpcObject:  mpcObject,
+		mpcObjects: mpcObjects,
 		metrics:    metrics,
 		dataParams: dataParams,
 		beta:       beta,
@@ -207,26 +210,4 @@ func requiredGaloisElements(
 	})
 
 	return elements
-}
-
-func localhostServers(portBase int) map[string]mpc.Server {
-	return map[string]mpc.Server{
-		"party0": {
-			IpAddr: "127.0.0.1",
-			Ports: map[string]string{
-				"party1": strconv.Itoa(portBase),
-				"party2": strconv.Itoa(portBase + 1),
-			},
-		},
-		"party1": {
-			IpAddr: "127.0.0.1",
-			Ports: map[string]string{
-				"party2": strconv.Itoa(portBase + 2),
-			},
-		},
-		"party2": {
-			IpAddr: "127.0.0.1",
-			Ports:  map[string]string{},
-		},
-	}
 }

@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -79,12 +80,14 @@ type packedWidthMetric struct {
 }
 
 type metricRecorder struct {
-	process      string
-	ancestry     string
-	printEvents  bool
-	startedAt    time.Time
-	events       []metricEvent
-	packedWidths []packedWidthMetric
+	eventsMu       sync.Mutex
+	packedWidthsMu sync.Mutex
+	process        string
+	ancestry       string
+	printEvents    bool
+	startedAt      time.Time
+	events         []metricEvent
+	packedWidths   []packedWidthMetric
 }
 
 func newMetricRecorder(
@@ -132,6 +135,9 @@ func (recorder *metricRecorder) observePackedWidth(
 				ciphertextCount: 1,
 				duration:        time.Since(startedAt),
 			}
+
+			recorder.packedWidthsMu.Lock()
+			defer recorder.packedWidthsMu.Unlock()
 
 			for index := range recorder.packedWidths {
 				current := &recorder.packedWidths[index]
@@ -216,6 +222,8 @@ func (recorder *metricRecorder) addDuration(
 }
 
 func (recorder *metricRecorder) addEvent(event metricEvent) {
+	recorder.eventsMu.Lock()
+	defer recorder.eventsMu.Unlock()
 	for index := range recorder.events {
 		current := &recorder.events[index]
 		if current.stage != event.stage || current.chromosome != event.chromosome {

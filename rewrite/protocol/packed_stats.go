@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"math"
+	"sync"
 
 	mpc_core "github.com/hhcho/mpc-core"
 	securecrypto "github.com/hhcho/sfgwas/crypto"
@@ -20,7 +21,7 @@ type geneBatchTerms struct {
 }
 
 func ComputePackedStatistics(
-	mpcObj *mpc.MPC,
+	mpcObjects []*mpc.MPC,
 	heParams *securecrypto.CryptoParams,
 	dataParams DataParams,
 	cryptoParams CryptoParams,
@@ -32,7 +33,7 @@ func ComputePackedStatistics(
 	weight []mpc_core.RVec,
 	signedWeight []mpc_core.RVec,
 	seed int64,
-	observe func(stage string) func(),
+	laneObservers []func(stage string) func(),
 	observeBatch func(width, geneCount int) func(),
 ) (
 	gpQ, gpL, gvQ, gvL mpc_core.RMat,
@@ -54,9 +55,10 @@ func ComputePackedStatistics(
 
 		All outputs remain secret-shared and use global gene order.
 	*/
+	setupMPC := mpcObjects[0]
 	geneCount := len(dataParams.Genes)
 	phenotypeCount := dataParams.PhenotypeCount
-	rtype := mpcObj.GetRType()
+	rtype := setupMPC.GetRType()
 
 	gpQ = mpc_core.InitRMat(rtype.Zero(), geneCount, phenotypeCount)
 	gpL = mpc_core.InitRMat(rtype.Zero(), geneCount, phenotypeCount)
@@ -76,79 +78,143 @@ func ComputePackedStatistics(
 	betaByPhenotype := make([]mpc_core.RVec, phenotypeCount)
 	packedBeta := make([]securecrypto.CipherVector, phenotypeCount)
 
-	done := observe("beta_packing")
+	done := laneObservers[0]("beta_packing")
 	for phenotype := 0; phenotype < phenotypeCount; phenotype++ {
 		betaByPhenotype[phenotype] = mpc_core.InitRVec(rtype.Zero(), dataParams.C)
 		for covariate := 0; covariate < dataParams.C; covariate++ {
 			betaByPhenotype[phenotype][covariate] = beta[covariate][phenotype].Copy()
 		}
-		packedBeta[phenotype] = PackBeta(mpcObj, heParams, betaByPhenotype[phenotype])
+		packedBeta[phenotype] = PackBeta(setupMPC, heParams, betaByPhenotype[phenotype])
 	}
 	done()
 
-	for _, batch := range cryptoParams.Batches {
-		gp, gv, loadErr := loadGenotypes(batch)
-		if loadErr != nil {
-			err = loadErr
+	batches := cryptoParams.Batches
+	workerCount := len(mpcObjects)
+	if workerCount > len(batches) {
+		workerCount = len(batches)
+	}
+
+	batchErrors := make([]error, len(batches))
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+
+	for lane := 0; lane < workerCount; lane++ {
+		go func(lane int) {
+			defer workers.Done()
+
+			mpcObj := mpcObjects[lane]
+			observe := laneObservers[lane]
+
+			for batchIndex := lane; batchIndex < len(batches); batchIndex += workerCount {
+				batch := batches[batchIndex]
+				gp, gv, loadErr := loadGenotypes(batch)
+				if loadErr != nil {
+					batchErrors[batchIndex] = loadErr
+					return
+				}
+
+				doneBatch := observeBatch(batch.W, len(batch.GeneIndices))
+
+				// 2. Prepare phenotype-independent values.
+				done := observe("batch_preparation")
+				terms := PrepareGeneBatch(
+					mpcObj,
+					heParams,
+					dataParams,
+					cryptoParams,
+					batch,
+					gp,
+					gv,
+					x,
+					signedWeight,
+				)
+				done()
+
+				// 3. Compute phenotype-dependent public/private Q and L.
+				for phenotype := 0; phenotype < phenotypeCount; phenotype++ {
+					var yColumn mat.Vector
+					if mpcObj.GetPid() != auxiliaryPartyID {
+						yColumn = y0.ColView(phenotype)
+					}
+
+					done = observe("public_ql")
+					batchGpQ, batchGpL := ComputeGpQL(
+						mpcObj,
+						heParams,
+						dataParams,
+						cryptoParams,
+						batch,
+						gp,
+						yColumn,
+						terms.gtxEncoded,
+						packedBeta[phenotype],
+						terms.packedWeight,
+						terms.activeMask,
+					)
+					done()
+
+					done = observe("private_ql")
+					batchGvQ, batchGvL := ComputeGvQL(
+						mpcObj,
+						dataParams,
+						batch,
+						gv,
+						yColumn,
+						terms.gvLocal,
+						terms.gvGene,
+						betaByPhenotype[phenotype],
+					)
+					done()
+
+					for position, geneIndex := range batch.GeneIndices {
+						gpQ[geneIndex][phenotype] = batchGpQ[position].Copy()
+						gpL[geneIndex][phenotype] = batchGpL[position].Copy()
+						gvQ[geneIndex][phenotype] = batchGvQ[position].Copy()
+						gvL[geneIndex][phenotype] = batchGvL[position].Copy()
+					}
+				}
+
+				// 4. Compute phenotype-independent variance and traces.
+				batchV, batchS1, batchS2, batchS3 :=
+					ComputeGeneBatchKernelStatistics(
+						mpcObj,
+						heParams,
+						dataParams,
+						cryptoParams,
+						batch,
+						gp,
+						gv,
+						x,
+						terms.localGtx,
+						terms.localGtG,
+						terms.gvLocal,
+						terms.gvGene,
+						omega,
+						weight,
+						signedWeight,
+						seed,
+						observe,
+					)
+
+				for position, geneIndex := range batch.GeneIndices {
+					geneV[geneIndex] = batchV[position].Copy()
+					geneS1[geneIndex] = batchS1[position].Copy()
+					geneS2[geneIndex] = batchS2[position].Copy()
+					geneS3[geneIndex] = batchS3[position].Copy()
+				}
+
+				doneBatch()
+			}
+		}(lane)
+	}
+
+	workers.Wait()
+
+	for _, batchErr := range batchErrors {
+		if batchErr != nil {
+			err = batchErr
 			return
 		}
-
-		doneBatch := observeBatch(batch.W, len(batch.GeneIndices))
-
-		// 2. Prepare the phenotype-independent values for this gene batch.
-		done = observe("batch_preparation")
-		terms := PrepareGeneBatch(
-			mpcObj, heParams, dataParams, cryptoParams, batch,
-			gp, gv, x, signedWeight,
-		)
-		done()
-
-		// 3. Compute and store the phenotype-dependent public/private Q and L.
-		for phenotype := 0; phenotype < phenotypeCount; phenotype++ {
-			var yColumn mat.Vector
-			if mpcObj.GetPid() != auxiliaryPartyID {
-				yColumn = y0.ColView(phenotype)
-			}
-
-			done = observe("public_ql")
-			batchGpQ, batchGpL := ComputeGpQL(
-				mpcObj, heParams, dataParams, cryptoParams, batch,
-				gp, yColumn, terms.gtxEncoded, packedBeta[phenotype],
-				terms.packedWeight, terms.activeMask,
-			)
-			done()
-
-			done = observe("private_ql")
-			batchGvQ, batchGvL := ComputeGvQL(
-				mpcObj, dataParams, batch, gv, yColumn,
-				terms.gvLocal, terms.gvGene, betaByPhenotype[phenotype],
-			)
-			done()
-
-			for position, geneIndex := range batch.GeneIndices {
-				gpQ[geneIndex][phenotype] = batchGpQ[position].Copy()
-				gpL[geneIndex][phenotype] = batchGpL[position].Copy()
-				gvQ[geneIndex][phenotype] = batchGvQ[position].Copy()
-				gvL[geneIndex][phenotype] = batchGvL[position].Copy()
-			}
-		}
-
-		// 4. Compute and store the phenotype-independent Burden variance and kernel traces.
-		batchV, batchS1, batchS2, batchS3 := ComputeGeneBatchKernelStatistics(
-			mpcObj, heParams, dataParams, cryptoParams, batch,
-			gp, gv, x, terms.localGtx, terms.localGtG,
-			terms.gvLocal, terms.gvGene, omega,
-			weight, signedWeight, seed, observe,
-		)
-
-		for position, geneIndex := range batch.GeneIndices {
-			geneV[geneIndex] = batchV[position].Copy()
-			geneS1[geneIndex] = batchS1[position].Copy()
-			geneS2[geneIndex] = batchS2[position].Copy()
-			geneS3[geneIndex] = batchS3[position].Copy()
-		}
-
-		doneBatch()
 	}
 
 	return

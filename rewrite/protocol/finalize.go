@@ -2,13 +2,14 @@ package protocol
 
 import (
 	"math"
+	"sync"
 
 	mpc_core "github.com/hhcho/mpc-core"
 	"github.com/hhcho/sfgwas/mpc"
 )
 
 func Finalize(
-	mpcObj *mpc.MPC,
+	mpcObjects []*mpc.MPC,
 	dataParams DataParams,
 	gpQ, gpL, gvQ, gvL mpc_core.RMat,
 	rss, geneV, geneS1, geneS2, geneS3 mpc_core.RVec,
@@ -31,7 +32,7 @@ func Finalize(
 
 		Outputs use gene-major order g*q+t.
 	*/
-
+	mpcObj := mpcObjects[0]
 	rtype := mpcObj.GetRType()
 	dataBits := mpcObj.GetDataBits()
 	fracBits := mpcObj.GetFracBits()
@@ -39,9 +40,36 @@ func Finalize(
 	phenotypeCount := dataParams.PhenotypeCount
 	outputLength := geneCount * phenotypeCount
 
-	multiply := func(left, right mpc_core.RVec) mpc_core.RVec {
-		product := mpcObj.SSMultElemVec(left, right)
-		return mpcObj.TruncVec(product, dataBits, fracBits)
+	multiply := func(
+		workerMPC *mpc.MPC,
+		left, right mpc_core.RVec,
+	) mpc_core.RVec {
+		product := workerMPC.SSMultElemVec(left, right)
+		return workerMPC.TruncVec(product, dataBits, fracBits)
+	}
+
+	runChunks := func(
+		work func(workerMPC *mpc.MPC, start, end int),
+	) {
+		workerCount := len(mpcObjects)
+		if workerCount > outputLength {
+			workerCount = outputLength
+		}
+
+		var workers sync.WaitGroup
+		workers.Add(workerCount)
+
+		for lane := 0; lane < workerCount; lane++ {
+			start := lane * outputLength / workerCount
+			end := (lane + 1) * outputLength / workerCount
+
+			go func(lane, start, end int) {
+				defer workers.Done()
+				work(mpcObjects[lane], start, end)
+			}(lane, start, end)
+		}
+
+		workers.Wait()
 	}
 
 	// 1. Compute alpha[t] = (N - C) / (2 * rss[t]).
@@ -87,39 +115,49 @@ func Finalize(
 	}
 
 	// 3. Compute Qs and Qb.
-	scoreQuadratic = multiply(alphaByGene, scoreQuadratic)
+	scoreQuadratic = multiply(mpcObj, alphaByGene, scoreQuadratic)
 
-	burdenLinearSquared := multiply(burdenLinear, burdenLinear)
-	burdenQuadratic := multiply(alphaByGene, burdenLinearSquared)
+	burdenLinearSquared := multiply(mpcObj, burdenLinear, burdenLinear)
+	burdenQuadratic := multiply(mpcObj, alphaByGene, burdenLinearSquared)
 	done()
 
 	// 4. Compute b = sqrt(Qb) / sqrt(V).
 	done = observe("burden_statistic")
-	sqrtBurdenQuadratic, _ := mpcObj.SqrtAndSqrtInverse(
-		burdenQuadratic,
-		false,
-	)
-	_, invSqrtVariance := mpcObj.SqrtAndSqrtInverse(
-		variance,
-		false,
-	)
-	b = multiply(
-		sqrtBurdenQuadratic,
-		invSqrtVariance,
-	)
+	b = mpc_core.InitRVec(rtype.Zero(), outputLength)
+
+	runChunks(func(workerMPC *mpc.MPC, start, end int) {
+		sqrtBurdenQuadratic, _ := workerMPC.SqrtAndSqrtInverse(
+			burdenQuadratic[start:end],
+			false,
+		)
+		_, invSqrtVariance := workerMPC.SqrtAndSqrtInverse(
+			variance[start:end],
+			false,
+		)
+		chunk := multiply(
+			workerMPC,
+			sqrtBurdenQuadratic,
+			invSqrtVariance,
+		)
+		copy(b[start:end], chunk)
+	})
 	done()
 
 	// 5. Compute the Wilson-Hilferty SKAT pivot.
 	done = observe("skat_wilson_hilferty")
-	z = WilsonHilferty(
-		mpcObj,
-		scoreQuadratic,
-		s1,
-		s2,
-		s3,
-	)
-	done()
+	z = mpc_core.InitRVec(rtype.Zero(), outputLength)
 
+	runChunks(func(workerMPC *mpc.MPC, start, end int) {
+		chunk := WilsonHilferty(
+			workerMPC,
+			scoreQuadratic[start:end],
+			s1[start:end],
+			s2[start:end],
+			s3[start:end],
+		)
+		copy(z[start:end], chunk)
+	})
+	done()
 	return b, z
 }
 
