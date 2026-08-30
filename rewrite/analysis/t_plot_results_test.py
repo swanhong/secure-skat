@@ -37,7 +37,7 @@ class PlotResultsTest(unittest.TestCase):
         self.assertAlmostEqual(secure[1], 300)
         self.assertAlmostEqual(reference[1], 0)
 
-    def test_writes_scatter_plots(self) -> None:
+    def test_writes_plots_with_empty_gene(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             temp_dir = Path(directory)
             run_dir = temp_dir / "run"
@@ -48,15 +48,15 @@ class PlotResultsTest(unittest.TestCase):
             chromosome_dir.mkdir(parents=True)
 
             (chromosome_dir / "genes.txt").write_text(
-                "GENE1\nGENE2\n",
+                "EMPTY\nGENE2\n",
                 encoding="utf-8",
             )
             (chromosome_dir / "block_sizes.txt").write_text(
-                "1\n1\n",
+                "0\n1\n",
                 encoding="utf-8",
             )
             (chromosome_dir / "pos.txt").write_text(
-                "21 100\n21 200\n",
+                "21 200\n",
                 encoding="utf-8",
             )
 
@@ -72,7 +72,7 @@ class PlotResultsTest(unittest.TestCase):
                 "phenotype_index,phenotype_name,"
                 "secure_burden_p,r_burden_p,"
                 "secure_skat_wh_p,r_skat_liu_p\n"
-                "21,0,GENE1,0,phenotype1,0.1,0.1,0.2,0.21\n"
+                "21,0,EMPTY,0,phenotype1,1,1,1,1\n"
                 "21,1,GENE2,0,phenotype1,0.8,0.79,0.9,0.88\n",
                 encoding="utf-8",
             )
@@ -85,6 +85,12 @@ class PlotResultsTest(unittest.TestCase):
             )
             self.assertTrue(
                 (plots_dir / "scatter_skat_liu_pheno0_chr21.png").exists()
+            )
+            self.assertTrue(
+                (plots_dir / "manhattan_burden_pheno0.png").exists()
+            )
+            self.assertTrue(
+                (plots_dir / "manhattan_skat_liu_pheno0.png").exists()
             )
             self.assertTrue((plots_dir / "_SUCCESS").exists())
             self.assertTrue(

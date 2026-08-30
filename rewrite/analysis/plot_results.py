@@ -3,7 +3,6 @@
 import argparse
 import math
 import tomllib
-import statistics
 from pathlib import Path
 
 import matplotlib
@@ -131,82 +130,8 @@ def write_scatter_plot(
     plt.close(figure)
 
 
-def read_gene_positions(
-    run_dir: Path,
-    ancestry: str,
-    chromosomes: list[int],
-) -> dict[tuple[str, str, str], float]:
-    gene_positions = {}
-
-    for chromosome in chromosomes:
-        chromosome_dir = (
-            run_dir
-            / "prepared"
-            / ancestry
-            / f"chr{chromosome}"
-        )
-
-        gene_ids = (
-            chromosome_dir / "genes.txt"
-        ).read_text(encoding="utf-8").splitlines()
-        block_sizes = [
-            int(value)
-            for value in (
-                chromosome_dir / "block_sizes.txt"
-            ).read_text(encoding="utf-8").splitlines()
-        ]
-        position_rows = [
-            line.split()
-            for line in (
-                chromosome_dir / "pos.txt"
-            ).read_text(encoding="utf-8").splitlines()
-        ]
-
-        if len(gene_ids) != len(block_sizes):
-            raise ValueError(
-                f"chr{chromosome}: genes and block sizes do not match"
-            )
-        if sum(block_sizes) != len(position_rows):
-            raise ValueError(
-                f"chr{chromosome}: block sizes and positions do not match"
-            )
-
-        offset = 0
-        for gene_index, (gene_id, block_size) in enumerate(
-            zip(gene_ids, block_sizes)
-        ):
-            block_positions = position_rows[
-                offset:offset + block_size
-            ]
-            offset += block_size
-
-            if not block_positions:
-                raise ValueError(
-                    f"chr{chromosome}: gene {gene_id} has no position"
-                )
-            if any(
-                int(row[0]) != chromosome
-                for row in block_positions
-            ):
-                raise ValueError(
-                    f"chr{chromosome}: position chromosome mismatch"
-                )
-
-            gene_positions[
-                (str(chromosome), str(gene_index), gene_id)
-            ] = float(
-                statistics.median(
-                    int(row[1])
-                    for row in block_positions
-                )
-            )
-
-    return gene_positions
-
-
 def write_manhattan_plot(
     rows: list[dict[str, str]],
-    gene_positions: dict[tuple[str, str, str], float],
     secure_column: str,
     secure_label: str,
     reference_column: str,
@@ -214,40 +139,27 @@ def write_manhattan_plot(
     title: str,
     output_path: Path,
 ) -> None:
-    positioned_rows = []
-
-    for row in rows:
-        key = (
-            row["chromosome"],
-            row["gene_index"],
-            row["gene_id"],
+    positioned_rows = [
+        (
+            int(row["chromosome"]),
+            int(row["gene_index"]),
+            row,
         )
-        if key not in gene_positions:
-            raise ValueError(
-                f"gene position not found: {key}"
-            )
-
-        positioned_rows.append(
-            (
-                int(row["chromosome"]),
-                gene_positions[key],
-                int(row["gene_index"]),
-                row,
-            )
-        )
+        for row in rows
+    ]
 
     positioned_rows.sort(
-        key=lambda item: (item[0], item[1], item[2])
+        key=lambda item: (item[0], item[1])
     )
 
     chromosomes = sorted({
         chromosome
-        for chromosome, _, _, _ in positioned_rows
+        for chromosome, _, _ in positioned_rows
     })
     chromosome_indices = {
         chromosome: [
             index
-            for index, (row_chromosome, _, _, _) in enumerate(
+            for index, (row_chromosome, _, _) in enumerate(
                 positioned_rows
             )
             if row_chromosome == chromosome
@@ -285,7 +197,7 @@ def write_manhattan_plot(
         y_values = []
         colors = []
 
-        for index, (chromosome, _, _, row) in enumerate(
+        for index, (chromosome, _, row) in enumerate(
             positioned_rows
         ):
             try:
@@ -342,6 +254,7 @@ def write_manhattan_plot(
     figure.savefig(output_path, dpi=150)
     plt.close(figure)
 
+
 def plot_ancestry(run_dir: Path, ancestry: str) -> None:
     comparison_dir = run_dir / "comparison" / ancestry
     plots_dir = comparison_dir / "plots"
@@ -351,15 +264,6 @@ def plot_ancestry(run_dir: Path, ancestry: str) -> None:
     success_path.unlink(missing_ok=True)
 
     rows = read_rows(comparison_dir / "all_comparison.csv")
-    chromosomes = sorted({
-        int(row["chromosome"])
-        for row in rows
-    })
-    gene_positions = read_gene_positions(
-        run_dir,
-        ancestry,
-        chromosomes,
-    )
 
     chromosome_groups = {}
     phenotype_groups = {}
@@ -430,7 +334,6 @@ def plot_ancestry(run_dir: Path, ancestry: str) -> None:
             )
             write_manhattan_plot(
                 rows=group,
-                gene_positions=gene_positions,
                 secure_column=secure_column,
                 secure_label=secure_label,
                 reference_column=reference_column,
