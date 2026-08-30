@@ -1246,6 +1246,39 @@ func ComputeKernelTraces(
 		weightSquared[position] = mpcObj.TruncVec(weightSquared[position], dataBits, fracBits)
 	}
 
+	// 3a. Compute tau1 before the public GtG actions.
+	flattenMatrix := func(matrix mpc_core.RMat) mpc_core.RVec {
+		rows, columns := matrix.Dims()
+		values := mpc_core.InitRVec(rtype.Zero(), rows*columns)
+
+		offset := 0
+		for row := 0; row < rows; row++ {
+			for column := 0; column < columns; column++ {
+				values[offset] = matrix[row][column].Copy()
+				offset++
+			}
+		}
+		return values
+	}
+
+	tau1 := mpc_core.InitRVec(rtype.Zero(), geneCount)
+	for position, geneIndex := range batch.GeneIndices {
+		if dataParams.Genes[geneIndex].VariantCount == 0 {
+			continue
+		}
+
+		weightedTheta := scaleSharedRows(mpcObj, weightSquared[position], theta[position])
+		diagTerm := sharedDot(mpcObj, weightSquared[position], diagGtG[position])
+		projectionTerm := sharedDot(
+			mpcObj, flattenMatrix(weightedTheta), flattenMatrix(pooledGtx[position]),
+		)
+
+		scaled := mpc_core.RVec{
+			diagTerm.Sub(projectionTerm).Mul(rtype.FromFloat64(0.5, fracBits)),
+		}
+		tau1[position] = mpcObj.TruncVec(scaled, dataBits, fracBits)[0]
+	}
+
 	// 4. Build the first combined GtG right-hand side.
 	// delta3Basis = ConcatColumns(c0GpGpProbe, c0GpX, theta)
 	// weightedProbe = Diag(weight) * traceProbe
@@ -1405,27 +1438,10 @@ func ComputeKernelTraces(
 		)
 	}
 
-	// 8. Compute tau1, tau2, tau3, and delta3Action.
-	// tau1 = 0.5 * (Dot(weightSquared, diagGtG)
-	//        - Dot(Diag(weightSquared)*theta, pooledGtx))
+	// 8. Compute tau2, tau3, and delta3Action.
 	// tau2 = probeScale * Dot(kProbe, kProbe)
 	// tau3 = probeScale * Dot(kProbe, kSquaredProbe)
 	// delta3Action = 2 * Diag(weight) * basisAction
-	flattenMatrix := func(matrix mpc_core.RMat) mpc_core.RVec {
-		rows, columns := matrix.Dims()
-		values := mpc_core.InitRVec(rtype.Zero(), rows*columns)
-
-		offset := 0
-		for row := 0; row < rows; row++ {
-			for column := 0; column < columns; column++ {
-				values[offset] = matrix[row][column].Copy()
-				offset++
-			}
-		}
-		return values
-	}
-
-	tau1 := mpc_core.InitRVec(rtype.Zero(), geneCount)
 	tau2 := mpc_core.InitRVec(rtype.Zero(), geneCount)
 	tau3 := mpc_core.InitRVec(rtype.Zero(), geneCount)
 	delta3Action := make([]mpc_core.RMat, geneCount)
@@ -1435,27 +1451,18 @@ func ComputeKernelTraces(
 			continue
 		}
 
-		weightedTheta := scaleSharedRows(mpcObj, weightSquared[position], theta[position])
-
-		diagTerm := sharedDot(mpcObj, weightSquared[position], diagGtG[position])
-		projectionTerm := sharedDot(
-			mpcObj, flattenMatrix(weightedTheta), flattenMatrix(pooledGtx[position]),
-		)
-
 		flatKProbe := flattenMatrix(kProbe[position])
 		tau2Term := sharedDot(mpcObj, flatKProbe, flatKProbe)
 		tau3Term := sharedDot(mpcObj, flatKProbe, flattenMatrix(kSquaredProbe[position]))
 
 		scaledTau := mpc_core.RVec{
-			diagTerm.Sub(projectionTerm).Mul(rtype.FromFloat64(0.5, fracBits)),
 			tau2Term.Mul(rtype.FromFloat64(probeScale[position], fracBits)),
 			tau3Term.Mul(rtype.FromFloat64(probeScale[position], fracBits)),
 		}
 		scaledTau = mpcObj.TruncVec(scaledTau, dataBits, fracBits)
 
-		tau1[position] = scaledTau[0]
-		tau2[position] = scaledTau[1]
-		tau3[position] = scaledTau[2]
+		tau2[position] = scaledTau[0]
+		tau3[position] = scaledTau[1]
 
 		delta3Action[position] = scaleSharedRows(mpcObj, batchWeight[position], basisAction[position])
 		delta3Action[position].MulScalar(rtype.FromInt(2))
