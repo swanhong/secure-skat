@@ -73,15 +73,21 @@ def read_gene_panel(
             delimiter="\t",
         )
 
-        return tuple(
-            GeneRef(
-                gene_id=row["gene_id"],
-                gene_symbol=row["gene_symbol"],
-                chromosome=row["chromosome"],
-                order_index=int(row["order_index"]),
+        genes = []
+        for line_number, row in enumerate(reader, start=2):
+            if not row["gene_id"].strip():
+                raise ValueError(
+                    f"{panel_path}:{line_number}: gene_id is required"
+                )
+            genes.append(
+                GeneRef(
+                    gene_id=row["gene_id"],
+                    gene_symbol=row["gene_symbol"],
+                    chromosome=row["chromosome"],
+                    order_index=int(row["order_index"]),
+                )
             )
-            for row in reader
-        )
+        return tuple(genes)
 
 def read_annotations(
     annotation_path: Path,

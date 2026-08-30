@@ -322,6 +322,17 @@ Party 1 prints one timing tree per ancestry, headed by `[party1 EUR]`,
 `[party1 AFR]`, or `[party1 AMR]`. `process_summary.csv` remains the overall
 parent/party process time and peak RSS summary for the complete secure run.
 
+Summarize the key Party 1 timings by ancestry and chromosome with:
+
+```bash
+./summarize_metrics.sh <run_dir>
+```
+
+The default run directory is `output/secure-rvas-aou`. Pass a second argument
+to summarize another party, for example `./summarize_metrics.sh <run_dir> 0`.
+The stage columns are independently measured and may overlap when work runs in
+parallel, so they should not be added to reconstruct the chromosome total.
+
 `_SUCCESS` is created only after all parties and chromosomes finish. The result
 columns contain the secure Burden p-value and trace-based Wilson-Hilferty SKAT
 p-value. Values are stored without clipping, so very small fixed-point or CKKS

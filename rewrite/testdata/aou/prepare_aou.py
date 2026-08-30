@@ -219,9 +219,16 @@ def normalize_annotation(
     maf_column: str,
 ) -> None:
     if annotation_output.exists() and gene_panel_output.exists():
-        print("exists:", annotation_output)
-        print("exists:", gene_panel_output)
-        return
+        with gene_panel_output.open(newline="") as file:
+            reader = csv.DictReader(file, delimiter="\t")
+            has_empty_gene_id = any(
+                not row["gene_id"].strip() for row in reader
+            )
+        if not has_empty_gene_id:
+            print("exists:", annotation_output)
+            print("exists:", gene_panel_output)
+            return
+        print("regenerating gene panel with empty gene_id:", gene_panel_output)
 
     wanted = annotation_keys(source, maf_column)
     ids = pvar_ids(pvar_path, wanted)
@@ -257,7 +264,12 @@ def normalize_annotation(
             if variant_id is None:
                 continue
 
+            gene_id = row["gene_id"].strip()
+            if not gene_id:
+                continue
+
             row["variant_key"] = variant_id
+            row["gene_id"] = gene_id
             row["MAF"] = format(
                 minor_allele_frequency(row[maf_column]),
                 ".17g",
@@ -265,7 +277,6 @@ def normalize_annotation(
             writer.writerow(row)
             written += 1
 
-            gene_id = row["gene_id"]
             gene_symbol = row["gene_symbol"]
             position = alleles[0]
             previous = genes.get(gene_id)

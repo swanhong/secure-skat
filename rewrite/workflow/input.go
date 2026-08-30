@@ -86,6 +86,13 @@ func readGenes(directory string) ([]protocol.Gene, error) {
 
 	geneIDs := strings.Fields(string(geneData))
 	counts := strings.Fields(string(countData))
+	if len(geneIDs) != len(counts) {
+		return nil, fmt.Errorf(
+			"genes.txt has %d genes but block_sizes.txt has %d entries",
+			len(geneIDs),
+			len(counts),
+		)
+	}
 	genes := make([]protocol.Gene, len(geneIDs))
 	for index, geneID := range geneIDs {
 		variantCount, err := strconv.Atoi(counts[index])
