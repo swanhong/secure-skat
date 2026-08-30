@@ -1,6 +1,7 @@
 import csv
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -41,11 +42,15 @@ class RunReferenceTest(unittest.TestCase):
                 for output in r_outputs
             ]
 
-            with patch.object(
-                run_reference.subprocess,
-                "run",
-                side_effect=completed,
-            ) as run_r:
+            with (
+                patch("os.cpu_count", return_value=8),
+                patch.dict(run_reference.os.environ, {}, clear=True),
+                patch.object(
+                    run_reference.subprocess,
+                    "run",
+                    side_effect=completed,
+                ) as run_r,
+            ):
                 run_reference.run_reference(config_path)
 
             reference_root = run_dir / "reference"
@@ -73,6 +78,81 @@ class RunReferenceTest(unittest.TestCase):
                 ["phenotype1", "phenotype2"] * 2,
             )
             self.assertEqual(rows[2]["r_skat_davies_converged"], "NA")
+
+    def test_uses_available_cpus_across_reference_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temp_dir = Path(directory)
+            run_dir = temp_dir / "run"
+            config_path = temp_dir / "run.conf"
+            config_path.write_text(
+                f'run_dir = "{run_dir.as_posix()}"\n'
+                "chromosomes = [21, 22]\n"
+                'ancestries = ["EUR", "AFR", "AMR"]\n'
+                'phenotype_columns = ["phenotype1"]\n',
+                encoding="utf-8",
+            )
+
+            barrier = threading.Barrier(4)
+            lock = threading.Lock()
+            started = 0
+
+            def run_r(
+                command: list[str],
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess[str]:
+                nonlocal started
+                with lock:
+                    wait_for_parallel_start = started < 4
+                    started += 1
+
+                if wait_for_parallel_start:
+                    barrier.wait(timeout=2)
+
+                environment = kwargs["env"]
+                self.assertIsInstance(environment, dict)
+                self.assertEqual(
+                    environment["OPENBLAS_NUM_THREADS"],
+                    "8",
+                )
+
+                input_dir = Path(command[-1])
+                ancestry = input_dir.parent.name
+                chromosome = input_dir.name.removeprefix("chr")
+                output = (
+                    R_HEADER
+                    + f"0\t{ancestry}{chromosome}\t0\t1\t1\tNA\t1\n"
+                )
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=output,
+                )
+
+            with (
+                patch("os.cpu_count", return_value=32),
+                patch.dict(run_reference.os.environ, {}, clear=True),
+                patch.object(
+                    run_reference.subprocess,
+                    "run",
+                    side_effect=run_r,
+                ) as run_r_mock,
+            ):
+                run_reference.run_reference(config_path)
+
+            self.assertEqual(run_r_mock.call_count, 6)
+            self.assertTrue((run_dir / "reference" / "_SUCCESS").exists())
+            for ancestry in ("EUR", "AFR", "AMR"):
+                with (
+                    run_dir
+                    / "reference"
+                    / ancestry
+                    / "all_r_results.csv"
+                ).open(newline="", encoding="utf-8") as result_file:
+                    rows = list(csv.DictReader(result_file))
+                self.assertEqual(
+                    [row["chromosome"] for row in rows],
+                    ["21", "22"],
+                )
 
 
 if __name__ == "__main__":
