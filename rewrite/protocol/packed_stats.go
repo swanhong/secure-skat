@@ -24,8 +24,7 @@ func ComputePackedStatistics(
 	heParams *securecrypto.CryptoParams,
 	dataParams DataParams,
 	cryptoParams CryptoParams,
-	gp []*mat.Dense,
-	gv []*mat.Dense,
+	loadGenotypes func(GeneBatch) (gp, gv []*mat.Dense, err error),
 	x *mat.Dense,
 	y0 *mat.Dense,
 	beta mpc_core.RMat,
@@ -38,6 +37,7 @@ func ComputePackedStatistics(
 ) (
 	gpQ, gpL, gvQ, gvL mpc_core.RMat,
 	geneV, geneS1, geneS2, geneS3 mpc_core.RVec,
+	err error,
 ) {
 	/*
 		Compute all packed phenotype and kernel statistics.
@@ -87,6 +87,12 @@ func ComputePackedStatistics(
 	done()
 
 	for _, batch := range cryptoParams.Batches {
+		gp, gv, loadErr := loadGenotypes(batch)
+		if loadErr != nil {
+			err = loadErr
+			return
+		}
+
 		doneBatch := observeBatch(batch.W, len(batch.GeneIndices))
 
 		// 2. Prepare the phenotype-independent values for this gene batch.
@@ -145,7 +151,7 @@ func ComputePackedStatistics(
 		doneBatch()
 	}
 
-	return gpQ, gpL, gvQ, gvL, geneV, geneS1, geneS2, geneS3
+	return
 }
 
 func PrepareGeneBatch(

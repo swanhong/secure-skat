@@ -61,18 +61,16 @@ func runChromosome(
 	)
 	done()
 
-	var public, private []*mat.Dense
-	if chromosome.GenotypeDirectory != "" {
-		var err error
-		public, private, err = readGenotypes(
+	loadGenotypes := func(
+		batch protocol.GeneBatch,
+	) ([]*mat.Dense, []*mat.Dense, error) {
+		return readGeneBatch(
 			chromosome.GenotypeDirectory,
 			chromosome.Genes,
+			batch,
 			input.SampleCount,
 			secureSession.mpcObject.GetPid() == cohortBPartyID,
 		)
-		if err != nil {
-			return chromosomeResult{}, err
-		}
 	}
 
 	done = secureSession.metrics.start(
@@ -80,14 +78,13 @@ func runChromosome(
 		chromosome.Chromosome,
 		networks,
 	)
-	gpQ, gpL, gvQ, gvL, geneV, geneS1, geneS2, geneS3 :=
+	gpQ, gpL, gvQ, gvL, geneV, geneS1, geneS2, geneS3, err :=
 		protocol.ComputePackedStatistics(
 			secureSession.mpcObject,
 			secureSession.heContext,
 			dataParams,
 			chromosome.CryptoParams,
-			public,
-			private,
+			loadGenotypes,
 			input.X,
 			input.Y,
 			secureSession.beta,
@@ -99,6 +96,9 @@ func runChromosome(
 			observeBatch,
 		)
 	done()
+	if err != nil {
+		return chromosomeResult{}, err
+	}
 
 	done = secureSession.metrics.start(
 		"finalize",

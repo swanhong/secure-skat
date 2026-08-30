@@ -147,21 +147,27 @@ func readPrivateInt8Matrix(
 	), nil
 }
 
-func readGenotypes(
+func readGeneBatch(
 	directory string,
 	genes []protocol.Gene,
+	batch protocol.GeneBatch,
 	rows int,
 	includePrivate bool,
 ) (public, private []*mat.Dense, err error) {
+	if directory == "" {
+		return nil, nil, nil
+	}
+
 	if includePrivate {
 		private = make([]*mat.Dense, len(genes))
 	}
 	public = make([]*mat.Dense, len(genes))
 
-	for index, gene := range genes {
-		block := fmt.Sprintf("block.%d.bin", index)
+	for _, geneIndex := range batch.GeneIndices {
+		gene := genes[geneIndex]
+		block := fmt.Sprintf("block.%d.bin", geneIndex)
 
-		public[index], err = readInt8Matrix(
+		public[geneIndex], err = readInt8Matrix(
 			filepath.Join(directory, "geno", block),
 			rows,
 			gene.VariantCount,
@@ -171,7 +177,7 @@ func readGenotypes(
 		}
 
 		if includePrivate {
-			private[index], err = readPrivateInt8Matrix(
+			private[geneIndex], err = readPrivateInt8Matrix(
 				filepath.Join(directory, "private", block),
 				rows,
 			)
