@@ -128,6 +128,7 @@ def select_gene_groups(
         chromosome=chromosome_name,
         gene_selection=gene_selection,
         mask=mask,
+        max_maf=max_maf,
     )
 
 
