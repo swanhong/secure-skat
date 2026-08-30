@@ -2,8 +2,9 @@
 
 set -euo pipefail
 
+source "$(dirname "${BASH_SOURCE[0]}")/setup/env.sh"
+
 config_path="${CONFIG_PATH:-run.aou.conf}"
-export R_LIBS_USER="${R_LIBS_USER:-$HOME/R/library}"
 
 echo "[0/5] Prepare AoU chr21/chr22 local inputs"
 python3 rewrite/testdata/aou/prepare_aou.py \

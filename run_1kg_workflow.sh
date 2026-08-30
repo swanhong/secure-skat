@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+source "$(dirname "${BASH_SOURCE[0]}")/setup/env.sh"
+
 config_path="${CONFIG_PATH:-run.1kg.conf}"
 prepare_args=(--config "${config_path}")
 if [[ "${CLEAR_RUN_DIR:-0}" == "1" ]]; then

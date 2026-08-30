@@ -27,6 +27,16 @@ fit_null_models <- function(input) {
 }
 
 compute_skat_pvalues <- function(genotype, null_model) {
+  # Preserve empty genes in output order with their zero contribution.
+  if (ncol(genotype) == 0) {
+    return(list(
+      burden_p = 1,
+      skat_davies_p = 1,
+      skat_davies_converged = NA_integer_,
+      skat_liu_p = 1
+    ))
+  }
+
   # 1. Compute the Burden p-value using r.corr = 1.
   burden <- SKAT::SKAT(
     genotype,

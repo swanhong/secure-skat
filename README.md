@@ -1,5 +1,21 @@
 # Secure RVAS
 
+## Initial setup
+
+Run this once in each new Linux x86-64 environment:
+
+```bash
+bash setup/install.sh
+```
+
+This installs PLINK 2 at `$HOME/plink2` and R::SKAT under
+`$HOME/R/library`. The workflow scripts load these paths automatically. Before
+running an individual command in a new terminal, load the same environment:
+
+```bash
+source setup/env.sh
+```
+
 ## Quick command reference
 
 ```bash
@@ -16,6 +32,8 @@ CLEAR_RUN_DIR=1 ./run_1kg_workflow.sh
 The equivalent individual commands are:
 
 ```bash
+source setup/env.sh
+
 python3 rewrite/testdata/1kgenome/prepare_1kgenome.py \
   --chromosome 21 22 \
   --num-pheno 2
@@ -85,7 +103,7 @@ the AoU Workbench workflow.
 
 - Python 3
 - `curl`
-- `plink2` available on `PATH`
+- PLINK 2 installed by `setup/install.sh`, or available on `PATH`
 - Sufficient disk space for the selected 1000 Genomes chromosomes and GENCODE
 
 No additional Python packages are required.
@@ -318,6 +336,8 @@ the finite sentinel `z=-9`, which maps to an SKAT p-value of one in float64.
 Run R::SKAT on the same A/B prepared inputs consumed by the secure protocol:
 
 ```bash
+source setup/env.sh
+
 python3 rewrite/analysis/run_reference.py \
   --config run.1kg.conf
 ```
