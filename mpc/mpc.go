@@ -1993,7 +1993,7 @@ func (mpcObj *MPC) SqrtAndSqrtInverse(a mpc_core.RVec, binaryVersion bool) (b, b
 				end = n
 			}
 
-			fmt.Printf("MPC sqrt/sqrtInv on large vector (%d-%d / %d)\n", start, end, n)
+			// fmt.Printf("MPC sqrt/sqrtInv on large vector (%d-%d / %d)\n", start, end, n)
 
 			out, outInv := mpcObj.SqrtAndSqrtInverse(a[start:end], binaryVersion)
 			copy(c[start:end], out)
