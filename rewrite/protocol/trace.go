@@ -385,22 +385,50 @@ func PreparePrivateTraceTerms(
 	return terms
 }
 
+func computeDelta1(
+	mpcObj *mpc.MPC,
+	privateTerms privateTraceShares,
+	omega mpc_core.RMat,
+) (delta1 mpc_core.RElem, jQ0 mpc_core.RMat) {
+	dataBits := mpcObj.GetDataBits()
+	fracBits := mpcObj.GetFracBits()
+
+	jQ0 = mpcObj.SSMultMat(omega, privateTerms.c0XX)
+	jQ0 = mpcObj.TruncMat(jQ0, dataBits, fracBits)
+
+	traceJQ0 := mpcObj.GetRType().Zero()
+	for diagonal := range jQ0 {
+		traceJQ0 = traceJQ0.Add(jQ0[diagonal][diagonal])
+	}
+
+	scaled := privateTerms.e1.
+		Sub(traceJQ0).
+		Mul(mpcObj.GetRType().FromFloat64(0.5, fracBits))
+	delta1 = mpcObj.TruncVec(
+		mpc_core.RVec{scaled},
+		dataBits,
+		fracBits,
+	)[0]
+	return delta1, jQ0
+}
+
 func ComputeDelta(
 	mpcObj *mpc.MPC,
 	privateTerms privateTraceShares,
 	weightSquared mpc_core.RVec,
 	theta mpc_core.RMat,
 	omega mpc_core.RMat,
+	jQ0 mpc_core.RMat,
 	delta3Action mpc_core.RMat,
 	correctionProbe *mat.Dense,
 	correctionScale float64,
 ) (
-	delta1 mpc_core.RElem,
 	delta2 mpc_core.RElem,
 	delta3 mpc_core.RElem,
 ) {
 	/*
-		Compute delta1, delta2, and delta3 from the shared terms
+		Compute delta2 and delta3 from the shared terms.
+		jQ0 is reused from computeDelta1.
 	*/
 	rtype := mpcObj.GetRType()
 	dataBits := mpcObj.GetDataBits()
@@ -408,12 +436,9 @@ func ComputeDelta(
 	covariateCount, _ := omega.Dims()
 
 	// *************************
-	// 1. Compute privateTrace1, privateTrace2, and privateTrace3.
+	// 1. Compute privateTrace2 and privateTrace3.
 	// *************************
 	// JQk = omega * c_kXX
-	jQ0 := mpcObj.SSMultMat(omega, privateTerms.c0XX)
-	jQ0 = mpcObj.TruncMat(jQ0, dataBits, fracBits)
-
 	jQ1 := mpcObj.SSMultMat(omega, privateTerms.c1XX)
 	jQ1 = mpcObj.TruncMat(jQ1, dataBits, fracBits)
 
@@ -431,14 +456,12 @@ func ComputeDelta(
 	jQ0Cubed = mpcObj.TruncMat(jQ0Cubed, dataBits, fracBits)
 
 	// compute traces of the matrices
-	traceJQ0 := rtype.Zero()
 	traceJQ1 := rtype.Zero()
 	traceJQ2 := rtype.Zero()
 	traceJQ0Squared := rtype.Zero()
 	traceJQ1JQ0 := rtype.Zero()
 	traceJQ0Cubed := rtype.Zero()
 	for diagonal := 0; diagonal < covariateCount; diagonal++ {
-		traceJQ0 = traceJQ0.Add(jQ0[diagonal][diagonal])
 		traceJQ1 = traceJQ1.Add(jQ1[diagonal][diagonal])
 		traceJQ2 = traceJQ2.Add(jQ2[diagonal][diagonal])
 		traceJQ0Squared = traceJQ0Squared.Add(
@@ -452,10 +475,8 @@ func ComputeDelta(
 		)
 	}
 
-	// privateTrace1 = e1 - Trace(JQ0)
 	// privateTrace2 = e2 - 2*Trace(JQ1) + Trace(JQ0^2)
 	// privateTrace3 = e3 - 3*Trace(JQ2) + 3*Trace(JQ1JQ0) - Trace(JQ0^3)
-	privateTrace1 := privateTerms.e1.Sub(traceJQ0)
 	privateTrace2 := privateTerms.e2.
 		Sub(traceJQ1.Mul(rtype.FromInt(2))).
 		Add(traceJQ0Squared)
@@ -467,12 +488,9 @@ func ComputeDelta(
 	// *************************
 	// 2. Handle m=0 using private-only terms.
 	// *************************
-	// if m=0, then just return 0.5*privateTrace1, 0.25*privateTrace2, 0.125*privateTrace3
+	// if m=0, then just return 0.25*privateTrace2, 0.125*privateTrace3
 	if len(weightSquared) == 0 {
 		scaled := mpc_core.RVec{
-			privateTrace1.Mul(
-				rtype.FromFloat64(0.5, fracBits),
-			),
 			privateTrace2.Mul(
 				rtype.FromFloat64(0.25, fracBits),
 			),
@@ -481,7 +499,7 @@ func ComputeDelta(
 			),
 		}
 		scaled = mpcObj.TruncVec(scaled, dataBits, fracBits)
-		return scaled[0], scaled[1], scaled[2]
+		return scaled[0], scaled[1]
 	}
 
 	// *************************
@@ -644,9 +662,8 @@ func ComputeDelta(
 	)
 
 	// *************************
-	// 6. Assemble delta1, delta2, and delta3.
+	// 6. Assemble delta2 and delta3.
 	// *************************
-	// delta1 = 0.5*privateTrace1
 	// delta2 = 0.5*Dot(weightSquared, diag0) + 0.25*privateTrace2
 	// delta3 = 0.375*mixedTrace + 0.375*Dot(weightSquared, diag1) + 0.125*privateTrace3
 	diag0Term := sharedDot(
@@ -661,9 +678,6 @@ func ComputeDelta(
 	)
 
 	scaled := mpc_core.RVec{
-		privateTrace1.Mul(
-			rtype.FromFloat64(0.5, fracBits),
-		),
 		diag0Term.Mul(
 			rtype.FromFloat64(0.5, fracBits),
 		),
@@ -686,10 +700,9 @@ func ComputeDelta(
 		fracBits,
 	)
 
-	delta1 = scaled[0]
-	delta2 = scaled[1].Add(scaled[2])
-	delta3 = scaled[3].Add(scaled[4]).Add(scaled[5])
-	return delta1, delta2, delta3
+	delta2 = scaled[0].Add(scaled[1])
+	delta3 = scaled[2].Add(scaled[3]).Add(scaled[4])
+	return delta2, delta3
 }
 
 func GtGTransformGaloisElements(
@@ -1246,7 +1259,7 @@ func ComputeKernelTraces(
 		weightSquared[position] = mpcObj.TruncVec(weightSquared[position], dataBits, fracBits)
 	}
 
-	// 3a. Compute tau1 before the public GtG actions.
+	// 3a. Compute S1 = tau1 + delta1 before the public GtG actions.
 	flattenMatrix := func(matrix mpc_core.RMat) mpc_core.RVec {
 		rows, columns := matrix.Dims()
 		values := mpc_core.InitRVec(rtype.Zero(), rows*columns)
@@ -1262,21 +1275,30 @@ func ComputeKernelTraces(
 	}
 
 	tau1 := mpc_core.InitRVec(rtype.Zero(), geneCount)
+	delta1 := mpc_core.InitRVec(rtype.Zero(), geneCount)
+	jQ0 := make([]mpc_core.RMat, geneCount)
 	for position, geneIndex := range batch.GeneIndices {
-		if dataParams.Genes[geneIndex].VariantCount == 0 {
-			continue
+		if dataParams.Genes[geneIndex].VariantCount > 0 {
+			weightedTheta := scaleSharedRows(mpcObj, weightSquared[position], theta[position])
+			diagTerm := sharedDot(mpcObj, weightSquared[position], diagGtG[position])
+			projectionTerm := sharedDot(
+				mpcObj, flattenMatrix(weightedTheta), flattenMatrix(pooledGtx[position]),
+			)
+
+			scaled := mpc_core.RVec{
+				diagTerm.Sub(projectionTerm).Mul(rtype.FromFloat64(0.5, fracBits)),
+			}
+			tau1[position] = mpcObj.TruncVec(scaled, dataBits, fracBits)[0]
 		}
 
-		weightedTheta := scaleSharedRows(mpcObj, weightSquared[position], theta[position])
-		diagTerm := sharedDot(mpcObj, weightSquared[position], diagGtG[position])
-		projectionTerm := sharedDot(
-			mpcObj, flattenMatrix(weightedTheta), flattenMatrix(pooledGtx[position]),
+		delta1[position], jQ0[position] = computeDelta1(
+			mpcObj, privateTerms[position], omega,
 		)
+	}
 
-		scaled := mpc_core.RVec{
-			diagTerm.Sub(projectionTerm).Mul(rtype.FromFloat64(0.5, fracBits)),
-		}
-		tau1[position] = mpcObj.TruncVec(scaled, dataBits, fracBits)[0]
+	geneBatchS1 = mpc_core.InitRVec(rtype.Zero(), geneCount)
+	for position := range batch.GeneIndices {
+		geneBatchS1[position] = tau1[position].Add(delta1[position])
 	}
 
 	// 4. Build the first combined GtG right-hand side.
@@ -1468,31 +1490,28 @@ func ComputeKernelTraces(
 		delta3Action[position].MulScalar(rtype.FromInt(2))
 	}
 
-	// 9. Compute the three private trace corrections.
-	delta1 := mpc_core.InitRVec(rtype.Zero(), geneCount)
+	// 9. Compute the remaining private trace corrections.
 	delta2 := mpc_core.InitRVec(rtype.Zero(), geneCount)
 	delta3 := mpc_core.InitRVec(rtype.Zero(), geneCount)
 
 	done = observe("private_trace_correction")
 	for position := range batch.GeneIndices {
-		delta1[position], delta2[position], delta3[position] = ComputeDelta(
+		delta2[position], delta3[position] = ComputeDelta(
 			mpcObj, privateTerms[position], weightSquared[position], theta[position],
-			omega, delta3Action[position], correctionProbe[position], probeScale[position],
+			omega, jQ0[position], delta3Action[position], correctionProbe[position],
+			probeScale[position],
 		)
 	}
 	done()
 
 	// 10. Assemble and return the final traces.
 	//
-	// S1 = tau1 + delta1
 	// S2 = tau2 + delta2
 	// S3 = tau3 + delta3
-	geneBatchS1 = mpc_core.InitRVec(rtype.Zero(), geneCount)
 	geneBatchS2 = mpc_core.InitRVec(rtype.Zero(), geneCount)
 	geneBatchS3 = mpc_core.InitRVec(rtype.Zero(), geneCount)
 
 	for position := range batch.GeneIndices {
-		geneBatchS1[position] = tau1[position].Add(delta1[position])
 		geneBatchS2[position] = tau2[position].Add(delta2[position])
 		geneBatchS3[position] = tau3[position].Add(delta3[position])
 	}
