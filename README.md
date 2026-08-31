@@ -23,8 +23,8 @@ source setup/env.sh
 ./run_1kg_workflow.sh
 ```
 
-The script runs every local 1KG step through ancestry-specific plots. To replace
-an existing configured `run_dir`, opt in to preprocessing cleanup:
+The script runs every local 1KG step through the final metrics summary. To
+replace an existing configured `run_dir`, opt in to preprocessing cleanup:
 
 ```bash
 CLEAR_RUN_DIR=1 ./run_1kg_workflow.sh
@@ -101,6 +101,8 @@ The target workflow runs directly from a local terminal or an All of Us (AoU) Re
 4. Compare the secure and reference results
         ↓
 5. Plot the comparison results
+        ↓
+6. Summarize timing, communication, and accuracy metrics
 ```
 
 ## Implementation status
@@ -113,6 +115,7 @@ The target workflow runs directly from a local terminal or an All of Us (AoU) Re
 | 3 | `run_reference.py` | Python and R::SKAT engines implemented per ancestry |
 | 4 | `compare_secure_to_reference.py` | Implemented per ancestry |
 | 5 | `plot_secure_vs_reference.py` | Implemented per ancestry |
+| 6 | `summarize_metrics.sh` | Implemented for timing, communication, and R² |
 
 The local ancestry-aware workflow is implemented end to end.
 
@@ -463,6 +466,16 @@ phenotype-level Manhattan plots across all configured chromosomes:
 └── _SUCCESS
 ```
 
+## Step 6: Summarize metrics
+
+```bash
+./summarize_metrics.sh run.1kg.conf
+```
+
+The summary reports Party 1 timing and communication by default, plus pooled
+and worst phenotype-by-chromosome R² values from Step 4. Pass a party ID as the
+second argument to inspect another party.
+
 ## Complete local workflow
 
 Run the complete sequence with:
@@ -504,6 +517,8 @@ python3 rewrite/analysis/compare_secure_to_reference.py \
 
 python3 rewrite/analysis/plot_secure_vs_reference.py \
   --config run.1kg.conf
+
+./summarize_metrics.sh run.1kg.conf
 ```
 
 For a detached Workbench-terminal run, apply `nohup` to the long secure step:
