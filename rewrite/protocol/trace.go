@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"math"
 	"sort"
 
 	mpc_core "github.com/hhcho/mpc-core"
@@ -1099,7 +1100,7 @@ func ComputeGeneBatchKernelStatistics(
 	signedWeight []mpc_core.RVec,
 	seed int64,
 	observe func(stage string) func(),
-) (geneBatchV, geneBatchS1, geneBatchS2, geneBatchS3 mpc_core.RVec) {
+) (geneBatchV, geneBatchInvS1, geneBatchS2, geneBatchS3 mpc_core.RVec) {
 	/*
 		Compute the phenotype-independent kernel statistics for one gene batch.
 
@@ -1113,12 +1114,12 @@ func ComputeGeneBatchKernelStatistics(
 		    pooledGtx = (Transpose(Gp[A]) * X[A] + Transpose(Gp[B]) * X[B]) / N
 		    pooledGtG = (Transpose(Gp[A]) * Gp[A] + Transpose(Gp[B]) * Gp[B]) / N
 
-		    S1 = Trace(K/N)
-		    S2 = Trace((K/N)²)
-		    S3 = Trace((K/N)³)
+		    invS1 = 1 / Trace(K/N)
+		    S2    = Trace((K/N)²) / Trace(K/N)²
+		    S3    = Trace((K/N)³) / Trace(K/N)³
 		    V  = Burden variance / N
 
-		Outputs V, S1, S2, S3 remain secret-shared and use batch order.
+		Outputs V, invS1, S2, S3 remain secret-shared and use batch order.
 	*/
 	geneCount := len(batch.GeneIndices)
 
@@ -1165,8 +1166,8 @@ func ComputeGeneBatchKernelStatistics(
 	}
 	done()
 
-	// 3. Compute S1, S2, S3 and reuse the first GtG action for gtgWeight.
-	geneBatchS1, geneBatchS2, geneBatchS3, gtgWeight := ComputeKernelTraces(
+	// 3. Compute normalized moments and reuse the first GtG action for gtgWeight.
+	geneBatchInvS1, geneBatchS2, geneBatchS3, gtgWeight := ComputeKernelTraces(
 		mpcObj, heParams, dataParams, cryptoParams, batch, gp, gv, x, gvLocal,
 		localGtG, pooledGtx, diagGtG, omega, weight, signedWeight, seed, observe,
 	)
@@ -1178,7 +1179,7 @@ func ComputeGeneBatchKernelStatistics(
 	)
 	done()
 
-	return geneBatchV, geneBatchS1, geneBatchS2, geneBatchS3
+	return geneBatchV, geneBatchInvS1, geneBatchS2, geneBatchS3
 }
 
 func ComputeKernelTraces(
@@ -1199,7 +1200,7 @@ func ComputeKernelTraces(
 	signedWeight []mpc_core.RVec,
 	seed int64,
 	observe func(stage string) func(),
-) (geneBatchS1, geneBatchS2, geneBatchS3 mpc_core.RVec, gtgWeight []mpc_core.RVec) {
+) (geneBatchInvS1, geneBatchS2, geneBatchS3 mpc_core.RVec, gtgWeight []mpc_core.RVec) {
 	/*
 		Compute the three kernel traces and the public GtG burden action.
 
@@ -1210,7 +1211,7 @@ func ComputeKernelTraces(
 		    gvLocal, localGtG, pooledGtx, diagGtG
 
 		Outputs in batch order:
-		    S1, S2, S3, gtgWeight
+		    1/S1, S2/S1^2, S3/S1^3, gtgWeight
 	*/
 	geneCount := len(batch.GeneIndices)
 	covariateCount := dataParams.C
@@ -1296,9 +1297,32 @@ func ComputeKernelTraces(
 		)
 	}
 
-	geneBatchS1 = mpc_core.InitRVec(rtype.Zero(), geneCount)
+	geneBatchS1 := mpc_core.InitRVec(rtype.Zero(), geneCount)
 	for position := range batch.GeneIndices {
 		geneBatchS1[position] = tau1[position].Add(delta1[position])
+	}
+
+	publicZero := mpc_core.InitRVec(rtype.Zero(), geneCount)
+	publicOne := mpc_core.InitRVec(rtype.Zero(), geneCount)
+	if mpcObj.GetPid() == mpcObj.GetHubPid() {
+		publicOne.AddScalar(rtype.FromFloat64(1, fracBits))
+	}
+	momentFloor := rtype.FromFloat64(math.Ldexp(1, -fracBits), fracBits)
+	validS1 := mpcObj.NotLessThanPublic(
+		geneBatchS1,
+		momentFloor,
+		mpcObj.GetBooleanShareFlag(),
+	)
+	safeS1 := mux(mpcObj, validS1, geneBatchS1, publicOne)
+	geneBatchInvS1 = mpcObj.Divide(publicOne, safeS1, false)
+	geneBatchInvS1 = mux(mpcObj, validS1, geneBatchInvS1, publicZero)
+
+	scaleByGene := func(matrix mpc_core.RMat, scalar mpc_core.RElem) mpc_core.RMat {
+		rowScale := mpc_core.InitRVec(rtype.Zero(), len(matrix))
+		for row := range rowScale {
+			rowScale[row] = scalar.Copy()
+		}
+		return scaleSharedRows(mpcObj, rowScale, matrix)
 	}
 
 	// 4. Build the first combined GtG right-hand side.
@@ -1423,6 +1447,9 @@ func ComputeKernelTraces(
 			mpcObj, weightedProbe[position], gtgProbe,
 			pooledGtx[position], theta[position], batchWeight[position],
 		)
+		kProbe[position] = scaleByGene(
+			kProbe[position], geneBatchInvS1[position],
+		)
 		basisAction[position] = ComputeKppRight(
 			mpcObj, weightedBasisRight[position], gtgBasis,
 			pooledGtx[position], theta[position], batchWeight[position],
@@ -1430,7 +1457,7 @@ func ComputeKernelTraces(
 	}
 
 	// 7. Compute the dependent second public GtG action.
-	// weightedKProbe = Diag(weight) * kProbe
+	// weightedKProbe = Diag(weight) * normalized kProbe
 	// secondGtgAction = pooledGtG * weightedKProbe
 	weightedKProbe := make([]mpc_core.RMat, geneCount)
 	for position, geneIndex := range batch.GeneIndices {
@@ -1458,11 +1485,14 @@ func ComputeKernelTraces(
 			mpcObj, weightedKProbe[position], secondGtgAction[position],
 			pooledGtx[position], theta[position], batchWeight[position],
 		)
+		kSquaredProbe[position] = scaleByGene(
+			kSquaredProbe[position], geneBatchInvS1[position],
+		)
 	}
 
 	// 8. Compute tau2, tau3, and delta3Action.
-	// tau2 = probeScale * Dot(kProbe, kProbe)
-	// tau3 = probeScale * Dot(kProbe, kSquaredProbe)
+	// tau2 = probeScale * Dot(KZ/S1, KZ/S1)
+	// tau3 = probeScale * Dot(KZ/S1, K^2Z/S1^2)
 	// delta3Action = 2 * Diag(weight) * basisAction
 	tau2 := mpc_core.InitRVec(rtype.Zero(), geneCount)
 	tau3 := mpc_core.InitRVec(rtype.Zero(), geneCount)
@@ -1504,6 +1534,15 @@ func ComputeKernelTraces(
 	}
 	done()
 
+	invS1Squared := mpcObj.SSMultElemVec(geneBatchInvS1, geneBatchInvS1)
+	invS1Squared = mpcObj.TruncVec(invS1Squared, dataBits, fracBits)
+	invS1Cubed := mpcObj.SSMultElemVec(invS1Squared, geneBatchInvS1)
+	invS1Cubed = mpcObj.TruncVec(invS1Cubed, dataBits, fracBits)
+	delta2 = mpcObj.SSMultElemVec(delta2, invS1Squared)
+	delta2 = mpcObj.TruncVec(delta2, dataBits, fracBits)
+	delta3 = mpcObj.SSMultElemVec(delta3, invS1Cubed)
+	delta3 = mpcObj.TruncVec(delta3, dataBits, fracBits)
+
 	// 10. Assemble and return the final traces.
 	//
 	// S2 = tau2 + delta2
@@ -1516,5 +1555,5 @@ func ComputeKernelTraces(
 		geneBatchS3[position] = tau3[position].Add(delta3[position])
 	}
 
-	return geneBatchS1, geneBatchS2, geneBatchS3, gtgWeight
+	return geneBatchInvS1, geneBatchS2, geneBatchS3, gtgWeight
 }

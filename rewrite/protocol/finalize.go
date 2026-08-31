@@ -12,7 +12,7 @@ func Finalize(
 	mpcObjects []*mpc.MPC,
 	dataParams DataParams,
 	gpQ, gpL, gvQ, gvL mpc_core.RMat,
-	rss, geneV, geneS1, geneS2, geneS3 mpc_core.RVec,
+	rss, geneV, geneInvS1, geneS2, geneS3 mpc_core.RVec,
 	observe func(stage string) func(),
 ) (
 	b, z mpc_core.RVec,
@@ -20,15 +20,15 @@ func Finalize(
 	/*
 		For every gene g and phenotype t:
 		Q and V are divided by N; L is divided by sqrt(N).
-		S1, S2, and S3 are moments of K/N.
+		invS1, S2, and S3 are 1/S1, S2/S1², and S3/S1³ for K/N.
 
 		alpha[t] = (N - C) / (2 * rss[t])
 
-		Qs[g,t] = alpha[t] * (gpQ[g,t] + gvQ[g,t])
+		Qs[g,t] = alpha[t] * (gpQ[g,t] + gvQ[g,t]) / S1[g]
 		Qb[g,t] = alpha[t] * (gpL[g,t] + gvL[g,t])^2
 
 		b[g,t] = sqrt(Qb[g,t]) / sqrt(V[g])
-		z[g,t] = WilsonHilferty(Qs[g,t], S1[g], S2[g], S3[g])
+		z[g,t] = WilsonHilferty(Qs[g,t], 1, S2[g]/S1[g]², S3[g]/S1[g]³)
 
 		Outputs use gene-major order g*q+t.
 	*/
@@ -90,6 +90,7 @@ func Finalize(
 	scoreQuadratic := mpc_core.InitRVec(rtype.Zero(), outputLength)
 	burdenLinear := mpc_core.InitRVec(rtype.Zero(), outputLength)
 	variance := mpc_core.InitRVec(rtype.Zero(), outputLength)
+	invS1 := mpc_core.InitRVec(rtype.Zero(), outputLength)
 	s1 := mpc_core.InitRVec(rtype.Zero(), outputLength)
 	s2 := mpc_core.InitRVec(rtype.Zero(), outputLength)
 	s3 := mpc_core.InitRVec(rtype.Zero(), outputLength)
@@ -108,13 +109,17 @@ func Finalize(
 			)
 
 			variance[index] = geneV[gene].Copy()
-			s1[index] = geneS1[gene].Copy()
+			invS1[index] = geneInvS1[gene].Copy()
 			s2[index] = geneS2[gene].Copy()
 			s3[index] = geneS3[gene].Copy()
 		}
 	}
+	if mpcObj.GetPid() == mpcObj.GetHubPid() {
+		s1.AddScalar(rtype.FromFloat64(1, fracBits))
+	}
 
 	// 3. Compute Qs and Qb.
+	scoreQuadratic = multiply(mpcObj, scoreQuadratic, invS1)
 	scoreQuadratic = multiply(mpcObj, alphaByGene, scoreQuadratic)
 
 	burdenLinearSquared := multiply(mpcObj, burdenLinear, burdenLinear)

@@ -37,7 +37,7 @@ func ComputePackedStatistics(
 	observeBatch func(width, geneCount int) func(),
 ) (
 	gpQ, gpL, gvQ, gvL mpc_core.RMat,
-	geneV, geneS1, geneS2, geneS3 mpc_core.RVec,
+	geneV, geneInvS1, geneS2, geneS3 mpc_core.RVec,
 	err error,
 ) {
 	/*
@@ -48,10 +48,10 @@ func ComputePackedStatistics(
 		    gpL[g,t], gvL[g,t] = public/private L divided by sqrt(N)
 
 		For every gene g:
-		    V[g]  = Burden variance / N
-		    S1[g] = Trace(K/N)
-		    S2[g] = Trace((K/N)²)
-		    S3[g] = Trace((K/N)³)
+		    V[g]     = Burden variance / N
+		    invS1[g] = 1 / Trace(K/N)
+		    S2[g]    = Trace((K/N)²) / Trace(K/N)²
+		    S3[g]    = Trace((K/N)³) / Trace(K/N)³
 
 		All outputs remain secret-shared and use global gene order.
 	*/
@@ -66,7 +66,7 @@ func ComputePackedStatistics(
 	gvL = mpc_core.InitRMat(rtype.Zero(), geneCount, phenotypeCount)
 
 	geneV = mpc_core.InitRVec(rtype.Zero(), geneCount)
-	geneS1 = mpc_core.InitRVec(rtype.Zero(), geneCount)
+	geneInvS1 = mpc_core.InitRVec(rtype.Zero(), geneCount)
 	geneS2 = mpc_core.InitRVec(rtype.Zero(), geneCount)
 	geneS3 = mpc_core.InitRVec(rtype.Zero(), geneCount)
 
@@ -175,7 +175,7 @@ func ComputePackedStatistics(
 				}
 
 				// 4. Compute phenotype-independent variance and traces.
-				batchV, batchS1, batchS2, batchS3 :=
+				batchV, batchInvS1, batchS2, batchS3 :=
 					ComputeGeneBatchKernelStatistics(
 						mpcObj,
 						heParams,
@@ -198,7 +198,7 @@ func ComputePackedStatistics(
 
 				for position, geneIndex := range batch.GeneIndices {
 					geneV[geneIndex] = batchV[position].Copy()
-					geneS1[geneIndex] = batchS1[position].Copy()
+					geneInvS1[geneIndex] = batchInvS1[position].Copy()
 					geneS2[geneIndex] = batchS2[position].Copy()
 					geneS3[geneIndex] = batchS3[position].Copy()
 				}

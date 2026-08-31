@@ -83,7 +83,7 @@ func runChromosome(
 		chromosome.Chromosome,
 		networks,
 	)
-	gpQ, gpL, gvQ, gvL, geneV, geneS1, geneS2, geneS3, err :=
+	gpQ, gpL, gvQ, gvL, geneV, geneInvS1, geneS2, geneS3, err :=
 		protocol.ComputePackedStatistics(
 			secureSession.mpcObjects,
 			secureSession.heContext,
@@ -119,7 +119,7 @@ func runChromosome(
 		gvL,
 		secureSession.rss,
 		geneV,
-		geneS1,
+		geneInvS1,
 		geneS2,
 		geneS3,
 		observe,
