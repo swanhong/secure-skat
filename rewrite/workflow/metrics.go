@@ -233,8 +233,6 @@ func (recorder *metricRecorder) addEvent(event metricEvent) {
 		current.duration += event.duration
 		current.communication.SentBytes += event.communication.SentBytes
 		current.communication.ReceivedBytes += event.communication.ReceivedBytes
-		current.communication.SentMessages += event.communication.SentMessages
-		current.communication.ReceivedMessages += event.communication.ReceivedMessages
 		current.count += event.count
 		return
 	}
@@ -266,8 +264,6 @@ func (recorder *metricRecorder) writeCSV(path string) error {
 			),
 			strconv.FormatUint(communication.SentBytes, 10),
 			strconv.FormatUint(communication.ReceivedBytes, 10),
-			strconv.FormatUint(communication.SentMessages, 10),
-			strconv.FormatUint(communication.ReceivedMessages, 10),
 		})
 	}
 
@@ -282,8 +278,6 @@ func (recorder *metricRecorder) writeCSV(path string) error {
 		"duration_seconds",
 		"sent_bytes",
 		"received_bytes",
-		"sent_message_count",
-		"received_message_count",
 	}, rows)
 }
 

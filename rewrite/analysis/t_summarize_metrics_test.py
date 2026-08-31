@@ -34,15 +34,13 @@ class SummarizeMetricsTest(unittest.TestCase):
                         "duration_seconds",
                         "sent_bytes",
                         "received_bytes",
-                        "sent_message_count",
-                        "received_message_count",
                     ],
                 )
                 writer.writeheader()
-                for stage, sent, received, sent_messages, received_messages in (
-                    ("sample_count_exchange", 100, 200, 1, 2),
-                    ("collective_setup", 200, 300, 2, 3),
-                    ("null_model", 300, 400, 3, 4),
+                for stage, sent, received in (
+                    ("sample_count_exchange", 100, 200),
+                    ("collective_setup", 200, 300),
+                    ("null_model", 300, 400),
                 ):
                     writer.writerow(
                         {
@@ -54,8 +52,6 @@ class SummarizeMetricsTest(unittest.TestCase):
                             "duration_seconds": 1,
                             "sent_bytes": sent,
                             "received_bytes": received,
-                            "sent_message_count": sent_messages,
-                            "received_message_count": received_messages,
                         }
                     )
 
@@ -87,12 +83,6 @@ class SummarizeMetricsTest(unittest.TestCase):
                                 "received_bytes": chromosome * 2048
                                 if is_total
                                 else 999_999,
-                                "sent_message_count": chromosome
-                                if is_total
-                                else 999,
-                                "received_message_count": chromosome * 2
-                                if is_total
-                                else 999,
                             }
                         )
 
@@ -160,6 +150,8 @@ class SummarizeMetricsTest(unittest.TestCase):
             self.assertIn("21.00 KiB", completed.stdout)
             self.assertIn("42.00 KiB", completed.stdout)
             self.assertIn("63.00 KiB", completed.stdout)
+            self.assertNotIn("Sent msgs", completed.stdout)
+            self.assertNotIn("Recv msgs", completed.stdout)
             self.assertNotIn("976.56 KiB", completed.stdout)
             self.assertIn("R^2 summary on -log10(p)", completed.stdout)
             self.assertIn("SKAT WH vs Davies", completed.stdout)

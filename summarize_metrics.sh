@@ -36,8 +36,6 @@ STAGES = (
 COMMUNICATION_FIELDS = (
     "sent_bytes",
     "received_bytes",
-    "sent_message_count",
-    "received_message_count",
 )
 
 SETUP_COMMUNICATION_STAGES = {
@@ -122,8 +120,6 @@ def communication_row(
         format_bytes(sent_bytes),
         format_bytes(received_bytes),
         format_bytes(sent_bytes + received_bytes),
-        f'{values["sent_message_count"]:,}',
-        f'{values["received_message_count"]:,}',
     ]
 
 
@@ -398,8 +394,6 @@ print_table(
         "Sent",
         "Received",
         "Total I/O",
-        "Sent msgs",
-        "Recv msgs",
     ],
     communication_rows,
     {0, 1},
