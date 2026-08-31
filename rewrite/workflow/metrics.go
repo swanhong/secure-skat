@@ -60,7 +60,8 @@ type metricEvent struct {
 	stage         string
 	chromosome    int
 	duration      time.Duration
-	communication mpc.CommunicationStats
+	sentBytes     uint64
+	receivedBytes uint64
 	count         int
 }
 
@@ -168,18 +169,21 @@ func (recorder *metricRecorder) startEvent(
 	}
 
 	return func() {
-		communication := mpc.CommunicationStats{}
+		var sentBytes, receivedBytes uint64
 		if len(networks) > 0 {
-			communication = networks.GetCommunicationStats().Sub(
+			communication := networks.GetCommunicationStats().Sub(
 				startCommunication,
 			)
+			sentBytes = communication.SentBytes
+			receivedBytes = communication.ReceivedBytes
 		}
 
 		event := metricEvent{
 			stage:         stage,
 			chromosome:    chromosome,
 			duration:      time.Since(startedAt),
-			communication: communication,
+			sentBytes:     sentBytes,
+			receivedBytes: receivedBytes,
 			count:         1,
 		}
 		recorder.addEvent(event)
@@ -231,8 +235,8 @@ func (recorder *metricRecorder) addEvent(event metricEvent) {
 		}
 
 		current.duration += event.duration
-		current.communication.SentBytes += event.communication.SentBytes
-		current.communication.ReceivedBytes += event.communication.ReceivedBytes
+		current.sentBytes += event.sentBytes
+		current.receivedBytes += event.receivedBytes
 		current.count += event.count
 		return
 	}
@@ -247,7 +251,6 @@ func (recorder *metricRecorder) writeCSV(path string) error {
 		if event.chromosome != 0 {
 			chromosome = strconv.Itoa(event.chromosome)
 		}
-		communication := event.communication
 		rows = append(rows, []string{
 			recorder.process,
 			recorder.ancestry,
@@ -262,8 +265,8 @@ func (recorder *metricRecorder) writeCSV(path string) error {
 				9,
 				64,
 			),
-			strconv.FormatUint(communication.SentBytes, 10),
-			strconv.FormatUint(communication.ReceivedBytes, 10),
+			strconv.FormatUint(event.sentBytes, 10),
+			strconv.FormatUint(event.receivedBytes, 10),
 		})
 	}
 
