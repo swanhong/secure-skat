@@ -5,6 +5,14 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/setup/env.sh"
 
 config_path="${CONFIG_PATH:-run.1kg.conf}"
+chromosome_values="$(
+  python3 -c '
+import sys, tomllib
+with open(sys.argv[1], "rb") as config_file:
+    print(*tomllib.load(config_file)["chromosomes"])
+' "${config_path}"
+)"
+read -r -a chromosomes <<< "${chromosome_values}"
 prepare_args=(--config "${config_path}")
 if [[ "${CLEAR_RUN_DIR:-0}" == "1" ]]; then
   prepare_args+=(--clear)
@@ -12,7 +20,7 @@ fi
 
 echo "[0/5] Generate 1000 Genomes test data"
 python3 rewrite/testdata/1kgenome/prepare_1kgenome.py \
-  --chromosome 21 22 \
+  --chromosome "${chromosomes[@]}" \
   --num-pheno 2
 
 echo "[1/5] Prepare ancestry-specific secure inputs"

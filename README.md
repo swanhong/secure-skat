@@ -29,13 +29,33 @@ an existing configured `run_dir`, opt in to preprocessing cleanup:
 CLEAR_RUN_DIR=1 ./run_1kg_workflow.sh
 ```
 
+Both complete workflow scripts read the autosome list from the selected TOML
+configuration and pass that same list to source preparation and every later
+stage. Use a non-empty integer array; `chromosomes = "all"` is not supported:
+
+```toml
+chromosomes = [
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+  12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+]
+```
+
 The equivalent individual commands are:
 
 ```bash
 source setup/env.sh
 
+chromosome_values="$(
+  python3 -c '
+import sys, tomllib
+with open(sys.argv[1], "rb") as config_file:
+    print(*tomllib.load(config_file)["chromosomes"])
+' run.1kg.conf
+)"
+read -r -a chromosomes <<< "${chromosome_values}"
+
 python3 rewrite/testdata/1kgenome/prepare_1kgenome.py \
-  --chromosome 21 22 \
+  --chromosome "${chromosomes[@]}" \
   --num-pheno 2
 
 go run -mod=vendor secure-rvas.go prepare \
@@ -444,8 +464,17 @@ Its contents are equivalent to:
 ```bash
 set -euo pipefail
 
+chromosome_values="$(
+  python3 -c '
+import sys, tomllib
+with open(sys.argv[1], "rb") as config_file:
+    print(*tomllib.load(config_file)["chromosomes"])
+' run.1kg.conf
+)"
+read -r -a chromosomes <<< "${chromosome_values}"
+
 python3 rewrite/testdata/1kgenome/prepare_1kgenome.py \
-  --chromosome 21 22 \
+  --chromosome "${chromosomes[@]}" \
   --num-pheno 2
 
 go run -mod=vendor secure-rvas.go prepare \

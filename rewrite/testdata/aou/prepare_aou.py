@@ -352,7 +352,7 @@ def main() -> None:
         "--chromosome",
         nargs="+",
         type=int,
-        default=[21, 22],
+        required=True,
     )
     parser.add_argument(
         "--output-dir",

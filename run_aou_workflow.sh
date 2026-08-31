@@ -5,10 +5,18 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/setup/env.sh"
 
 config_path="${CONFIG_PATH:-run.aou.conf}"
+chromosome_values="$(
+  python3 -c '
+import sys, tomllib
+with open(sys.argv[1], "rb") as config_file:
+    print(*tomllib.load(config_file)["chromosomes"])
+' "${config_path}"
+)"
+read -r -a chromosomes <<< "${chromosome_values}"
 
-echo "[0/5] Prepare AoU chr21/chr22 local inputs"
+echo "[0/5] Prepare AoU chromosome inputs: ${chromosomes[*]}"
 python3 rewrite/testdata/aou/prepare_aou.py \
-  --chromosome 21 22
+  --chromosome "${chromosomes[@]}"
 
 echo "[1/5] Prepare ancestry-specific secure inputs"
 go run -mod=vendor secure-rvas.go prepare \

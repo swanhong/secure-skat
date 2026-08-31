@@ -139,7 +139,7 @@ def main() -> None:
     parser.add_argument(
         "--chromosome",
         nargs="+",
-        default=["21,22"],
+        required=True,
         metavar="SPEC",
         help="chromosomes such as 1,2,3 or 1-5; all means 1-22",
     )
