@@ -84,6 +84,19 @@ compute_skat_pvalues <- function(genotype, null_model) {
 
 run_skat_analysis <- function(input) {
   phenotype_count <- ncol(input$phenotypes)
+  gene_count <- length(input$genes)
+  progress_every <- as.integer(
+    Sys.getenv("REFERENCE_PROGRESS_EVERY", "250")
+  )
+  if (is.na(progress_every) || progress_every < 0) {
+    stop("REFERENCE_PROGRESS_EVERY must be a non-negative integer")
+  }
+  progress_label <- sprintf(
+    "%s %s",
+    basename(dirname(input$input_dir)),
+    basename(input$input_dir)
+  )
+  started_at <- proc.time()[["elapsed"]]
 
   # 1. Fit one pooled null model per phenotype.
   null_models <- fit_null_models(input)
@@ -91,7 +104,7 @@ run_skat_analysis <- function(input) {
   # 2. Allocate the gene-major output rows.
   results <- vector(
     "list",
-    length(input$genes) * phenotype_count
+    gene_count * phenotype_count
   )
   result_index <- 1
 
@@ -118,6 +131,23 @@ run_skat_analysis <- function(input) {
         skat_liu_p = pvalues$skat_liu_p
       )
       result_index <- result_index + 1
+    }
+
+    if (
+      progress_every > 0 &&
+      (gene %% progress_every == 0 || gene == gene_count)
+    ) {
+      elapsed_seconds <- proc.time()[["elapsed"]] - started_at
+      remaining_seconds <- elapsed_seconds * (gene_count - gene) / gene
+      message(sprintf(
+        "[%s] %d/%d genes (%.1f%%), elapsed=%.1fm, ETA=%.1fm",
+        progress_label,
+        gene,
+        gene_count,
+        100 * gene / gene_count,
+        elapsed_seconds / 60,
+        remaining_seconds / 60
+      ))
     }
   }
 

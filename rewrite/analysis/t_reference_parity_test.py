@@ -73,6 +73,31 @@ def run_reference(command: list[str]) -> list[dict[str, str]]:
 
 
 class ReferenceParityTest(unittest.TestCase):
+    def test_r_reference_reports_progress(self) -> None:
+        scripts = Path(__file__).resolve().parent
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory)
+            write_fixture(fixture)
+            environment = os.environ | {
+                "OPENBLAS_NUM_THREADS": "1",
+                "REFERENCE_PROGRESS_EVERY": "1",
+            }
+            completed = subprocess.run(
+                [
+                    "Rscript",
+                    str(scripts / "r_skat/compute_reference.R"),
+                    str(fixture),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+
+        self.assertIn("1/3 genes", completed.stderr)
+        self.assertIn("3/3 genes", completed.stderr)
+        self.assertIn("ETA=", completed.stderr)
+
     def test_python_matches_r_skat(self) -> None:
         scripts = Path(__file__).resolve().parent
         with tempfile.TemporaryDirectory() as directory:
