@@ -1,4 +1,4 @@
-source("rewrite/analysis/skat.R")
+source("rewrite/analysis/r_skat/skat_reference.R")
 
 sample_count <- 20
 null_data <- data.frame(

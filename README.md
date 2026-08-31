@@ -9,7 +9,8 @@ bash setup/install.sh
 ```
 
 This installs PLINK 2 at `$HOME/plink2` and R::SKAT under
-`$HOME/R/library`. The workflow scripts load these paths automatically. Before
+`$HOME/R/library`. The Python reference uses NumPy and R::SKAT's Davies shared
+library. The workflow scripts load the installed paths automatically. Before
 running an individual command in a new terminal, load the same environment:
 
 ```bash
@@ -65,12 +66,13 @@ go run -mod=vendor secure-rvas.go run \
   --config run.1kg.conf
 
 python3 rewrite/analysis/run_reference.py \
+  --config run.1kg.conf \
+  --engine python
+
+python3 rewrite/analysis/compare_secure_to_reference.py \
   --config run.1kg.conf
 
-python3 rewrite/analysis/compare_results.py \
-  --config run.1kg.conf
-
-python3 rewrite/analysis/plot_results.py \
+python3 rewrite/analysis/plot_secure_vs_reference.py \
   --config run.1kg.conf
 ```
 
@@ -94,9 +96,9 @@ The target workflow runs directly from a local terminal or an All of Us (AoU) Re
         ↓
 2. Run secure Burden and SKAT
         ↓
-3. Run R::SKAT on the same secure inputs
+3. Run the Python or R::SKAT reference on the same secure inputs
         ↓
-4. Compare the secure and R results
+4. Compare the secure and reference results
         ↓
 5. Plot the comparison results
 ```
@@ -108,9 +110,9 @@ The target workflow runs directly from a local terminal or an All of Us (AoU) Re
 | 0 | `prepare_1kgenome.py` | Implemented |
 | 1 | `secure-rvas prepare` | Implemented for EUR/AFR/AMR local inputs |
 | 2 | `secure-rvas run` | Implemented for sequential EUR/AFR/AMR execution |
-| 3 | `run_reference.py` | Implemented per ancestry |
-| 4 | `compare_results.py` | Implemented per ancestry |
-| 5 | `plot_results.py` | Implemented per ancestry |
+| 3 | `run_reference.py` | Python and R::SKAT engines implemented per ancestry |
+| 4 | `compare_secure_to_reference.py` | Implemented per ancestry |
+| 5 | `plot_secure_vs_reference.py` | Implemented per ancestry |
 
 The local ancestry-aware workflow is implemented end to end.
 
@@ -371,16 +373,23 @@ A zero or otherwise invalid kernel moment tuple does not enter the inverse
 square-root path. It is evaluated with safe secret-shared inputs and releases
 the finite sentinel `z=-9`, which maps to an SKAT p-value of one in float64.
 
-## Step 3: Run the R::SKAT reference
+## Step 3: Run the reference
 
-Run R::SKAT on the same A/B prepared inputs consumed by the secure protocol:
+Run the parallel Python reference on the same A/B prepared inputs consumed by
+the secure protocol:
 
 ```bash
 source setup/env.sh
 
 python3 rewrite/analysis/run_reference.py \
-  --config run.1kg.conf
+  --config run.1kg.conf \
+  --engine python
 ```
+
+Use `--engine r` for the external R::SKAT reference. The complete workflow
+scripts default to Python; set `REFERENCE_ENGINE=r` to select R::SKAT. Set
+`REFERENCE_WORKERS` to override task parallelism and
+`REFERENCE_BLAS_THREADS` to override BLAS threads per task.
 
 The wrapper runs every configured ancestry and chromosome in order and writes:
 
@@ -397,27 +406,30 @@ The wrapper runs every configured ancestry and chromosome in order and writes:
 └── _SUCCESS
 ```
 
-For every gene and phenotype it records R Burden, SKAT-Liu, and SKAT-Davies
-p-values. `r_skat_davies_converged=1` means Davies converged, `0` means Davies
-returned a nonzero failure status, and `NA` means R::SKAT did not run Davies
-because no variant remained testable. R returns `p=1` for that degenerate case.
+For every gene and phenotype it records Burden, SKAT-Liu, and SKAT-Davies
+p-values. The existing `r_*` column and `all_r_results.csv` names are retained
+for compatibility. `r_skat_davies_converged=1` means Davies converged, `0`
+means Davies returned a nonzero failure status, and `NA` means Davies was not
+run because no variant remained testable. Both engines return `p=1` for that
+degenerate case.
 Warnings about monomorphic variants are expected for the small 20-sample
 fixture and do not indicate command failure.
 
-## Step 4: Compare secure and R results
+## Step 4: Compare secure and reference results
 
 ```bash
-python3 rewrite/analysis/compare_results.py \
+python3 rewrite/analysis/compare_secure_to_reference.py \
   --config run.1kg.conf
 ```
 
 The comparison requires a one-to-one match on chromosome, gene index, gene ID,
 phenotype index, and phenotype name. It compares:
 
-- secure Burden against R Burden;
-- secure Wilson-Hilferty SKAT against R SKAT-Liu as the primary approximation
-  comparison;
-- secure Wilson-Hilferty SKAT against R SKAT-Davies only when Davies converged.
+- secure Burden against reference Burden;
+- secure Wilson-Hilferty SKAT against reference SKAT-Liu as the primary
+  approximation comparison;
+- secure Wilson-Hilferty SKAT against reference SKAT-Davies only when Davies
+  converged.
 
 It writes:
 
@@ -435,7 +447,7 @@ preserved as an empty field rather than converted into an ordinary p-value.
 ## Step 5: Generate plots
 
 ```bash
-python3 rewrite/analysis/plot_results.py \
+python3 rewrite/analysis/plot_secure_vs_reference.py \
   --config run.1kg.conf
 ```
 
@@ -484,12 +496,13 @@ go run -mod=vendor secure-rvas.go run \
   --config run.1kg.conf
 
 python3 rewrite/analysis/run_reference.py \
+  --config run.1kg.conf \
+  --engine python
+
+python3 rewrite/analysis/compare_secure_to_reference.py \
   --config run.1kg.conf
 
-python3 rewrite/analysis/compare_results.py \
-  --config run.1kg.conf
-
-python3 rewrite/analysis/plot_results.py \
+python3 rewrite/analysis/plot_secure_vs_reference.py \
   --config run.1kg.conf
 ```
 
@@ -500,7 +513,7 @@ nohup go run -mod=vendor secure-rvas.go run \
   --config run.1kg.conf > run-1kg.log 2>&1 &
 ```
 
-Run the R reference, comparison, and plots after `secure/_SUCCESS` appears.
+Run the reference, comparison, and plots after `secure/_SUCCESS` appears.
 
 ## Previous pooled end-to-end validation
 
@@ -534,7 +547,9 @@ mpc/                            Network and MPC backend
 rewrite/preprocessing/          New A/B preprocessing library
 rewrite/protocol/               New secure Burden/SKAT protocol
 rewrite/workflow/               secure-rvas application workflow
-rewrite/analysis/               R reference and result comparison
+rewrite/analysis/r_skat/        External R::SKAT reference
+rewrite/analysis/python_skat/   Parallel Python reference
+rewrite/analysis/               Reference runner, comparison, and plots
 rewrite/testdata/1kgenome/       Local 1000 Genomes source generator
 run.1kg.conf                    Local configuration
 run.aou.conf                    Draft AoU configuration; not yet compatible

@@ -10,7 +10,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from compare_results import read_rows, r_squared
+from compare_secure_to_reference import read_rows, r_squared
 
 
 SCATTER_COMPARISONS = [
@@ -22,7 +22,7 @@ SCATTER_COMPARISONS = [
     ),
     (
         "skat_liu",
-        "SKAT WH vs R Liu",
+        "SKAT WH vs Reference Liu",
         "secure_skat_wh_p",
         "r_skat_liu_p",
     ),
@@ -34,7 +34,7 @@ MANHATTAN_COMPARISONS = [
         "secure_burden_p",
         "Secure Burden",
         "r_burden_p",
-        "R Burden",
+        "Reference Burden",
     ),
     (
         "skat_liu",
@@ -42,7 +42,7 @@ MANHATTAN_COMPARISONS = [
         "secure_skat_wh_p",
         "Secure SKAT WH",
         "r_skat_liu_p",
-        "R SKAT Liu",
+        "Reference SKAT Liu",
     ),
 ]
 
@@ -118,7 +118,7 @@ def write_scatter_plot(
     )
     axis.set_xlim(limits)
     axis.set_ylim(limits)
-    axis.set_xlabel("R -log10(p)")
+    axis.set_xlabel("Reference -log10(p)")
     axis.set_ylabel("Secure -log10(p)")
     axis.set_title(
         f"{title}\nn={count}, $R^2$ (-log10 p)={score_text}"
@@ -347,7 +347,7 @@ def plot_ancestry(run_dir: Path, ancestry: str) -> None:
     print(f"Wrote {len(written)} plots to {plots_dir}")
 
 
-def plot_results(config_path: Path) -> None:
+def plot_secure_vs_reference(config_path: Path) -> None:
     with config_path.open("rb") as config_file:
         config = tomllib.load(config_file)
 
@@ -370,7 +370,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    plot_results(Path(args.config))
+    plot_secure_vs_reference(Path(args.config))
 
 
 if __name__ == "__main__":

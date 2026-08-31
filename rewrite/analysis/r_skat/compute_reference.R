@@ -1,6 +1,6 @@
 args <- commandArgs(trailingOnly = TRUE)
 if (length(args) != 1) {
-  stop("usage: Rscript main.R <preprocessed-dir>")
+  stop("usage: Rscript compute_reference.R <preprocessed-dir>")
 }
 
 # 1. Locate and load the analysis modules.
@@ -12,8 +12,8 @@ script_argument <- grep(
 script_path <- sub("^--file=", "", script_argument[[1]])
 script_dir <- dirname(normalizePath(script_path))
 
-source(file.path(script_dir, "input.R"))
-source(file.path(script_dir, "skat.R"))
+source(file.path(script_dir, "load_preprocessed.R"))
+source(file.path(script_dir, "skat_reference.R"))
 
 # 2. Read the preprocessing output.
 input <- read_preprocessed_input(args[[1]])

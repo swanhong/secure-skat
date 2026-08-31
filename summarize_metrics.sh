@@ -19,7 +19,7 @@ party_id = sys.argv[2]
 repository_root = Path(sys.argv[3])
 sys.path.insert(0, str(repository_root / "rewrite" / "analysis"))
 
-from compare_results import R2_COMPARISONS, read_rows, r_squared
+from compare_secure_to_reference import R2_COMPARISONS, read_rows, r_squared
 
 
 STAGES = (
@@ -432,7 +432,7 @@ if missing_r2_ancestries:
     print(
         "Unavailable ancestries: "
         + ", ".join(missing_r2_ancestries)
-        + "; run compare_results.py first."
+        + "; run compare_secure_to_reference.py first."
     )
 print(
     "SKAT WH vs Davies includes approximation/reference differences and "

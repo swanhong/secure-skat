@@ -202,10 +202,10 @@ def compare_ancestry(
     )
 
     secure_by_key = index_rows(secure_rows, "secure")
-    reference_by_key = index_rows(reference_rows, "R")
+    reference_by_key = index_rows(reference_rows, "reference")
 
     if set(secure_by_key) != set(reference_by_key):
-        raise ValueError("secure and R result keys do not match")
+        raise ValueError("secure and reference result keys do not match")
 
     comparison_rows: list[dict[str, str]] = []
 
@@ -266,7 +266,7 @@ def compare_ancestry(
     print_r_squared_by_pheno_and_chr(comparison_rows)
 
 
-def compare_results(config_path: Path) -> None:
+def compare_secure_to_reference(config_path: Path) -> None:
     with config_path.open("rb") as config_file:
         config = tomllib.load(config_file)
 
@@ -292,7 +292,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    compare_results(Path(args.config))
+    compare_secure_to_reference(Path(args.config))
 
 
 if __name__ == "__main__":

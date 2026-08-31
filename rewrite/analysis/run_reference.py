@@ -4,12 +4,13 @@ import argparse
 import csv
 import os
 import subprocess
+import sys
 import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
-R_COLUMNS = [
+REFERENCE_COLUMNS = [
     "gene_index",
     "gene_id",
     "phenotype_index",
@@ -19,7 +20,14 @@ R_COLUMNS = [
     "skat_liu_p",
 ]
 
-TARGET_BLAS_THREADS_PER_PROCESS = 8
+ENGINES = {
+    "r": ("R::SKAT", "Rscript", "r_skat/compute_reference.R"),
+    "python": (
+        "Python",
+        sys.executable,
+        "python_skat/compute_reference.py",
+    ),
+}
 
 OUTPUT_COLUMNS = [
     "chromosome",
@@ -47,18 +55,25 @@ def write_csv(path: Path, rows: list[dict[str, str]]) -> None:
 
 def run_chromosome_reference(
     run_dir: Path,
-    r_script: Path,
+    reference_root: Path,
+    engine_name: str,
+    launcher: str,
+    script: Path,
     ancestry: str,
     chromosome: int,
     phenotype_names: list[str],
     environment: dict[str, str],
 ) -> list[dict[str, str]]:
-    print(f"Running R::SKAT for {ancestry} chromosome {chromosome}")
+    print(
+        f"Running {engine_name} reference for {ancestry} "
+        f"chromosome {chromosome}",
+        flush=True,
+    )
 
     completed = subprocess.run(
         [
-            "Rscript",
-            str(r_script),
+            launcher,
+            str(script),
             str(
                 run_dir
                 / "prepared"
@@ -76,9 +91,9 @@ def run_chromosome_reference(
         completed.stdout.splitlines(),
         delimiter="\t",
     )
-    if reader.fieldnames != R_COLUMNS:
+    if reader.fieldnames != REFERENCE_COLUMNS:
         raise ValueError(
-            f"unexpected R output columns: {reader.fieldnames}"
+            f"unexpected reference output columns: {reader.fieldnames}"
         )
 
     chromosome_rows: list[dict[str, str]] = []
@@ -104,7 +119,7 @@ def run_chromosome_reference(
             }
         )
 
-    reference_dir = run_dir / "reference" / ancestry
+    reference_dir = reference_root / ancestry
     reference_dir.mkdir(parents=True, exist_ok=True)
     write_csv(
         reference_dir / f"chr{chromosome}.csv",
@@ -113,7 +128,27 @@ def run_chromosome_reference(
     return chromosome_rows
 
 
-def run_reference(config_path: Path) -> None:
+def worker_settings(engine: str, task_count: int) -> tuple[int, int]:
+    cpu_count = os.cpu_count() or 1
+    default_workers = (
+        max(1, cpu_count // 8)
+        if engine == "r"
+        else min(16, cpu_count)
+    )
+    workers = min(
+        int(os.environ.get("REFERENCE_WORKERS", default_workers)),
+        task_count,
+        cpu_count,
+    )
+    default_blas = max(1, cpu_count // workers) if engine == "r" else 1
+    blas_threads = int(
+        os.environ.get("REFERENCE_BLAS_THREADS", default_blas)
+    )
+    workers = min(workers, max(1, cpu_count // blas_threads))
+    return workers, blas_threads
+
+
+def run_reference(config_path: Path, engine: str = "r") -> None:
     with config_path.open("rb") as config_file:
         config = tomllib.load(config_file)
 
@@ -124,31 +159,26 @@ def run_reference(config_path: Path) -> None:
     success_path = reference_root / "_SUCCESS"
     success_path.unlink(missing_ok=True)
 
-    r_script = Path(__file__).resolve().with_name("main.R")
+    engine_name, launcher, script_name = ENGINES[engine]
+    script = Path(__file__).resolve().parent / script_name
     tasks = [
         (ancestry, chromosome)
         for ancestry in config["ancestries"]
         for chromosome in config["chromosomes"]
     ]
 
-    cpu_count = os.cpu_count() or 1
-    automatic_workers = max(
-        1,
-        cpu_count // TARGET_BLAS_THREADS_PER_PROCESS,
-    )
-    requested_workers = int(
-        os.environ.get("R_REFERENCE_WORKERS", automatic_workers)
-    )
-    if requested_workers < 1:
-        raise ValueError("R_REFERENCE_WORKERS must be positive")
-
-    worker_count = min(requested_workers, len(tasks), cpu_count)
-    blas_threads = max(1, cpu_count // worker_count)
-    r_environment = os.environ.copy()
-    r_environment["OPENBLAS_NUM_THREADS"] = str(blas_threads)
+    worker_count, blas_threads = worker_settings(engine, len(tasks))
+    environment = os.environ.copy()
+    for variable in (
+        "OPENBLAS_NUM_THREADS",
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
+        environment[variable] = str(blas_threads)
 
     print(
-        f"Running {len(tasks)} R::SKAT tasks with "
+        f"Running {len(tasks)} {engine_name} reference tasks with "
         f"{worker_count} workers and {blas_threads} BLAS threads per worker"
     )
 
@@ -157,11 +187,14 @@ def run_reference(config_path: Path) -> None:
             executor.submit(
                 run_chromosome_reference,
                 run_dir,
-                r_script,
+                reference_root,
+                engine_name,
+                launcher,
+                script,
                 ancestry,
                 chromosome,
                 config["phenotype_columns"],
-                r_environment,
+                environment,
             )
             for ancestry, chromosome in tasks
         ]
@@ -176,7 +209,7 @@ def run_reference(config_path: Path) -> None:
     for ancestry, ancestry_rows in rows_by_ancestry.items():
         output_path = reference_root / ancestry / "all_r_results.csv"
         write_csv(output_path, ancestry_rows)
-        print("Wrote R reference results to", output_path)
+        print(f"Wrote {engine_name} reference results to", output_path)
 
     success_path.touch()
 
@@ -188,9 +221,15 @@ def main() -> None:
         default="run.1kg.conf",
         help="path to the run configuration",
     )
+    parser.add_argument(
+        "--engine",
+        choices=ENGINES,
+        default="r",
+        help="reference engine (default: r)",
+    )
     args = parser.parse_args()
 
-    run_reference(Path(args.config))
+    run_reference(Path(args.config), args.engine)
 
 
 if __name__ == "__main__":

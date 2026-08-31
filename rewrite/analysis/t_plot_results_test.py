@@ -2,13 +2,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import compare_results
-import plot_results
+import compare_secure_to_reference
+import plot_secure_vs_reference
 
 
 class PlotResultsTest(unittest.TestCase):
     def test_r_squared_uses_negative_log10_p(self) -> None:
-        count, score = compare_results.r_squared(
+        count, score = compare_secure_to_reference.r_squared(
             [
                 {"secure": "0.01", "reference": "0.001"},
                 {"secure": "0.1", "reference": "0.1"},
@@ -21,14 +21,16 @@ class PlotResultsTest(unittest.TestCase):
         self.assertAlmostEqual(score, 0.5)
 
     def test_scatter_values_use_negative_log10_p(self) -> None:
-        secure, reference = plot_results.negative_log10_p_value_pairs(
-            [
-                {"secure": "0.01", "reference": "0.001"},
-                {"secure": "0", "reference": "1"},
-                {"secure": "-0.1", "reference": "0.1"},
-            ],
-            "secure",
-            "reference",
+        secure, reference = (
+            plot_secure_vs_reference.negative_log10_p_value_pairs(
+                [
+                    {"secure": "0.01", "reference": "0.001"},
+                    {"secure": "0", "reference": "1"},
+                    {"secure": "-0.1", "reference": "0.1"},
+                ],
+                "secure",
+                "reference",
+            )
         )
 
         self.assertEqual(len(secure), 2)
@@ -77,7 +79,7 @@ class PlotResultsTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            plot_results.plot_results(config_path)
+            plot_secure_vs_reference.plot_secure_vs_reference(config_path)
 
             plots_dir = comparison_dir / "plots"
             self.assertTrue(

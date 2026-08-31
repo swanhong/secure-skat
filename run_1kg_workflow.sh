@@ -5,6 +5,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/setup/env.sh"
 
 config_path="${CONFIG_PATH:-run.1kg.conf}"
+reference_engine="${REFERENCE_ENGINE:-python}"
 chromosome_values="$(
   python3 -c '
 import sys, tomllib
@@ -30,16 +31,17 @@ echo "[2/5] Run secure Burden/SKAT"
 go run -mod=vendor secure-rvas.go run \
   --config "${config_path}"
 
-echo "[3/5] Run ancestry-specific R::SKAT reference"
+echo "[3/5] Run ancestry-specific ${reference_engine} reference"
 python3 rewrite/analysis/run_reference.py \
-  --config "${config_path}"
+  --config "${config_path}" \
+  --engine "${reference_engine}"
 
-echo "[4/5] Compare secure and R results"
-python3 rewrite/analysis/compare_results.py \
+echo "[4/5] Compare secure and reference results"
+python3 rewrite/analysis/compare_secure_to_reference.py \
   --config "${config_path}"
 
 echo "[5/5] Generate scatter and Manhattan plots"
-python3 rewrite/analysis/plot_results.py \
+python3 rewrite/analysis/plot_secure_vs_reference.py \
   --config "${config_path}"
 
 echo "Secure RVAS 1KG workflow completed"
