@@ -322,14 +322,23 @@ Party 1 prints one timing tree per ancestry, headed by `[party1 EUR]`,
 `[party1 AFR]`, or `[party1 AMR]`. `process_summary.csv` remains the overall
 parent/party process time and peak RSS summary for the complete secure run.
 
-Summarize the key Party 1 timings by ancestry and chromosome with:
+Summarize Party 1 timing, communication, and R² results with:
 
 ```bash
-./summarize_metrics.sh <run_dir>
+./summarize_metrics.sh run.aou.conf
 ```
 
-The default run directory is `output/secure-rvas-aou`. Pass a second argument
-to summarize another party, for example `./summarize_metrics.sh <run_dir> 0`.
+The first argument defaults to `run.aou.conf`; the script reads `run_dir` from
+that configuration. Pass a second argument to summarize another party, for
+example `./summarize_metrics.sh run.aou.conf 0`.
+
+The communication table reports setup and chromosome totals without adding
+nested stages, and labels sent-plus-received traffic as that party's total I/O.
+When `comparison/<ancestry>/all_comparison.csv` is available, the R² table
+reports pooled scores and the worst phenotype-by-chromosome score for each
+comparison. Otherwise, the timing and communication tables are still printed
+and R² is marked unavailable.
+
 The stage columns are independently measured and may overlap when work runs in
 parallel, so they should not be added to reconstruct the chromosome total.
 
