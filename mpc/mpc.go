@@ -2085,7 +2085,7 @@ func (mpcObj *MPC) Divide(a, b mpc_core.RVec, binaryVersion bool) mpc_core.RVec 
 				end = n
 			}
 
-			log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("MPC division on large vector (%d-%d / %d)", start, end, n))
+			// log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("MPC division on large vector (%d-%d / %d)", start, end, n))
 
 			copy(c[start:end], mpcObj.Divide(a[start:end], b[start:end], binaryVersion))
 
