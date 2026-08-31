@@ -18,7 +18,7 @@ REFERENCE_HEADER = (
 class RunReferenceTest(unittest.TestCase):
     def test_runs_r_and_python_engines(self) -> None:
         for engine, launcher, script_name, blas_threads in (
-            ("r", "Rscript", "compute_reference.R", "8"),
+            ("r", "Rscript", "compute_reference.R", "1"),
             ("python", sys.executable, "compute_reference.py", "1"),
         ):
             with self.subTest(engine=engine), tempfile.TemporaryDirectory() as directory:
@@ -86,10 +86,27 @@ class RunReferenceTest(unittest.TestCase):
             patch("os.cpu_count", return_value=32),
             patch.dict(run_reference.os.environ, {}, clear=True),
         ):
-            self.assertEqual(run_reference.worker_settings("r", 6), (4, 8))
+            self.assertEqual(run_reference.worker_settings("r", 6), (6, 1))
             self.assertEqual(
                 run_reference.worker_settings("python", 66),
                 (16, 1),
+            )
+
+    def test_worker_overrides(self) -> None:
+        with (
+            patch("os.cpu_count", return_value=32),
+            patch.dict(
+                run_reference.os.environ,
+                {
+                    "REFERENCE_WORKERS": "8",
+                    "REFERENCE_BLAS_THREADS": "2",
+                },
+                clear=True,
+            ),
+        ):
+            self.assertEqual(
+                run_reference.worker_settings("r", 66),
+                (8, 2),
             )
 
 

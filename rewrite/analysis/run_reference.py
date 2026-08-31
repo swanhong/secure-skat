@@ -130,19 +130,14 @@ def run_chromosome_reference(
 
 def worker_settings(engine: str, task_count: int) -> tuple[int, int]:
     cpu_count = os.cpu_count() or 1
-    default_workers = (
-        max(1, cpu_count // 8)
-        if engine == "r"
-        else min(16, cpu_count)
-    )
+    default_workers = min(16, cpu_count)
     workers = min(
         int(os.environ.get("REFERENCE_WORKERS", default_workers)),
         task_count,
         cpu_count,
     )
-    default_blas = max(1, cpu_count // workers) if engine == "r" else 1
     blas_threads = int(
-        os.environ.get("REFERENCE_BLAS_THREADS", default_blas)
+        os.environ.get("REFERENCE_BLAS_THREADS", 1)
     )
     workers = min(workers, max(1, cpu_count // blas_threads))
     return workers, blas_threads
