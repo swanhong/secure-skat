@@ -6,8 +6,9 @@ import os
 import subprocess
 import sys
 import tomllib
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from time import monotonic
 
 
 REFERENCE_COLUMNS = [
@@ -177,8 +178,9 @@ def run_reference(config_path: Path, engine: str = "r") -> None:
         f"{worker_count} workers and {blas_threads} BLAS threads per worker"
     )
 
+    reference_started_at = monotonic()
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = [
+        future_tasks = {
             executor.submit(
                 run_chromosome_reference,
                 run_dir,
@@ -190,16 +192,34 @@ def run_reference(config_path: Path, engine: str = "r") -> None:
                 chromosome,
                 config["phenotype_columns"],
                 environment,
-            )
+            ): (ancestry, chromosome)
             for ancestry, chromosome in tasks
-        ]
-        task_rows = [future.result() for future in futures]
+        }
+        task_rows = {}
+        for completed_count, future in enumerate(
+            as_completed(future_tasks),
+            start=1,
+        ):
+            task = future_tasks[future]
+            task_rows[task] = future.result()
+            remaining_count = len(tasks) - completed_count
+            elapsed_minutes = (
+                monotonic() - reference_started_at
+            ) / 60
+            print(
+                f"Reference progress: {completed_count} done / "
+                f"{remaining_count} remaining "
+                f"({elapsed_minutes:.1f} min elapsed)",
+                flush=True,
+            )
 
     rows_by_ancestry = {
         ancestry: [] for ancestry in config["ancestries"]
     }
-    for (ancestry, _), chromosome_rows in zip(tasks, task_rows):
-        rows_by_ancestry[ancestry].extend(chromosome_rows)
+    for ancestry, chromosome in tasks:
+        rows_by_ancestry[ancestry].extend(
+            task_rows[(ancestry, chromosome)]
+        )
 
     for ancestry, ancestry_rows in rows_by_ancestry.items():
         output_path = reference_root / ancestry / "all_r_results.csv"

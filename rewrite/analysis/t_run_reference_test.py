@@ -1,4 +1,5 @@
 import csv
+import io
 import subprocess
 import sys
 import tempfile
@@ -54,12 +55,30 @@ class RunReferenceTest(unittest.TestCase):
                     patch("os.cpu_count", return_value=8),
                     patch.dict(run_reference.os.environ, {}, clear=True),
                     patch.object(
+                        run_reference,
+                        "monotonic",
+                        side_effect=(100.0, 130.0, 160.0),
+                    ),
+                    patch.object(
                         run_reference.subprocess,
                         "run",
                         side_effect=run_backend,
                     ),
+                    patch("sys.stdout", new_callable=io.StringIO) as output,
                 ):
                     run_reference.run_reference(config_path, engine)
+
+                progress = output.getvalue()
+                self.assertIn(
+                    "Reference progress: 1 done / 1 remaining "
+                    "(0.5 min elapsed)",
+                    progress,
+                )
+                self.assertIn(
+                    "Reference progress: 2 done / 0 remaining "
+                    "(1.0 min elapsed)",
+                    progress,
+                )
 
                 reference_root = run_dir / "reference"
                 with (
