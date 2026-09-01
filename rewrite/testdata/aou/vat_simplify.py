@@ -1,9 +1,10 @@
+import argparse
+import csv
 import gzip
+import os
 import struct
 import subprocess
-import os
-import csv
-import argparse
+import time
 
 BILLING_PROJECT = (
     os.environ.get("GOOGLE_CLOUD_PROJECT")
@@ -30,9 +31,10 @@ COL_MANE_SELECT = 105
 COL_LOF = 109
 
 MIN_COLUMNS = 110
+LINEAR_SHIFT = 14
+PROGRESS_EVERY = 2_000_000
 
 MISSING_VALUES = {"", "."}
-CANONICAL_TRUE_VALUES = {"true", "t", "1"}
 
 OUTPUT_COLUMNS = (
     "variant_key",
@@ -45,24 +47,85 @@ OUTPUT_COLUMNS = (
 )
 
 TRANSCRIPT_PRIORITY = (
-    ("mane_select_name", COL_MANE_SELECT, "non_empty", None),
-    ("is_canonical_transcript", COL_CANONICAL, "equals", "True"),
-    ("lof", COL_LOF, "equals", "HC"),
+    ("mane_select_name", COL_MANE_SELECT, "not_empty", None),
+    (
+        "is_canonical_transcript",
+        COL_CANONICAL,
+        "equals_ignore_case",
+        "true",
+    ),
+    ("LoF", COL_LOF, "equals", "HC"),
 )
 
-def transcript_priority(fields: list[str]) -> int:
-    for priority, (name, col, condition, expected) in enumerate(TRANSCRIPT_PRIORITY):
-        value = fields[col].strip()
-        if condition == "non_empty":
-            matches = value not in MISSING_VALUES
-        elif condition == "equals":
-            matches = (value == expected)
-        else:
-            raise ValueError(f"unsupported condition: {condition}")
 
-    if matches:
-        return priority
+def transcript_priority(fields: list[str]) -> int:
+    for priority, (name, column, condition, expected) in enumerate(
+        TRANSCRIPT_PRIORITY
+    ):
+        value = fields[column].strip()
+        if condition == "not_empty":
+            matches = value not in MISSING_VALUES
+        elif condition == "equals_ignore_case":
+            matches = value.casefold() == expected.casefold()
+        elif condition == "equals":
+            matches = value == expected
+        else:
+            raise ValueError(
+                f"unsupported condition for {name}: {condition}"
+            )
+
+        if matches:
+            return priority
+
     return len(TRANSCRIPT_PRIORITY)
+
+
+def load_pvar_variants(pvar_path: str):
+    with open(pvar_path) as pvar_file:
+        for line in pvar_file:
+            if line.startswith("#CHROM"):
+                columns = line.lstrip("#").rstrip().split("\t")
+                break
+        else:
+            raise ValueError(f"PVAR header not found: {pvar_path}")
+
+        position_column = columns.index("POS")
+        ref_column = columns.index("REF")
+        alt_column = columns.index("ALT")
+        filter_column = (
+            columns.index("FILTER") if "FILTER" in columns else None
+        )
+
+        variants = set()
+        minimum_position = None
+        maximum_position = 0
+
+        for line in pvar_file:
+            fields = line.rstrip().split("\t")
+            if (
+                filter_column is not None
+                and fields[filter_column] not in {"PASS", "."}
+            ):
+                continue
+
+            alt = fields[alt_column]
+            # remove if ALT contains a comma (multi-allelic)
+            if "," in alt:
+                continue
+
+            position = int(fields[position_column])
+            ref = fields[ref_column]
+            variants.add(f"{position}:{ref}:{alt}")
+
+            if minimum_position is None or position < minimum_position:
+                minimum_position = position
+            maximum_position = max(maximum_position, position)
+
+    if not variants:
+        raise ValueError(f"no PASS biallelic variants found in {pvar_path}")
+
+    return variants, minimum_position, maximum_position
+
 
 def annotation_candidate(fields: list[str], source_order: int):
     '''
@@ -109,18 +172,26 @@ def annotation_candidate(fields: list[str], source_order: int):
     }
     return group_key, rank, output_row
 
-def select_best_row(lines, chromosome: str):
+
+def select_best_rows(
+    lines,
+    chromosome: str,
+    wanted_variants: set[str],
+    maximum_position: int,
+):
     best_rows = {}
     chromosome_started = False
     source_order = 0
+    matched_rows = 0
+    started_at = time.time()
 
     for line in lines:
-        fields = line.strip("\n").split("\t")
+        head = line.split("\t", 6)
 
-        if len(fields) <= COL_CONTIG:
+        if len(head) < 7:
             continue
 
-        row_chromosome = fields[COL_CONTIG].strip()
+        row_chromosome = head[COL_CONTIG]
         if row_chromosome != chromosome:
             if chromosome_started:
                 break
@@ -129,26 +200,60 @@ def select_best_row(lines, chromosome: str):
         chromosome_started = True
         source_order += 1
 
+        if source_order % PROGRESS_EVERY == 0:
+            elapsed = time.time() - started_at
+            print(
+                f"... {source_order:,} VAT rows, "
+                f"{matched_rows:,} matched transcript rows, "
+                f"{len(best_rows):,} variant-gene rows, "
+                f"{source_order / elapsed:,.0f} rows/s",
+                flush=True,
+            )
+
+        position = int(head[COL_POSITION])
+        if position > maximum_position:
+            break
+
+        variant_key = f"{position}:{head[COL_REF]}:{head[COL_ALT]}"
+        if variant_key not in wanted_variants:
+            continue
+
+        fields = line.rstrip("\n").split("\t")
         candidate = annotation_candidate(fields, source_order)
         if candidate is None:
             continue
 
+        matched_rows += 1
         group_key, rank, output_row = candidate
         current = best_rows.get(group_key)
         if current is None or rank < current[0]:
             best_rows[group_key] = (rank, output_row)
 
+    elapsed = time.time() - started_at
+    print(
+        f"scanned {source_order:,} {chromosome} VAT rows; "
+        f"matched {matched_rows:,} transcript rows and selected "
+        f"{len(best_rows):,} variant-gene rows in {elapsed:,.0f}s",
+        flush=True,
+    )
     return best_rows
 
+
 def chromosome_offset(
-        vat_path: str, chromosome: str
+    vat_path: str,
+    chromosome: str,
+    genomic_position: int,
 ) -> int:
     if not BILLING_PROJECT:
-        raise ValueError("GOOGLE CLOUD_PROJECT or GOOGLE_PROJECT environment variable is required")
+        raise ValueError(
+            "GOOGLE_CLOUD_PROJECT or GOOGLE_PROJECT is required"
+        )
     command = [
         "gsutil",
-        "-u", BILLING_PROJECT,
-        "cat", f"{vat_path}.tbi"
+        "-u",
+        BILLING_PROJECT,
+        "cat",
+        f"{vat_path}.tbi",
     ]
     compressed_index = subprocess.run(
         command, check=True, capture_output=True,
@@ -196,22 +301,33 @@ def chromosome_offset(
         position += 8 * interval_count
 
         if reference == target_reference:
-            for virtual_offset in intervals:
-                if virtual_offset:
-                    return virtual_offset >> 16
+            interval = min(
+                genomic_position >> LINEAR_SHIFT,
+                interval_count - 1,
+            )
+            while interval >= 0 and intervals[interval] == 0:
+                interval -= 1
+            if interval >= 0:
+                return intervals[interval] >> 16
 
             raise ValueError(
-                f"no data offset found for chromosome: {chromosome}"
+                f"no data offset found for {chromosome}:"
+                f"{genomic_position}"
             )
 
     raise ValueError(f"chromosome not found: {chromosome}")
+
 
 def stream_vat_lines(vat_path: str, start: int):
     gsutil_process = subprocess.Popen(
         [
             "gsutil",
-            "-u", BILLING_PROJECT,
-            "cat", "-r", f"{start}-", vat_path,
+            "-u",
+            BILLING_PROJECT,
+            "cat",
+            "-r",
+            f"{start}-",
+            vat_path,
         ],
         stdout=subprocess.PIPE,
     )
@@ -237,6 +353,7 @@ def stream_vat_lines(vat_path: str, start: int):
         gzip_process.wait()
         gsutil_process.wait()
 
+
 def write_annotations(output_path: str, best_rows) -> int:
     output_directory = os.path.dirname(output_path)
     if output_directory:
@@ -255,6 +372,7 @@ def write_annotations(output_path: str, best_rows) -> int:
             writer.writerow(output_row)
     return len(best_rows)
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="create a simplified AoU VAT annotation file."
@@ -268,6 +386,11 @@ def main():
         "--vat-path",
         default=DEFAULT_VAT_PATH,
         help="path to the AoU VAT file (default: %(default)s)"
+    )
+    parser.add_argument(
+        "--pvar",
+        required=True,
+        help="PVAR containing the PASS biallelic variants to annotate",
     )
     parser.add_argument(
         "--output",
@@ -291,14 +414,32 @@ def main():
 
     print(f"chromosome: {chromosome}")
     print(f"vat_path: {args.vat_path}")
+    print(f"pvar_path: {args.pvar}")
     print(f"output_path: {output_path}")
 
-    start = chromosome_offset(args.vat_path, chromosome)
+    wanted_variants, minimum_position, maximum_position = load_pvar_variants(
+        args.pvar
+    )
+    print(
+        f"PVAR variants: {len(wanted_variants):,}; "
+        f"range: {minimum_position:,}-{maximum_position:,}"
+    )
+
+    start = chromosome_offset(
+        args.vat_path,
+        chromosome,
+        minimum_position,
+    )
     print(f"VAT start byte: {start:,}")
 
     lines = stream_vat_lines(args.vat_path, start)
     try:
-        best_rows = select_best_row(lines, chromosome)
+        best_rows = select_best_rows(
+            lines,
+            chromosome,
+            wanted_variants,
+            maximum_position,
+        )
     finally:
         lines.close()
 
