@@ -36,6 +36,7 @@ rewrite/testdata/**
 !rewrite/testdata/1kgenome/smoke_genes_21_22.tsv
 !rewrite/testdata/aou/
 !rewrite/testdata/aou/prepare_aou.py
+!rewrite/testdata/aou/vat_simplify.py
 rewrite/preprocessing/test_*.py
 rewrite/preprocessing/*.md
 
