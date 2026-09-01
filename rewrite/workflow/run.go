@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 
@@ -15,6 +16,47 @@ type chromosomeResult struct {
 	Genes      []protocol.Gene
 	BurdenP    []float64
 	SKATWHP    []float64
+}
+
+func ancestryComplete(config *Config, ancestry string) (bool, error) {
+	paths := []string{
+		filepath.Join(
+			config.RunDir,
+			"secure",
+			ancestry,
+			"all_secure_results.tsv",
+		),
+	}
+	for _, chromosome := range config.Chromosomes {
+		paths = append(paths, filepath.Join(
+			config.RunDir,
+			"secure",
+			ancestry,
+			fmt.Sprintf("chr%d.tsv", chromosome),
+		))
+	}
+	for partyID := 0; partyID < partyCount; partyID++ {
+		paths = append(paths, filepath.Join(
+			config.RunDir,
+			"metrics",
+			ancestry,
+			fmt.Sprintf("metrics_party%d.csv", partyID),
+		))
+	}
+
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("inspect ancestry output %s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() || info.Size() == 0 {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func runChromosome(
@@ -158,6 +200,16 @@ func runParty(
 		return fmt.Errorf("validate config: %w", err)
 	}
 	for _, ancestry := range config.Ancestries {
+		complete, err := ancestryComplete(config, ancestry)
+		if err != nil {
+			return err
+		}
+		if complete {
+			if partyID == cohortAPartyID {
+				fmt.Printf("Skip completed ancestry %s\n", ancestry)
+			}
+			continue
+		}
 		if err := runAncestry(
 			config,
 			partyID,
