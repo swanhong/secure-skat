@@ -2,12 +2,33 @@ package workflow
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/BurntSushi/toml"
 	securecrypto "github.com/hhcho/sfgwas/crypto"
 	"github.com/hhcho/sfgwas/mpc"
 )
+
+const runConfigFilename = "run_config.toml"
+
+func writeConfig(configPath, runDir string) error {
+	contents, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("read config %q, %w", configPath, err)
+	}
+
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return fmt.Errorf("create run dir %q, %w", runDir, err)
+	}
+
+	savePath := filepath.Join(runDir, runConfigFilename)
+	if err := os.WriteFile(savePath, contents, 0o644); err != nil {
+		return fmt.Errorf("write run config %q, %w", savePath, err)
+	}
+	return nil
+}
 
 type Config struct {
 	RunDir      string `toml:"run_dir"`

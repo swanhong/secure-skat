@@ -57,18 +57,24 @@ func runPrepareCommand(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	if err := ValidateConfig(config); err != nil {
+		return fmt.Errorf("validate config: %w", err)
+	}
 	if *clearOutputs {
-		if err := ValidateConfig(config); err != nil {
-			return fmt.Errorf("validate config: %w", err)
-		}
 		if err := clearGeneratedOutputs(config.RunDir); err != nil {
 			return err
 		}
 		fmt.Printf("Cleared generated outputs from %s\n", config.RunDir)
 	}
 
+	if err := writeConfig(*configPath, config.RunDir); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+
 	fmt.Println("Running secure-rvas::prepare")
 	fmt.Printf("Read configuration from %s\n", *configPath)
+	fmt.Printf("Saved run configuration to %s/%s\n", config.RunDir, runConfigFilename)
 
 	return Prepare(config)
 }
