@@ -73,6 +73,26 @@ def run_reference(command: list[str]) -> list[dict[str, str]]:
 
 
 class ReferenceParityTest(unittest.TestCase):
+    def test_batched_r_matches_top_level_skat(self) -> None:
+        scripts = Path(__file__).resolve().parent
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory)
+            write_fixture(fixture)
+            subprocess.run(
+                [
+                    "Rscript",
+                    str(
+                        scripts
+                        / "r_skat/batched_reference_parity_test.R"
+                    ),
+                    str(fixture),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=os.environ | {"OPENBLAS_NUM_THREADS": "1"},
+            )
+
     def test_r_reference_reports_progress(self) -> None:
         scripts = Path(__file__).resolve().parent
         with tempfile.TemporaryDirectory() as directory:
