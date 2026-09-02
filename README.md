@@ -1,13 +1,11 @@
 # Secure RVAS
 
 Secure RVAS runs privacy-preserving Burden and SKAT rare-variant association tests.
-The local 1000 Genomes test workflow is documented separately in
-[`rewrite/testdata/1kgenome/README.md`](rewrite/testdata/1kgenome/README.md).
+The local 1000 Genomes test workflow is documented separately in [`rewrite/testdata/1kgenome/README.md`](rewrite/testdata/1kgenome/README.md).
 
 ## Initial setup
 
-Run these commands once after a fresh clone in a Linux x86-64
-environment:
+Run these commands once after a fresh clone in a Linux x86-64 environment:
 
 ```bash
 cd "$HOME/secure-skat"
@@ -16,23 +14,14 @@ source setup/env.sh
 go mod vendor
 ```
 
-`setup/install.sh` installs PLINK 2 at `$HOME/plink2` and R::SKAT under
-`$HOME/R/library`. `go mod vendor` is required because every Go command in this
-repository uses `-mod=vendor`, while `vendor/` is not stored in Git.
+`setup/install.sh` installs PLINK 2 at `$HOME/plink2` and R::SKAT under `$HOME/R/library`. `go mod vendor` is required because every Go command in this repository uses `-mod=vendor`, while `vendor/` is not stored in Git.
 
-In each new terminal, load the installed paths before running individual
-commands:
+In each new terminal, load the installed paths before running individual commands:
 
 ```bash
 cd secure-skat
 source setup/env.sh
 ```
-
-The AoU workflow additionally requires:
-
-- Controlled Tier access to the v9 WGS exome PGEN and VAT objects;
-- a valid billing project in `GOOGLE_PROJECT` or `GOOGLE_CLOUD_PROJECT`;
-- enough local disk space for the selected PGEN triplets and derived inputs.
 
 ## Configure the AoU run
 
@@ -54,8 +43,6 @@ first saving a separate local copy. The `--pvar` argument itself accepts a local
 file descriptor, so Bash process substitution connects `gsutil cat` to the
 Python command.
 
-First verify access and generate one chromosome, for example chromosome 22:
-
 ```bash
 cd "$HOME/secure-skat"
 source setup/env.sh
@@ -67,20 +54,24 @@ if [[ -z "$billing_project" ]]; then
 fi
 export GOOGLE_PROJECT="$billing_project"
 
-chromosome=22
-pvar_uri="gs://vwb-aou-datasets-controlled/v9/wgs/short_read/snpindel/exome/pgen/exome.chr${chromosome}.pvar"
-output_path="$HOME/fed_prep_out/chr${chromosome}_annotation.tsv"
 mkdir -p "$HOME/fed_prep_out"
 
-gsutil -u "$billing_project" ls "$pvar_uri"
+for chromosome in {1..22}; do
+  echo "===== chromosome ${chromosome} ====="
 
-python3 rewrite/testdata/aou/vat_simplify.py \
-  --chromosome "$chromosome" \
-  --pvar <(gsutil -u "$billing_project" cat "$pvar_uri") \
-  --output "$output_path"
+  pvar_uri="gs://vwb-aou-datasets-controlled/v9/wgs/short_read/snpindel/exome/pgen/exome.chr${chromosome}.pvar"
+  output_path="$HOME/fed_prep_out/chr${chromosome}_annotation.tsv"
+
+  gsutil -u "$billing_project" ls "$pvar_uri" || break
+
+  python3 rewrite/testdata/aou/vat_simplify.py \
+    --chromosome "$chromosome" \
+    --pvar <(gsutil -u "$billing_project" cat "$pvar_uri") \
+    --output "$output_path" || break
+done
 ```
 
-After the chromosome 22 command succeeds, generate the configured autosomes sequentially. Each chromosome scans a large portion of the remote VAT and can take a long time.
+This code generates the configured autosomes sequentially. Each chromosome scans a large portion of the remote VAT and can take a long time.
 
 The default VAT is:
 ```text
