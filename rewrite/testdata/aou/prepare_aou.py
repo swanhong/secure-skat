@@ -6,6 +6,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 
@@ -348,12 +349,11 @@ def prepare_aou(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--chromosome",
-        nargs="+",
-        type=int,
-        required=True,
-    )
+    parser.add_argument("--config", type=Path, required=True)
+
+    with args.config.open("rb") as config_file:
+        config = tomllib.load(config_file)
+    args.chromosome = config["chromosomes"]
     parser.add_argument(
         "--output-dir",
         type=Path,

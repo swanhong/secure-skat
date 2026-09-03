@@ -67,7 +67,7 @@ func createSharedPRGKeys(ancestries []string) (string, error) {
 
 func runPartyCommand(args []string) error {
 	flags := flag.NewFlagSet(
-		"secure-rvas _party",
+		"secure-rvas party",
 		flag.ContinueOnError,
 	)
 	configPath := flags.String(
@@ -134,7 +134,7 @@ func runPartyProcesses(
 			command := exec.CommandContext(
 				ctx,
 				executable,
-				"_party",
+				"party",
 				"--config", configPath,
 				"--party", strconv.Itoa(partyID),
 				"--shared-keys", sharedKeysPath,

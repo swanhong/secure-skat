@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-
+import tomllib
 import utils
 
 
@@ -136,13 +136,14 @@ def prepare_1kgenome(root: Path, args) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--chromosome",
-        nargs="+",
-        required=True,
-        metavar="SPEC",
-        help="chromosomes such as 1,2,3 or 1-5; all means 1-22",
-    )
+    parser.add_argument("--config", type=Path, required=True)
+
+    with args.config.open("rb") as config_file:
+        config = tomllib.load(config_file)
+    args.chromosome = [
+        str(chromosome)
+        for chromosome in config["chromosomes"]
+    ]
     parser.add_argument(
         "--num-pheno",
         type=int,

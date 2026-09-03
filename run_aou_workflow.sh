@@ -6,18 +6,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/setup/env.sh"
 
 config_path="${CONFIG_PATH:-run.aou.conf}"
 reference_engine="${REFERENCE_ENGINE:-python}"
-chromosome_values="$(
-  python3 -c '
-import sys, tomllib
-with open(sys.argv[1], "rb") as config_file:
-    print(*tomllib.load(config_file)["chromosomes"])
-' "${config_path}"
-)"
-read -r -a chromosomes <<< "${chromosome_values}"
 
 echo "[0/6] Prepare AoU chromosome inputs: ${chromosomes[*]}"
 python3 rewrite/testdata/aou/prepare_aou.py \
-  --chromosome "${chromosomes[@]}"
+  --config "${config_path}"
 
 echo "[1/6] Prepare ancestry-specific secure inputs"
 go run -mod=vendor secure-rvas.go prepare \

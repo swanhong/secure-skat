@@ -17,7 +17,7 @@ func Main(args []string) error {
 		return runPrepareCommand(args[1:])
 	case "run":
 		return runRunCommand(args[1:])
-	case "_party":
+	case "party":
 		return runPartyCommand(args[1:])
 	default:
 		return fmt.Errorf(
