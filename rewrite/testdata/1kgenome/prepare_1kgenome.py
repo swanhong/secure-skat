@@ -137,13 +137,6 @@ def prepare_1kgenome(root: Path, args) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
-
-    with args.config.open("rb") as config_file:
-        config = tomllib.load(config_file)
-    args.chromosome = [
-        str(chromosome)
-        for chromosome in config["chromosomes"]
-    ]
     parser.add_argument(
         "--num-pheno",
         type=int,
@@ -151,6 +144,14 @@ def main() -> None:
         help="number of phenotypes to generate",
     )
     args = parser.parse_args()
+
+    with args.config.open("rb") as config_file:
+        config = tomllib.load(config_file)
+    args.chromosome = [
+        str(chromosome)
+        for chromosome in config["chromosomes"]
+    ]
+
     if args.num_pheno < 1:
         raise ValueError("num-pheno must be at least 1")
     prepare_1kgenome(Path(__file__).resolve().parent, args)

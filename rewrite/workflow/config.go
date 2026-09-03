@@ -67,7 +67,8 @@ type Config struct {
 
 	GeneSelection GeneSelection `toml:"gene_selection"`
 
-	Servers map[string]mpc.Server
+	BindingIP string `toml:"binding_ipaddr"`
+	Servers   map[string]mpc.Server
 }
 
 type GeneSelection struct {

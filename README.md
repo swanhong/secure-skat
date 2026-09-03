@@ -36,6 +36,14 @@ chromosomes = [
 ]
 ```
 
+The current AoU configuration selects high-confidence loss-of-function variants
+with MAF at most 0.02:
+
+```toml
+masks = ["LoF=HC"]
+max_maf = 0.02
+```
+
 ## Step 0: Create chromosome VAT annotations
 
 `vat_simplify.py` reads the chromosome PVAR from Google Cloud Storage without
@@ -150,23 +158,14 @@ All commands below run from the repository root.
 ```bash
 source setup/env.sh
 
-chromosome_values="$(
-  python3 -c '
-import sys, tomllib
-with open(sys.argv[1], "rb") as config_file:
-    print(*tomllib.load(config_file)["chromosomes"])
-' run.aou.conf
-)"
-read -r -a chromosomes <<< "$chromosome_values"
-
 python3 rewrite/testdata/aou/prepare_aou.py \
-  --chromosome "${chromosomes[@]}"
+  --config run.aou.conf
 ```
 
 `prepare_aou.py` downloads missing PGEN/PVAR/PSAM, phenotype, and ancestry
-files. Existing localized files are reused. It normalizes the Step 0 VAT output,
-computes minor allele frequency from `gnomad_af`, and writes inputs under
-`rewrite/testdata/aou/generated/`.
+files for the chromosomes listed in `run.aou.conf`. Existing localized files are
+reused. It normalizes the Step 0 VAT output, computes minor allele frequency
+from `gnomad_af`, and writes inputs under `rewrite/testdata/aou/generated/`.
 
 ### 2. Preprocess secure inputs
 
@@ -228,11 +227,6 @@ python3 rewrite/analysis/plot_secure_vs_reference.py \
 ./summarize_metrics.sh run.aou.conf
 ```
 
-Pass a party ID as the second summary argument to inspect another party:
-
-```bash
-./summarize_metrics.sh run.aou.conf 0
-```
 
 ## Output layout
 
