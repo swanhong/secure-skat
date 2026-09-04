@@ -7,9 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	securecrypto "github.com/hhcho/sfgwas/crypto"
 	"github.com/hhcho/sfgwas/rewrite/protocol"
-	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 	"gonum.org/v1/gonum/mat"
 )
 
@@ -254,42 +252,37 @@ func loadPartyInput(
 		return nil, fmt.Errorf("unknown party %d", partyID)
 	}
 
-	literal, err := securecrypto.ResolveCKKSParametersLiteral(
-		config.CKKS,
-	)
-	if err != nil {
-		return nil, err
-	}
-	heParameters, err := ckks.NewParametersFromLiteral(literal)
-	if err != nil {
-		return nil, err
-	}
-
 	input := &PartyInput{
 		Chromosomes: make(
 			[]ChromosomeInput,
 			len(config.Chromosomes),
 		),
 	}
-
-	if cohort != "" {
-		firstDirectory := filepath.Join(
-			config.RunDir,
-			"prepared",
-			ancestry,
-			fmt.Sprintf("chr%d", config.Chromosomes[0]),
-			cohort,
-		)
-		input.X, input.Y, err = readRows(
-			firstDirectory,
-			config.NumCov,
-			len(config.PhenotypeColumns),
-		)
-		if err != nil {
-			return nil, err
-		}
-		input.SampleCount, _ = input.X.Dims()
+	for index, chromosome := range config.Chromosomes {
+		input.Chromosomes[index].Chromosome = chromosome
 	}
+
+	if partyID == auxiliaryPartyID {
+		return input, nil
+	}
+
+	firstDirectory := filepath.Join(
+		config.RunDir,
+		"prepared",
+		ancestry,
+		fmt.Sprintf("chr%d", config.Chromosomes[0]),
+		cohort,
+	)
+	var err error
+	input.X, input.Y, err = readRows(
+		firstDirectory,
+		config.NumCov,
+		len(config.PhenotypeColumns),
+	)
+	if err != nil {
+		return nil, err
+	}
+	input.SampleCount, _ = input.X.Dims()
 
 	for index, chromosome := range config.Chromosomes {
 		directory := filepath.Join(
@@ -304,30 +297,10 @@ func loadPartyInput(
 			return nil, err
 		}
 
-		dataParams := protocol.DataParams{
-			Genes:          genes,
-			C:              config.NumCov + 1,
-			PhenotypeCount: len(config.PhenotypeColumns),
-		}
-		cryptoParams, err := protocol.BuildCryptoParams(
-			dataParams,
-			config.Probes,
-			heParameters.MaxSlots(),
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		genotypeDirectory := ""
-		if cohort != "" {
-			genotypeDirectory = filepath.Join(directory, cohort)
-		}
-
 		input.Chromosomes[index] = ChromosomeInput{
 			Chromosome:        chromosome,
-			GenotypeDirectory: genotypeDirectory,
+			GenotypeDirectory: filepath.Join(directory, cohort),
 			Genes:             genes,
-			CryptoParams:      cryptoParams,
 		}
 	}
 

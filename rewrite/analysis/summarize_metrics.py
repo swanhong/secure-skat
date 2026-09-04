@@ -12,10 +12,10 @@ from compare_secure_to_reference import R2_COMPARISONS, comparison_r_squared
 STAGES = (
     ("Total", "chromosome_total"),
     ("Weights", "compute_weights"),
-    ("Packed", "packed_statistics"),
-    ("GtG1", "first_gtg_action"),
-    ("GtG2", "second_gtg_action"),
-    ("Trace", "private_trace_correction"),
+    ("Stat", "packed_statistics"),
+    ("Stat/GtG1", "first_gtg_action"),
+    ("Stat/GtG2", "second_gtg_action"),
+    ("Stat/Trace", "private_trace_correction"),
     ("Finalize", "finalize"),
     ("Release", "release"),
 )

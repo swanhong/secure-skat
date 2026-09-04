@@ -28,6 +28,53 @@ type session struct {
 	rss        mpc_core.RVec
 }
 
+func exchangePublicParameters(
+	network *mpc.Network,
+	partyID int,
+	localSampleCount int,
+	chromosomes []ChromosomeInput,
+) (nA, nB int) {
+	switch partyID {
+	case auxiliaryPartyID:
+		nA = network.ReceiveInt(cohortAPartyID)
+		nB = network.ReceiveInt(cohortBPartyID)
+		network.SendInt(nB, cohortAPartyID)
+		network.SendInt(nA, cohortBPartyID)
+
+		for index := range chromosomes {
+			geneCount := network.ReceiveInt(cohortAPartyID)
+			variantCounts := network.ReceiveIntVector(
+				geneCount,
+				cohortAPartyID,
+			)
+			genes := make([]protocol.Gene, geneCount)
+			for geneIndex, variantCount := range variantCounts {
+				genes[geneIndex].VariantCount = int(variantCount)
+			}
+			chromosomes[index].Genes = genes
+		}
+	case cohortAPartyID:
+		nA = localSampleCount
+		network.SendInt(nA, auxiliaryPartyID)
+		nB = network.ReceiveInt(auxiliaryPartyID)
+
+		for _, chromosome := range chromosomes {
+			variantCounts := make([]uint64, len(chromosome.Genes))
+			for index, gene := range chromosome.Genes {
+				variantCounts[index] = uint64(gene.VariantCount)
+			}
+			network.SendInt(len(variantCounts), auxiliaryPartyID)
+			network.SendIntVector(variantCounts, auxiliaryPartyID)
+		}
+	case cohortBPartyID:
+		nB = localSampleCount
+		network.SendInt(nB, auxiliaryPartyID)
+		nA = network.ReceiveInt(auxiliaryPartyID)
+	}
+
+	return nA, nB
+}
+
 func openSession(
 	config *Config,
 	partyID int,
@@ -47,11 +94,6 @@ func openSession(
 	if err != nil {
 		return nil, err
 	}
-	galoisElements := requiredGaloisElements(
-		heParameters,
-		input.Chromosomes,
-	)
-
 	done := metrics.start("network_init", 0, nil)
 	networks := mpc.InitCommunication(
 		config.BindingIP,
@@ -73,12 +115,40 @@ func openSession(
 		0,
 		parallelNetworks,
 	)
-	nA, nB := exchangeSampleCounts(
+	nA, nB := exchangePublicParameters(
 		networks[0],
 		partyID,
 		input.SampleCount,
+		input.Chromosomes,
 	)
 	done()
+
+	for index, chromosome := range input.Chromosomes {
+		if chromosome.CryptoParams.Slots != 0 {
+			continue
+		}
+		dataParams := protocol.DataParams{
+			Genes:          chromosome.Genes,
+			C:              config.NumCov + 1,
+			PhenotypeCount: len(config.PhenotypeColumns),
+		}
+		cryptoParams, err := protocol.BuildCryptoParams(
+			dataParams,
+			config.Probes,
+			heParameters.MaxSlots(),
+		)
+		if err != nil {
+			for _, network := range networks {
+				network.CloseAll()
+			}
+			return nil, err
+		}
+		input.Chromosomes[index].CryptoParams = cryptoParams
+	}
+	galoisElements := requiredGaloisElements(
+		heParameters,
+		input.Chromosomes,
+	)
 
 	dataParams := make(
 		[]protocol.DataParams,
@@ -146,32 +216,6 @@ func (session *session) close() {
 	for _, network := range session.networks {
 		network.CloseAll()
 	}
-}
-
-func exchangeSampleCounts(
-	network *mpc.Network,
-	partyID, localCount int,
-) (nA, nB int) {
-	switch partyID {
-	case auxiliaryPartyID:
-		nA = network.ReceiveInt(cohortAPartyID)
-		nB = network.ReceiveInt(cohortBPartyID)
-
-		network.SendInt(nB, cohortAPartyID)
-		network.SendInt(nA, cohortBPartyID)
-
-	case cohortAPartyID:
-		nA = localCount
-		network.SendInt(nA, auxiliaryPartyID)
-		nB = network.ReceiveInt(auxiliaryPartyID)
-
-	case cohortBPartyID:
-		nB = localCount
-		network.SendInt(nB, auxiliaryPartyID)
-		nA = network.ReceiveInt(auxiliaryPartyID)
-	}
-
-	return nA, nB
 }
 
 func requiredGaloisElements(
