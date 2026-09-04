@@ -1,5 +1,3 @@
-run_dir = "/home/dataproc/secure-rvas-aou"
-
 genotype = "/home/dataproc/secure-skat/rewrite/testdata/aou/generated/genotype/exome.chr{chromosome}"
 gene_panel = "/home/dataproc/secure-skat/rewrite/testdata/aou/generated/gene_panel/chr{chromosome}.tsv"
 annotation = "/home/dataproc/secure-skat/rewrite/testdata/aou/generated/annotation/chr{chromosome}.tsv"

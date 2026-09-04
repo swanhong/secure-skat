@@ -1,5 +1,3 @@
-run_dir = "output/1kg-2122-test"
-
 genotype = "rewrite/testdata/1kgenome/generated/genotype/chr{chromosome}"
 gene_panel = "rewrite/testdata/1kgenome/generated/gene_panel/chr{chromosome}.tsv"
 annotation = "rewrite/testdata/1kgenome/generated/annotation/chr{chromosome}.tsv"

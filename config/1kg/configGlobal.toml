@@ -1,3 +1,5 @@
+run_dir = "output/1kg-test"
+
 chromosomes = [21, 22]
 phenotype_columns = ["phenotype1", "phenotype2"]
 ancestries = ["EUR", "AFR", "AMR"]

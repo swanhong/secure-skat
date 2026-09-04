@@ -1,10 +1,9 @@
-run_dir = "/home/dataproc/secure-rvas-aou"
-shared_keys_path = "/home/dataproc/secure-rvas-aou/secure/keys/Party2"
+shared_keys_path = "output/aou-test/secure/keys"
 local_num_threads = 8
 
-genotype_dir = "/home/dataproc/secure-rvas-aou/prepared/{ancestry}/chr{chromosome}/B/geno"
-private_genotype_dir = "/home/dataproc/secure-rvas-aou/prepared/{ancestry}/chr{chromosome}/B/private"
-phenotype_file = "/home/dataproc/secure-rvas-aou/prepared/{ancestry}/chr{chromosome}/B/pheno.txt"
-covariate_file = "/home/dataproc/secure-rvas-aou/prepared/{ancestry}/chr{chromosome}/B/cov.txt"
-genes_file = "/home/dataproc/secure-rvas-aou/prepared/{ancestry}/chr{chromosome}/genes.txt"
-variant_counts_file = "/home/dataproc/secure-rvas-aou/prepared/{ancestry}/chr{chromosome}/block_sizes.txt"
+genotype_dir = "output/aou-test/prepared/{ancestry}/chr{chromosome}/B/geno"
+private_genotype_dir = "output/aou-test/prepared/{ancestry}/chr{chromosome}/B/private"
+phenotype_file = "output/aou-test/prepared/{ancestry}/chr{chromosome}/B/pheno.txt"
+covariate_file = "output/aou-test/prepared/{ancestry}/chr{chromosome}/B/cov.txt"
+genes_file = "output/aou-test/prepared/{ancestry}/chr{chromosome}/genes.txt"
+variant_counts_file = "output/aou-test/prepared/{ancestry}/chr{chromosome}/block_sizes.txt"
