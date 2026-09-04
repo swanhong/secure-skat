@@ -28,7 +28,7 @@ var stageDefinitions = map[string]stageDefinition{
 	"pubkey_gen":               {parent: "collective_setup", measurementKind: "leaf"},
 	"relin_key_gen":            {parent: "collective_setup", measurementKind: "leaf"},
 	"rotkey_gen":               {parent: "collective_setup", measurementKind: "leaf"},
-	"null_model":               {parent: "session_setup", measurementKind: "inclusive"},
+	"null_model":               {measurementKind: "inclusive"},
 	"null_local_equations":     {parent: "null_model", measurementKind: "leaf"},
 	"null_aggregate_shares":    {parent: "null_model", measurementKind: "leaf"},
 	"null_factor_solve":        {parent: "null_model", measurementKind: "leaf"},
@@ -306,11 +306,11 @@ func (recorder *metricRecorder) timeTree(total time.Duration) string {
 
 	setup := stageDuration("network_init", 0) +
 		stageDuration("sample_count_exchange", 0) +
-		stageDuration("collective_setup", 0) +
-		stageDuration("null_model", 0)
+		stageDuration("collective_setup", 0)
 	inputLoading := stageDuration("input_loading", 0)
+	nullModel := stageDuration("null_model", 0)
 	writeResults := stageDuration("write_results", 0)
-	classified := inputLoading + setup + writeResults
+	classified := inputLoading + setup + nullModel + writeResults
 
 	var tree strings.Builder
 	fmt.Fprintf(
@@ -327,11 +327,11 @@ func (recorder *metricRecorder) timeTree(total time.Duration) string {
 	fmt.Fprintf(&tree, "  │  │  ├─ PubKeyGen          %v\n", format(stageDuration("pubkey_gen", 0)))
 	fmt.Fprintf(&tree, "  │  │  ├─ RelinKeyGen        %v\n", format(stageDuration("relin_key_gen", 0)))
 	fmt.Fprintf(&tree, "  │  │  └─ RotKeyGen          %v\n", format(stageDuration("rotkey_gen", 0)))
-	fmt.Fprintf(&tree, "  │  └─ null model           %v\n", format(stageDuration("null_model", 0)))
-	fmt.Fprintf(&tree, "  │     ├─ local XTX/XTY/YTY  %v\n", format(stageDuration("null_local_equations", 0)))
-	fmt.Fprintf(&tree, "  │     ├─ aggregate shares   %v\n", format(stageDuration("null_aggregate_shares", 0)))
-	fmt.Fprintf(&tree, "  │     ├─ factor and solve   %v\n", format(stageDuration("null_factor_solve", 0)))
-	fmt.Fprintf(&tree, "  │     └─ RSS                %v\n", format(stageDuration("null_rss", 0)))
+	fmt.Fprintf(&tree, "  ├─ null model             %v\n", format(nullModel))
+	fmt.Fprintf(&tree, "  │  ├─ local XTX/XTY/YTY    %v\n", format(stageDuration("null_local_equations", 0)))
+	fmt.Fprintf(&tree, "  │  ├─ aggregate shares     %v\n", format(stageDuration("null_aggregate_shares", 0)))
+	fmt.Fprintf(&tree, "  │  ├─ factor and solve     %v\n", format(stageDuration("null_factor_solve", 0)))
+	fmt.Fprintf(&tree, "  │  └─ RSS                  %v\n", format(stageDuration("null_rss", 0)))
 
 	for _, event := range recorder.events {
 		if event.stage != "chromosome_total" {

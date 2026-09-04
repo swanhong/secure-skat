@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	mpc_core "github.com/hhcho/mpc-core"
 	"github.com/hhcho/sfgwas/mpc"
 	"github.com/hhcho/sfgwas/rewrite/protocol"
 	"gonum.org/v1/gonum/mat"
@@ -16,6 +17,12 @@ type chromosomeResult struct {
 	Genes      []protocol.Gene
 	BurdenP    []float64
 	SKATWHP    []float64
+}
+
+type nullModel struct {
+	beta   mpc_core.RMat
+	xtxInv mpc_core.RMat
+	rss    mpc_core.RVec
 }
 
 func ancestryComplete(config *Config, ancestry string) (bool, error) {
@@ -61,6 +68,7 @@ func ancestryComplete(config *Config, ancestry string) (bool, error) {
 
 func runChromosome(
 	secureSession *session,
+	model nullModel,
 	input *PartyInput,
 	chromosomeIndex int,
 	seed int64,
@@ -134,8 +142,8 @@ func runChromosome(
 			loadGenotypes,
 			input.X,
 			input.Y,
-			secureSession.beta,
-			secureSession.xtxInv,
+			model.beta,
+			model.xtxInv,
 			weight,
 			signedWeight,
 			seed,
@@ -159,7 +167,7 @@ func runChromosome(
 		gpL,
 		gvQ,
 		gvL,
-		secureSession.rss,
+		model.rss,
 		geneV,
 		geneInvS1,
 		geneS2,
@@ -261,12 +269,27 @@ func runAncestry(
 	}
 	defer secureSession.close()
 
+	networks := mpc.ParallelNetworks(secureSession.networks)
+	done = metrics.start("null_model", 0, networks)
+	beta, xtxInv, rss := protocol.SetupNull(
+		secureSession.mpcObjects[0],
+		secureSession.dataParams[0],
+		input.X,
+		input.Y,
+		metrics.observe(0, networks),
+	)
+	done()
+	model := nullModel{
+		beta:   beta,
+		xtxInv: xtxInv,
+		rss:    rss,
+	}
+
 	results := make(
 		[]chromosomeResult,
 		0,
 		len(input.Chromosomes),
 	)
-	networks := mpc.ParallelNetworks(secureSession.networks)
 	for chromosomeIndex := range input.Chromosomes {
 		chromosome := input.Chromosomes[chromosomeIndex].Chromosome
 		done := metrics.start(
@@ -276,6 +299,7 @@ func runAncestry(
 		)
 		result, err := runChromosome(
 			secureSession,
+			model,
 			input,
 			chromosomeIndex,
 			config.Seed,

@@ -2,7 +2,45 @@ import unittest
 
 import pandas as pd
 
-from summarize_metrics import make_accuracy_table
+from summarize_metrics import make_accuracy_table, make_time_table
+
+
+class TimingTableTest(unittest.TestCase):
+    def test_reports_setup_and_null_once_per_ancestry(self) -> None:
+        metrics = pd.DataFrame([
+            {
+                "ancestry": "EUR",
+                "chromosome": chromosome,
+                "stage": stage,
+                "duration_seconds": duration,
+            }
+            for chromosome, stage, duration in (
+                (0, "network_init", 1),
+                (0, "sample_count_exchange", 2),
+                (0, "collective_setup", 3),
+                (0, "null_model", 4),
+                (21, "chromosome_total", 10),
+                (21, "compute_weights", 2),
+                (22, "chromosome_total", 20),
+                (22, "compute_weights", 5),
+            )
+        ])
+
+        table = make_time_table(metrics)
+
+        self.assertEqual(
+            list(table.columns[:6]),
+            ["Ancestry", "Chr", "Setup", "Null", "Total", "Weights"],
+        )
+        chromosome = table.loc[table["Chr"] == "21"].iloc[0]
+        self.assertEqual(chromosome["Setup"], "NA")
+        self.assertEqual(chromosome["Null"], "NA")
+
+        total = table.loc[table["Chr"] == "TOTAL"].iloc[0]
+        self.assertEqual(total["Setup"], "6.000s")
+        self.assertEqual(total["Null"], "4.000s")
+        self.assertEqual(total["Total"], "30.000s")
+        self.assertEqual(total["Weights"], "7.000s")
 
 
 class AccuracyTableTest(unittest.TestCase):

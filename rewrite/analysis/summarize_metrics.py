@@ -20,6 +20,12 @@ STAGES = (
     ("Release", "release"),
 )
 
+SESSION_SETUP_STAGES = (
+    "network_init",
+    "sample_count_exchange",
+    "collective_setup",
+)
+
 COMMUNICATION_FIELDS = (
     "sent_bytes",
     "received_bytes",
@@ -139,7 +145,13 @@ def read_metrics(metric_paths: list[Path]) -> pd.DataFrame:
 
 def make_time_table(metrics: pd.DataFrame) -> pd.DataFrame:
     stage_names = [stage for _, stage in STAGES]
-    columns = ["Ancestry", "Chr", *(label for label, _ in STAGES)]
+    columns = [
+        "Ancestry",
+        "Chr",
+        "Setup",
+        "Null",
+        *(label for label, _ in STAGES),
+    ]
 
     completed = metrics.loc[
         (metrics["chromosome"] != 0)
@@ -171,6 +183,8 @@ def make_time_table(metrics: pd.DataFrame) -> pd.DataFrame:
         return [
             ancestry,
             chromosome,
+            "NA",
+            "NA",
             *(format_duration(float(values[stage])) for stage in stage_names),
         ]
 
@@ -180,13 +194,54 @@ def make_time_table(metrics: pd.DataFrame) -> pd.DataFrame:
     ]
 
     ancestry_totals = durations.groupby(level="ancestry", sort=True).sum()
+    setup_durations = (
+        metrics.loc[
+            (metrics["chromosome"] == 0)
+            & metrics["stage"].isin(SESSION_SETUP_STAGES)
+        ]
+        .groupby("ancestry")["duration_seconds"]
+        .sum()
+    )
+    null_durations = (
+        metrics.loc[
+            (metrics["chromosome"] == 0)
+            & (metrics["stage"] == "null_model")
+        ]
+        .groupby("ancestry")["duration_seconds"]
+        .sum()
+    )
+
+    def total_time_row(
+        ancestry: str,
+        values: pd.Series,
+        setup_seconds: float,
+        null_seconds: float,
+    ) -> list[str]:
+        return [
+            ancestry,
+            "TOTAL",
+            format_duration(setup_seconds),
+            format_duration(null_seconds),
+            *(format_duration(float(values[stage])) for stage in stage_names),
+        ]
+
     rows.extend(
-        time_row(ancestry, "TOTAL", values)
+        total_time_row(
+            ancestry,
+            values,
+            float(setup_durations.get(ancestry, 0)),
+            float(null_durations.get(ancestry, 0)),
+        )
         for ancestry, values in ancestry_totals.iterrows()
     )
 
     if len(ancestry_totals) > 1:
-        rows.append(time_row("ALL", "TOTAL", durations.sum()))
+        rows.append(total_time_row(
+            "ALL",
+            durations.sum(),
+            float(setup_durations.sum()),
+            float(null_durations.sum()),
+        ))
 
     return pd.DataFrame(rows, columns=columns)
 

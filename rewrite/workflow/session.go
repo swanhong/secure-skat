@@ -23,9 +23,6 @@ type session struct {
 	mpcObjects []*mpc.MPC
 	metrics    *metricRecorder
 	dataParams []protocol.DataParams
-	beta       mpc_core.RMat
-	xtxInv     mpc_core.RMat
-	rss        mpc_core.RVec
 }
 
 func exchangePublicParameters(
@@ -190,25 +187,12 @@ func openSession(
 	}
 	done()
 
-	done = metrics.start("null_model", 0, parallelNetworks)
-	beta, xtxInv, rss := protocol.SetupNull(
-		mpcObjects[0],
-		dataParams[0],
-		input.X,
-		input.Y,
-		metrics.observe(0, parallelNetworks),
-	)
-	done()
-
 	return &session{
 		networks:   networks,
 		heContext:  heContext,
 		mpcObjects: mpcObjects,
 		metrics:    metrics,
 		dataParams: dataParams,
-		beta:       beta,
-		xtxInv:     xtxInv,
-		rss:        rss,
 	}, nil
 }
 
