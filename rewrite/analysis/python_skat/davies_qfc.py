@@ -20,17 +20,17 @@ class Davies:
         library = sorted(library_directory.glob("SKAT.*"))[0]
         self.function = ctypes.CDLL(str(library)).qfc
         self.function.argtypes = [
-            np.ctypeslib.ndpointer(np.float64, flags="C_CONTIGUOUS"),
-            np.ctypeslib.ndpointer(np.float64, flags="C_CONTIGUOUS"),
-            np.ctypeslib.ndpointer(np.int32, flags="C_CONTIGUOUS"),
-            ctypes.POINTER(ctypes.c_int),
-            ctypes.POINTER(ctypes.c_double),
-            ctypes.POINTER(ctypes.c_double),
-            ctypes.POINTER(ctypes.c_int),
-            ctypes.POINTER(ctypes.c_double),
-            np.ctypeslib.ndpointer(np.float64, flags="C_CONTIGUOUS"),
-            ctypes.POINTER(ctypes.c_int),
-            ctypes.POINTER(ctypes.c_double),
+            np.ctypeslib.ndpointer(np.float64, flags="C_CONTIGUOUS"),  # lambda
+            np.ctypeslib.ndpointer(np.float64, flags="C_CONTIGUOUS"),  # delta
+            np.ctypeslib.ndpointer(np.int32, flags="C_CONTIGUOUS"),  # degree
+            ctypes.POINTER(ctypes.c_int),  # nlambda
+            ctypes.POINTER(ctypes.c_double),  # sigma
+            ctypes.POINTER(ctypes.c_double),  # q
+            ctypes.POINTER(ctypes.c_int),  # lim
+            ctypes.POINTER(ctypes.c_double),  # acc
+            np.ctypeslib.ndpointer(np.float64, flags="C_CONTIGUOUS"),  # array
+            ctypes.POINTER(ctypes.c_int),  # ifault
+            ctypes.POINTER(ctypes.c_double),  # p-value
         ]
         self.function.restype = None
 
@@ -38,10 +38,10 @@ class Davies:
         self,
         statistic: float,
         eigenvalues: np.ndarray,
-        liu_p: float,
+        modified_liu_p: float,
     ) -> tuple[float, int]:
         if eigenvalues.size == 1:
-            return liu_p, 1
+            return modified_liu_p, 1
 
         lambdas = np.ascontiguousarray(eigenvalues, dtype=np.float64)
         noncentral = np.zeros(lambdas.size, dtype=np.float64)
@@ -70,5 +70,5 @@ class Davies:
         p_value = 1 - cumulative.value
         converged = int(fault.value == 0)
         if p_value > 1 or p_value <= 0:
-            return liu_p, 0
+            return modified_liu_p, 0
         return p_value, converged

@@ -216,7 +216,11 @@ python3 rewrite/analysis/compare_secure_to_reference.py \
 
 The comparison joins chromosome, gene, and phenotype identities and retains raw
 p-values and absolute errors. Secure Wilson-Hilferty SKAT is compared primarily
-with reference SKAT-Liu and with SKAT-Davies when Davies converged.
+with reference SKAT-Liu and R::SKAT's Davies result across every row. The Davies
+result follows R::SKAT 2.2.5: rank-one and invalid Davies results use the
+modified-Liu fallback. Summaries report both all-row and non-failed R-squared;
+empty genes have p-value 1 and are not counted as failures. Non-failed results
+exclude only rows where R::SKAT reports `Is_Converged=0`.
 
 ### 6. Generate plots and summarize metrics
 

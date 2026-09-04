@@ -40,85 +40,39 @@ compute_skat_pvalues <- function(genotype, null_models) {
     return(rep(list(constant_result), phenotype_count))
   }
 
-  reference_model <- null_models[[1]]
-  for (null_model in null_models[-1]) {
-    if (
-      !identical(null_model$id_include, reference_model$id_include) ||
-      !identical(null_model$X1, reference_model$X1)
-    ) {
-      stop("SKAT null models do not share rows and covariates")
-    }
-  }
-
-  sample_count <- reference_model$n.all
-  if (is.null(sample_count)) {
-    sample_count <- nrow(genotype)
-  }
-  checked_genotype <- SKAT:::SKAT_MAIN_Check_Z(
-    Z = genotype,
-    n = sample_count,
-    id_include = reference_model$id_include,
-    SetID = NULL,
-    weights = NULL,
-    weights.beta = c(1, 25),
-    impute.method = "fixed",
-    is_check_genotype = TRUE,
-    is_dosage = FALSE,
-    missing_cutoff = 0.15,
-    max_maf = 1,
-    estimate_MAF = 1
-  )
-  if (checked_genotype$return == 1) {
-    constant_result$burden_p <- checked_genotype$p.value
-    constant_result$skat_davies_p <- checked_genotype$p.value
-    constant_result$skat_liu_p <- checked_genotype$p.value
-    return(rep(list(constant_result), phenotype_count))
-  }
-
-  # Reuse the weighted genotype and projected kernels across phenotypes.
-  weighted_genotype <- t(
-    t(checked_genotype$Z.test) * checked_genotype$weights
-  )
-  covariates <- reference_model$X1
-  covariate_inverse <- solve(t(covariates) %*% covariates)
-
-  genotype_covariates <- t(weighted_genotype) %*% covariates
-  skat_kernel <-
-    t(weighted_genotype) %*% weighted_genotype -
-    genotype_covariates %*% covariate_inverse %*%
-      t(genotype_covariates)
-
-  burden_genotype <- cbind(rowSums(weighted_genotype))
-  burden_covariates <- t(burden_genotype) %*% covariates
-  burden_kernel <-
-    t(burden_genotype) %*% burden_genotype -
-    burden_covariates %*% covariate_inverse %*%
-      t(burden_covariates)
-
   lapply(null_models, function(null_model) {
-    skat_score <- t(null_model$res) %*% weighted_genotype
-    skat_q <-
-      skat_score %*% t(skat_score) / null_model$s2 / 2
-    skat_davies <- SKAT:::Get_Davies_PVal(
-      skat_q,
-      skat_kernel
+    skat_davies <- SKAT::SKAT(
+      genotype,
+      null_model,
+      method = "davies",
+      r.corr = 0,
+      kernel = "linear.weighted",
+      weights.beta = c(1, 25)
     )
-    skat_liu <- SKAT:::Get_Liu_PVal(skat_q, skat_kernel)
-
-    burden_score <- t(null_model$res) %*% burden_genotype
-    burden_q <-
-      burden_score %*% t(burden_score) / null_model$s2 / 2
-    burden <- SKAT:::Get_Davies_PVal(
-      burden_q,
-      burden_kernel
-    )
+    davies_converged <- skat_davies$param$Is_Converged
+    if (length(davies_converged) == 0) {
+      davies_converged <- NA_integer_
+    }
 
     list(
-      burden_p = burden$p.value,
+      burden_p = SKAT::SKAT(
+        genotype,
+        null_model,
+        method = "davies",
+        r.corr = 1,
+        kernel = "linear.weighted",
+        weights.beta = c(1, 25)
+      )$p.value,
       skat_davies_p = skat_davies$p.value,
-      skat_davies_converged =
-        skat_davies$param$Is_Converged,
-      skat_liu_p = skat_liu$p.value
+      skat_davies_converged = davies_converged,
+      skat_liu_p = SKAT::SKAT(
+        genotype,
+        null_model,
+        method = "liu",
+        r.corr = 0,
+        kernel = "linear.weighted",
+        weights.beta = c(1, 25)
+      )$p.value
     )
   })
 }
@@ -168,8 +122,7 @@ run_skat_analysis <- function(input) {
         phenotype_index = phenotype - 1,
         burden_p = pvalues$burden_p,
         skat_davies_p = pvalues$skat_davies_p,
-        skat_davies_converged =
-          pvalues$skat_davies_converged,
+        skat_davies_converged = pvalues$skat_davies_converged,
         skat_liu_p = pvalues$skat_liu_p
       )
       result_index <- result_index + 1

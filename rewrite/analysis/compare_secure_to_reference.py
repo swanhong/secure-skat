@@ -42,7 +42,7 @@ R2_COMPARISONS = [
         None,
     ),
     (
-        "SKAT WH vs Davies",
+        "SKAT WH vs Davies+fallback",
         "secure_skat_wh_p",
         "r_skat_davies_p",
         "r_skat_davies_converged",
@@ -141,8 +141,39 @@ def r_squared(
     return r_squared_values(secure_values, reference_values)
 
 
+def comparison_r_squared(
+    rows: list[dict[str, str]],
+    secure_column: str,
+    reference_column: str,
+    convergence_column: str | None,
+) -> tuple[int, int, float | None, float | None]:
+    total_count, all_score = r_squared(
+        rows,
+        secure_column,
+        reference_column,
+    )
+    if convergence_column is None:
+        return total_count, 0, all_score, all_score
+
+    failed_count = sum(
+        row[convergence_column] == "0"
+        for row in rows
+    )
+    non_failed_rows = [
+        row
+        for row in rows
+        if row[convergence_column] != "0"
+    ]
+    _, non_failed_score = r_squared(
+        non_failed_rows,
+        secure_column,
+        reference_column,
+    )
+    return total_count, failed_count, all_score, non_failed_score
+
+
 def print_r_squared_by_pheno_and_chr(
-        rows: list[dict[str, str]],
+    rows: list[dict[str, str]],
 ) -> None:
     grouped_rows = {}
 
@@ -157,7 +188,8 @@ def print_r_squared_by_pheno_and_chr(
     print("\n=== R^2 on -log10(p) by phenotype and chromosome ===")
     print(
         f"  {'phenotype':<20} {'chr':>3} "
-        f"{'comparison':<20} {'n':>5} {'R^2 (-log10 p)':>15}"
+        f"{'comparison':<30} {'n total':>7} {'n failed':>8} "
+        f"{'R^2 all':>12} {'R^2 non-failed':>16}"
     )
 
     for (_, phenotype_name, chromosome), group in sorted(
@@ -169,25 +201,25 @@ def print_r_squared_by_pheno_and_chr(
             reference_column,
             convergence_column,
         ) in R2_COMPARISONS:
-            eligible_rows = group
-            if convergence_column is not None:
-                eligible_rows = [
-                    row
-                    for row in group
-                    if row[convergence_column] == "1"
-                ]
-
-            count, score = r_squared(
-                eligible_rows,
+            total, failed, all_score, non_failed_score = comparison_r_squared(
+                group,
                 secure_column,
                 reference_column,
+                convergence_column,
             )
-            score_text = "NA" if score is None else f"{score:.6f}"
+            all_text = "NA" if all_score is None else f"{all_score:.6f}"
+            non_failed_text = (
+                "NA"
+                if non_failed_score is None
+                else f"{non_failed_score:.6f}"
+            )
 
             print(
                 f"  {phenotype_name:<20} {chromosome:>3} "
-                f"{label:<20} {count:>5} {score_text:>15}"
+                f"{label:<30} {total:>7} {failed:>8} "
+                f"{all_text:>12} {non_failed_text:>16}"
             )
+
 
 def compare_ancestry(
     run_dir: Path,
@@ -212,13 +244,6 @@ def compare_ancestry(
     for secure in secure_rows:
         reference = reference_by_key[row_key(secure)]
 
-        davies_error = ""
-        if reference["r_skat_davies_converged"] == "1":
-            davies_error = absolute_error(
-                secure["secure_skat_wh_p"],
-                reference["r_skat_davies_p"],
-            )
-
         comparison_rows.append(
             {
                 **{
@@ -241,7 +266,10 @@ def compare_ancestry(
                     reference["r_skat_davies_p"],
                 "r_skat_davies_converged":
                     reference["r_skat_davies_converged"],
-                "skat_davies_abs_error": davies_error,
+                "skat_davies_abs_error": absolute_error(
+                    secure["secure_skat_wh_p"],
+                    reference["r_skat_davies_p"],
+                ),
             }
         )
 

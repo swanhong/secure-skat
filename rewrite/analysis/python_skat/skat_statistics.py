@@ -78,9 +78,8 @@ def regularized_gamma_q(shape: float, value: float) -> float:
             term *= value / denominator
             total += term
             if abs(term) <= abs(total) * epsilon:
-                lower = total * math.exp(log_factor)
-                return min(1.0, max(0.0, 1 - lower))
-        raise RuntimeError("gamma series did not converge")
+                break
+        return 1 - total * math.exp(log_factor)
 
     minimum = 1e-300
     denominator = value + 1 - shape
@@ -100,9 +99,8 @@ def regularized_gamma_q(shape: float, value: float) -> float:
         change = continued_fraction_d * continued_fraction_c
         continued_fraction *= change
         if abs(change - 1) <= epsilon:
-            upper = math.exp(log_factor) * continued_fraction
-            return min(1.0, max(0.0, upper))
-    raise RuntimeError("gamma continued fraction did not converge")
+            break
+    return math.exp(log_factor) * continued_fraction
 
 
 def noncentral_chi_square_sf(value: float, degrees: float, ncp: float) -> float:
@@ -139,8 +137,8 @@ def noncentral_chi_square_sf(value: float, degrees: float, ncp: float) -> float:
             value / 2,
         )
         if weight < 1e-16:
-            return min(1.0, max(0.0, total))
-    raise RuntimeError("noncentral chi-square series did not converge")
+            break
+    return min(1.0, max(0.0, total))
 
 
 def liu_parameters(eigenvalues: np.ndarray, modified: bool) -> LiuParameters:
@@ -202,10 +200,7 @@ def skat_eigenvalues(
     raw = np.linalg.eigvalsh(kernel)
     nonnegative = raw[raw >= 0]
     threshold = float(np.mean(nonnegative)) / 1e5
-    eigenvalues = raw[raw > threshold]
-    if eigenvalues.size == 0:
-        raise ValueError("no positive SKAT eigenvalue")
-    return eigenvalues
+    return raw[raw > threshold]
 
 
 def compute_gene_statistics(

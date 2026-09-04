@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from compare_secure_to_reference import R2_COMPARISONS, r_squared
+from compare_secure_to_reference import R2_COMPARISONS, comparison_r_squared
 
 
 STAGES = (
@@ -244,7 +244,7 @@ def make_comm_table(metrics: pd.DataFrame) -> pd.DataFrame:
 
 def read_accuracy(
     comparison_specs: list[str],
-) -> tuple[pd.DataFrame, list[str]]:
+) -> pd.DataFrame:
     frames = []
 
     required_columns = {
@@ -289,12 +289,15 @@ def make_accuracy_table(comparisons: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "Ancestry",
         "Comparison",
-        "n",
-        "R^2",
-        "Worst R^2",
+        "n total",
+        "n failed",
+        "R^2 (all, R::SKAT)",
+        "R^2 (non-failed)",
+        "Worst R^2 (all)",
         "Worst phenotype",
         "Chr",
-        "n",
+        "Worst n",
+        "Worst failed",
     ]
     if comparisons.empty:
         return pd.DataFrame(columns=columns)
@@ -320,34 +323,30 @@ def make_accuracy_table(comparisons: pd.DataFrame) -> pd.DataFrame:
         ]
 
         for label, secure, reference, convergence in R2_COMPARISONS:
-            pooled_rows = ancestry_rows
-            if convergence is not None:
-                pooled_rows = pooled_rows.loc[
-                    pooled_rows[convergence] == "1"
-                ]
-            pooled_count, pooled_score = r_squared(
-                pooled_rows.to_dict("records"),
+            (
+                pooled_count,
+                pooled_failed,
+                pooled_score,
+                pooled_non_failed_score,
+            ) = comparison_r_squared(
+                ancestry_rows.to_dict("records"),
                 secure,
                 reference,
+                convergence,
             )
 
             worst = None
             for group_key, group in groups:
-                eligible = group
-                if convergence is not None:
-                    eligible = eligible.loc[
-                        eligible[convergence] == "1"
-                    ]
-
-                count, score = r_squared(
-                    eligible.to_dict("records"),
+                count, failed, score, _ = comparison_r_squared(
+                    group.to_dict("records"),
                     secure,
                     reference,
+                    convergence,
                 )
                 if score is None:
                     continue
 
-                candidate = (score, *group_key, count)
+                candidate = (score, *group_key, count, failed)
                 if worst is None or candidate < worst:
                     worst = candidate
 
@@ -356,6 +355,7 @@ def make_accuracy_table(comparisons: pd.DataFrame) -> pd.DataFrame:
                 worst_phenotype = "NA"
                 worst_chromosome = "NA"
                 worst_count = 0
+                worst_failed = 0
             else:
                 (
                     worst_score,
@@ -363,6 +363,7 @@ def make_accuracy_table(comparisons: pd.DataFrame) -> pd.DataFrame:
                     phenotype_name,
                     chromosome,
                     worst_count,
+                    worst_failed,
                 ) = worst
                 worst_phenotype = f"{phenotype_index}:{phenotype_name}"
                 worst_chromosome = str(chromosome)
@@ -371,11 +372,14 @@ def make_accuracy_table(comparisons: pd.DataFrame) -> pd.DataFrame:
                 ancestry,
                 label,
                 str(pooled_count),
+                str(pooled_failed),
                 format_r_squared(pooled_score),
+                format_r_squared(pooled_non_failed_score),
                 format_r_squared(worst_score),
                 worst_phenotype,
                 worst_chromosome,
                 str(worst_count),
+                str(worst_failed),
             ])
 
     return pd.DataFrame(rows, columns=columns)

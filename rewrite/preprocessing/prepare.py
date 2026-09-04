@@ -140,10 +140,6 @@ def prepare_chromosomes(
         raise ValueError("at least one chromosome is required")
 
     selected_genes_path = request.run_dir / "selected_genes.tsv"
-    if request.gene_selection.mode != "all" and selected_genes_path.exists():
-        raise ValueError(
-            f"selected genes file already exists: {selected_genes_path}"
-        )
 
     if extractor is None:
         extractor = partial(
