@@ -33,15 +33,13 @@ class AccuracyTableTest(unittest.TestCase):
             table["Comparison"] == "SKAT WH vs Davies+fallback"
         ].iloc[0]
 
-        self.assertEqual(davies["n total"], "4")
-        self.assertEqual(davies["n failed"], "1")
+        self.assertEqual(davies["#gene (total(failed))"], "4(1)")
         self.assertEqual(davies["R^2 (all, R::SKAT)"], "0.000000")
         self.assertEqual(davies["R^2 (non-failed)"], "1.000000")
         self.assertEqual(davies["Worst R^2 (all)"], "-1.000000")
         self.assertEqual(davies["Worst phenotype"], "0:phenotype1")
-        self.assertEqual(davies["Chr"], "21")
-        self.assertEqual(davies["Worst n"], "2")
-        self.assertEqual(davies["Worst failed"], "1")
+        self.assertEqual(davies["Worst Chr"], "21")
+        self.assertEqual(davies["Worst #gene (total(failed))"], "2(1)")
 
 
 if __name__ == "__main__":

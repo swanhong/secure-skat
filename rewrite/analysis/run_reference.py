@@ -75,12 +75,7 @@ def run_chromosome_reference(
         [
             launcher,
             str(script),
-            str(
-                run_dir
-                / "prepared"
-                / ancestry
-                / f"chr{chromosome}"
-            ),
+            str(run_dir / "prepared" / ancestry / f"chr{chromosome}")
         ],
         check=True,
         stdout=subprocess.PIPE,

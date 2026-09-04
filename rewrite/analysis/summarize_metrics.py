@@ -289,15 +289,13 @@ def make_accuracy_table(comparisons: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "Ancestry",
         "Comparison",
-        "n total",
-        "n failed",
+        "#gene (total(failed))",
         "R^2 (all, R::SKAT)",
         "R^2 (non-failed)",
         "Worst R^2 (all)",
         "Worst phenotype",
-        "Chr",
-        "Worst n",
-        "Worst failed",
+        "Worst Chr",
+        "Worst #gene (total(failed))",
     ]
     if comparisons.empty:
         return pd.DataFrame(columns=columns)
@@ -371,15 +369,13 @@ def make_accuracy_table(comparisons: pd.DataFrame) -> pd.DataFrame:
             rows.append([
                 ancestry,
                 label,
-                str(pooled_count),
-                str(pooled_failed),
+                f"{pooled_count}({pooled_failed})",
                 format_r_squared(pooled_score),
                 format_r_squared(pooled_non_failed_score),
                 format_r_squared(worst_score),
                 worst_phenotype,
                 worst_chromosome,
-                str(worst_count),
-                str(worst_failed),
+                f"{worst_count}({worst_failed})",
             ])
 
     return pd.DataFrame(rows, columns=columns)

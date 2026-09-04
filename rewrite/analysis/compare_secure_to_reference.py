@@ -188,7 +188,7 @@ def print_r_squared_by_pheno_and_chr(
     print("\n=== R^2 on -log10(p) by phenotype and chromosome ===")
     print(
         f"  {'phenotype':<20} {'chr':>3} "
-        f"{'comparison':<30} {'n total':>7} {'n failed':>8} "
+        f"{'comparison':<30} {'#gene (total(failed))':>21}"
         f"{'R^2 all':>12} {'R^2 non-failed':>16}"
     )
 
@@ -213,10 +213,11 @@ def print_r_squared_by_pheno_and_chr(
                 if non_failed_score is None
                 else f"{non_failed_score:.6f}"
             )
+            gene_count = f"{total}({failed})"
 
             print(
                 f"  {phenotype_name:<20} {chromosome:>3} "
-                f"{label:<30} {total:>7} {failed:>8} "
+                f"{label:<30} {gene_count:>21}"
                 f"{all_text:>12} {non_failed_text:>16}"
             )
 
