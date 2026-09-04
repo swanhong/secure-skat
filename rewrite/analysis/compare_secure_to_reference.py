@@ -3,8 +3,9 @@
 import argparse
 import csv
 import math
-import tomllib
 from pathlib import Path
+
+from config import load_party_config
 
 
 KEY_COLUMNS = [
@@ -296,8 +297,7 @@ def compare_ancestry(
 
 
 def compare_secure_to_reference(config_path: Path) -> None:
-    with config_path.open("rb") as config_file:
-        config = tomllib.load(config_file)
+    config = load_party_config(config_path)
 
     run_dir = Path(config["run_dir"])
     comparison_root = run_dir / "comparison"
@@ -316,8 +316,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--config",
-        default="run.1kg.conf",
-        help="path to the run configuration",
+        default="config/1kg",
+        help="configuration directory",
     )
     args = parser.parse_args()
 

@@ -1,0 +1,25 @@
+chromosomes = [21, 22]
+phenotype_columns = ["phenotype1", "phenotype2"]
+ancestries = ["EUR", "AFR", "AMR"]
+num_cov = 16
+
+ckks = "PN14QP436S45"
+mpc_num_threads = 2
+data_bits = 60
+fractional_bits = 30
+probes = 30
+seed = 42
+
+binding_ipaddr = "127.0.0.1"
+
+[servers.party0]
+ipaddr = "127.0.0.1"
+ports = {party1 = "18000", party2 = "18002"}
+
+[servers.party1]
+ipaddr = "127.0.0.1"
+ports = {party2 = "18004"}
+
+[servers.party2]
+ipaddr = "127.0.0.1"
+ports = {}

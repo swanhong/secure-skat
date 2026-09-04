@@ -25,7 +25,15 @@ source setup/env.sh
 
 ## Configure the AoU run
 
-Review `run.aou.conf` before running. Update `run_dir` and the local input paths. `mpc_num_threads` is the number of independent MPC lanes, not just a CPU thread count. More lanes increase concurrent memory and communication use.
+Review `config/aou/configPrepare.toml`, `configGlobal.toml`, and each
+`configLocal.PartyN.toml` before running. `configPrepare.toml` is used only to
+create A/B secure-ready inputs; each party run reads the global file and its own
+local file. `mpc_num_threads` is the number of independent MPC lanes, not just
+a CPU thread count. More lanes increase concurrent memory and communication use.
+
+`prepare` is optional. If Party 1 and Party 2 already have genotype blocks,
+phenotype, covariate, gene, and variant-count files in the secure-ready format,
+set those paths in their local configs and start with `keygen`.
 
 All stages read the same non-empty autosome array from the configuration:
 
@@ -110,11 +118,12 @@ The script performs the following stages:
 ```text
 0. Localize AoU PGEN, phenotype, and ancestry inputs; normalize VAT annotations
 1. Preprocess ancestry-specific A/B secure inputs
-2. Run secure Burden and SKAT
-3. Run the Python or R::SKAT reference
-4. Join and compare secure/reference results
-5. Generate scatter and Manhattan plots
-6. Summarize timing, communication, and accuracy metrics
+2. Generate persistent ancestry-specific shared PRG keys
+3. Run secure Burden and SKAT
+4. Run the Python or R::SKAT reference
+5. Join and compare secure/reference results
+6. Generate scatter and Manhattan plots
+7. Summarize timing, communication, and accuracy metrics
 ```
 
 Step 0 inside `run_aou_workflow.sh` is distinct from the VAT extraction above:
@@ -128,7 +137,7 @@ script replaces the configured `run_dir` before creating new secure inputs.
 To select another configuration or the R::SKAT reference engine:
 
 ```bash
-CONFIG_PATH=run.aou.conf REFERENCE_ENGINE=r ./run_aou_workflow.sh
+CONFIG_PATH=config/aou REFERENCE_ENGINE=r ./run_aou_workflow.sh
 ```
 
 ### Detached execution and monitoring
@@ -159,11 +168,11 @@ All commands below run from the repository root.
 source setup/env.sh
 
 python3 rewrite/testdata/aou/prepare_aou.py \
-  --config run.aou.conf
+  --config config/aou
 ```
 
 `prepare_aou.py` downloads missing PGEN/PVAR/PSAM, phenotype, and ancestry
-files for the chromosomes listed in `run.aou.conf`. Existing localized files are
+files for the chromosomes listed in `config/aou/configGlobal.toml`. Existing localized files are
 reused. It normalizes the Step 0 VAT output, computes minor allele frequency
 from `gnomad_af`, and writes inputs under `rewrite/testdata/aou/generated/`.
 
@@ -171,22 +180,42 @@ from `gnomad_af`, and writes inputs under `rewrite/testdata/aou/generated/`.
 
 ```bash
 go run -mod=vendor secure-rvas.go prepare \
-  --config run.aou.conf \
+  --config config/aou \
   --clear
 ```
 
 Omit `--clear` when the configured `run_dir` must not be replaced.
 
-### 3. Run secure Burden and SKAT
+### 3. Generate shared PRG keys
+
+```bash
+go run -mod=vendor secure-rvas.go keygen \
+  --config config/aou
+```
+
+`keygen` writes each party's key subset under its configured
+`shared_keys_path/<ancestry>/`. It is independent of preprocessing.
+
+### 4. Run secure Burden and SKAT
 
 ```bash
 go run -mod=vendor secure-rvas.go run \
-  --config run.aou.conf
+  --config config/aou
 ```
 
-The parent starts parties 0, 1, and 2 and processes each configured ancestry
-and chromosome. `<run_dir>/secure/_SUCCESS` is created only after every party
-finishes successfully.
+The parent only starts the same `party --party 0/1/2` commands that can be run
+directly on separate machines. Input loading and all network/MHE/MPC setup happen
+inside each party process. `<run_dir>/secure/_SUCCESS` is created only after
+every party finishes successfully.
+
+For a distributed run, skip the parent command and start the following on the
+three machines at the same time:
+
+```bash
+go run -mod=vendor secure-rvas.go party --config config/aou --party 0
+go run -mod=vendor secure-rvas.go party --config config/aou --party 1
+go run -mod=vendor secure-rvas.go party --config config/aou --party 2
+```
 
 An `EOF` or `connection reset by peer` generally means another party or MPC
 lane exited first. Inspect the earliest error in the complete log rather than
@@ -194,24 +223,24 @@ treating the later network panic as the root cause. On a memory-constrained VM,
 retry chromosome 22 with `mpc_num_threads = 2`; use `1` to isolate a
 multi-lane-only failure.
 
-### 4. Run the reference
+### 5. Run the reference
 
 ```bash
 source setup/env.sh
 
 python3 rewrite/analysis/run_reference.py \
-  --config run.aou.conf \
+  --config config/aou \
   --engine python
 ```
 
 Use `--engine r` for external R::SKAT. `REFERENCE_WORKERS` controls reference
 task parallelism and `REFERENCE_BLAS_THREADS` controls BLAS threads per task.
 
-### 5. Compare results
+### 6. Compare results
 
 ```bash
 python3 rewrite/analysis/compare_secure_to_reference.py \
-  --config run.aou.conf
+  --config config/aou
 ```
 
 The comparison joins chromosome, gene, and phenotype identities and retains raw
@@ -222,13 +251,13 @@ modified-Liu fallback. Summaries report both all-row and non-failed R-squared;
 empty genes have p-value 1 and are not counted as failures. Non-failed results
 exclude only rows where R::SKAT reports `Is_Converged=0`.
 
-### 6. Generate plots and summarize metrics
+### 7. Generate plots and summarize metrics
 
 ```bash
 python3 rewrite/analysis/plot_secure_vs_reference.py \
-  --config run.aou.conf
+  --config config/aou
 
-./summarize_metrics.sh run.aou.conf
+./summarize_metrics.sh config/aou
 ```
 
 
@@ -263,8 +292,8 @@ rewrite/workflow/               secure-rvas orchestration
 rewrite/analysis/               Reference, comparison, and plotting
 rewrite/testdata/aou/            AoU localization and VAT tools
 rewrite/testdata/1kgenome/       Local public-data test workflow
-run.aou.conf                    AoU configuration
-run.1kg.conf                    Local 1000 Genomes configuration
+config/aou/                      AoU prepare/global/local configurations
+config/1kg/                      Local 1000 Genomes configurations
 ```
 
 ## Development principles

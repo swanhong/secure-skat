@@ -145,7 +145,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    with args.config.open("rb") as config_file:
+    with (args.config / "configGlobal.toml").open("rb") as config_file:
         config = tomllib.load(config_file)
     args.chromosome = [
         str(chromosome)

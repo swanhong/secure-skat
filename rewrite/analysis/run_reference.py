@@ -5,10 +5,11 @@ import csv
 import os
 import subprocess
 import sys
-import tomllib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from time import monotonic
+
+from config import load_party_config
 
 
 REFERENCE_COLUMNS = [
@@ -140,8 +141,7 @@ def worker_settings(engine: str, task_count: int) -> tuple[int, int]:
 
 
 def run_reference(config_path: Path, engine: str = "r") -> None:
-    with config_path.open("rb") as config_file:
-        config = tomllib.load(config_file)
+    config = load_party_config(config_path)
 
     run_dir = Path(config["run_dir"])
     reference_root = run_dir / "reference"
@@ -228,8 +228,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--config",
-        default="run.1kg.conf",
-        help="path to the run configuration",
+        default="config/1kg",
+        help="configuration directory",
     )
     parser.add_argument(
         "--engine",

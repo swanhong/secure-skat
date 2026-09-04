@@ -11,24 +11,10 @@ import (
 	"github.com/hhcho/sfgwas/mpc"
 )
 
-const runConfigFilename = "run_config.toml"
-
-func writeConfig(configPath, runDir string) error {
-	contents, err := os.ReadFile(configPath)
-	if err != nil {
-		return fmt.Errorf("read config %q, %w", configPath, err)
-	}
-
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		return fmt.Errorf("create run dir %q, %w", runDir, err)
-	}
-
-	savePath := filepath.Join(runDir, runConfigFilename)
-	if err := os.WriteFile(savePath, contents, 0o644); err != nil {
-		return fmt.Errorf("write run config %q, %w", savePath, err)
-	}
-	return nil
-}
+const (
+	globalConfigFilename  = "configGlobal.toml"
+	prepareConfigFilename = "configPrepare.toml"
+)
 
 type Config struct {
 	RunDir      string `toml:"run_dir"`
@@ -63,12 +49,20 @@ type Config struct {
 	Probes         int    `toml:"probes"`
 	Seed           int64  `toml:"seed"`
 
-	Plink2Bin string `toml:"plink2_bin"`
-
+	Plink2Bin     string        `toml:"plink2_bin"`
 	GeneSelection GeneSelection `toml:"gene_selection"`
 
-	BindingIP string `toml:"binding_ipaddr"`
-	Servers   map[string]mpc.Server
+	BindingIP string                `toml:"binding_ipaddr"`
+	Servers   map[string]mpc.Server `toml:"servers"`
+
+	SharedKeysPath           string `toml:"shared_keys_path"`
+	LocalNumThreads          int    `toml:"local_num_threads"`
+	GenotypeDirectory        string `toml:"genotype_dir"`
+	PrivateGenotypeDirectory string `toml:"private_genotype_dir"`
+	PhenotypeFile            string `toml:"phenotype_file"`
+	CovariateFile            string `toml:"covariate_file"`
+	GenesFile                string `toml:"genes_file"`
+	VariantCountsFile        string `toml:"variant_counts_file"`
 }
 
 type GeneSelection struct {
@@ -78,10 +72,13 @@ type GeneSelection struct {
 	Path          string `toml:"path"`
 }
 
-func LoadConfig(path string) (*Config, error) {
+func loadConfig(directory string, filenames ...string) (*Config, error) {
 	config := new(Config)
-	if _, err := toml.DecodeFile(path, config); err != nil {
-		return nil, fmt.Errorf("decode config %q, %w", path, err)
+	for _, filename := range filenames {
+		path := filepath.Join(directory, filename)
+		if _, err := toml.DecodeFile(path, config); err != nil {
+			return nil, fmt.Errorf("decode config %q: %w", path, err)
+		}
 	}
 	for index, ancestry := range config.Ancestries {
 		config.Ancestries[index] = strings.ToUpper(strings.TrimSpace(ancestry))
@@ -89,158 +86,115 @@ func LoadConfig(path string) (*Config, error) {
 	return config, nil
 }
 
-func ValidateConfig(config *Config) error {
-	requiredFields := []struct {
-		name  string
-		value string
-	}{
-		{"run_dir", config.RunDir},
-		{"genotype", config.Genotype},
-		{"gene_panel", config.GenePanel},
-		{"annotation", config.Annotation},
-		{"phenotype", config.Phenotype},
-		{"covariate", config.Covariate},
-		{"ancestry", config.Ancestry},
-		{"phenotype_id_column", config.PhenotypeIDColumn},
-		{"covariate_id_column", config.CovariateIDColumn},
-		{"covariate_column", config.CovariateColumn},
-		{"ancestry_id_column", config.AncestryIDColumn},
-		{"ancestry_column", config.AncestryColumn},
-		{"ckks", config.CKKS},
-		{"plink2_bin", config.Plink2Bin},
-	}
-	// Check required fields are non-empty
-	for _, field := range requiredFields {
-		if strings.TrimSpace(field.value) == "" {
-			return fmt.Errorf("%s is required", field.name)
+func LoadPrepareConfig(directory string) (*Config, error) {
+	return loadConfig(directory, globalConfigFilename, prepareConfigFilename)
+}
+
+func LoadPartyConfig(directory string, partyID int) (*Config, error) {
+	return loadConfig(
+		directory,
+		globalConfigFilename,
+		fmt.Sprintf("configLocal.Party%d.toml", partyID),
+	)
+}
+
+func requireStrings(fields ...string) error {
+	for index := 0; index < len(fields); index += 2 {
+		if strings.TrimSpace(fields[index+1]) == "" {
+			return fmt.Errorf("%s is required", fields[index])
 		}
 	}
+	return nil
+}
 
-	if len(config.Chromosomes) == 0 {
-		return fmt.Errorf("chromosomes is required")
+func validateGlobalConfig(config *Config) error {
+	if err := requireStrings("ckks", config.CKKS); err != nil {
+		return err
 	}
-
-	seenChromosomes := make(map[int]bool, len(config.Chromosomes))
-	for _, chromosome := range config.Chromosomes {
-		if chromosome < 1 || chromosome > 22 {
-			return fmt.Errorf(
-				"chromosome %d must be between 1 and 22",
-				chromosome,
-			)
-		}
-		if seenChromosomes[chromosome] {
-			return fmt.Errorf("duplicate chromosome %d", chromosome)
-		}
-		seenChromosomes[chromosome] = true
+	if len(config.Chromosomes) == 0 || len(config.Ancestries) == 0 || len(config.PhenotypeColumns) == 0 {
+		return fmt.Errorf("chromosomes, ancestries, and phenotype_columns are required")
 	}
-
-	if len(config.PhenotypeColumns) == 0 {
-		return fmt.Errorf("phenotype_columns is required")
+	if config.NumCov < 1 || config.MpcNumThreads < 1 || config.DataBits < 1 ||
+		config.FractionalBits < 1 || config.FractionalBits > config.DataBits || config.Probes < 1 {
+		return fmt.Errorf("invalid protocol dimensions")
 	}
-	seenColumns := make(map[string]bool, len(config.PhenotypeColumns))
-	for _, column := range config.PhenotypeColumns {
-		column = strings.TrimSpace(column)
-		if column == "" {
-			return fmt.Errorf("phenotype_columns contains an empty value")
-		}
-		if seenColumns[column] {
-			return fmt.Errorf("duplicate phenotype_columns value %q", column)
-		}
-		seenColumns[column] = true
-	}
-
-	if config.NumCov < 1 {
-		return fmt.Errorf("num_cov must be positive")
-	}
-	if len(config.Ancestries) == 0 {
-		return fmt.Errorf("ancestries is required")
-	}
-	seenAncestries := make(map[string]bool, len(config.Ancestries))
-	for _, ancestry := range config.Ancestries {
-		ancestry = strings.ToUpper(strings.TrimSpace(ancestry))
-		if ancestry == "" {
-			return fmt.Errorf("ancestries contains an empty value")
-		}
-		if seenAncestries[ancestry] {
-			return fmt.Errorf("duplicate ancestry %q", ancestry)
-		}
-		seenAncestries[ancestry] = true
-	}
-
-	if len(config.Masks) == 0 {
-		return fmt.Errorf("masks is required")
-	}
-
-	seenMaskColumns := make(map[string]bool, len(config.Masks))
-	for _, mask := range config.Masks {
-		column, value, found := strings.Cut(mask, "=")
-		column = strings.TrimSpace(column)
-		value = strings.TrimSpace(value)
-
-		if !found || column == "" || value == "" {
-			return fmt.Errorf(
-				"mask must be the format \"column=value\", got %q",
-				mask,
-			)
-		}
-		if seenMaskColumns[column] {
-			return fmt.Errorf("duplicate mask column %q", column)
-		}
-		seenMaskColumns[column] = true
-	}
-
-	if config.MaxMAF != nil &&
-		(*config.MaxMAF < 0 || *config.MaxMAF > 0.5) {
-		return fmt.Errorf("max_maf must be between 0 and 0.5")
-	}
-
-	if config.SamplesPerCohort < 0 {
-		return fmt.Errorf("samples_per_cohort must be non-negative")
-	}
-
 	if !securecrypto.IsPackedSKATParameters(config.CKKS) {
-		return fmt.Errorf(
-			"unsupported packed SKAT CKKS parameters %q",
-			config.CKKS,
+		return fmt.Errorf("unsupported packed SKAT CKKS parameters %q", config.CKKS)
+	}
+	return nil
+}
+
+func validatePrepareConfig(config *Config) error {
+	if err := validateGlobalConfig(config); err != nil {
+		return err
+	}
+	return requireStrings(
+		"run_dir", config.RunDir,
+		"genotype", config.Genotype,
+		"gene_panel", config.GenePanel,
+		"annotation", config.Annotation,
+		"phenotype", config.Phenotype,
+		"covariate", config.Covariate,
+		"ancestry", config.Ancestry,
+		"phenotype_id_column", config.PhenotypeIDColumn,
+		"covariate_id_column", config.CovariateIDColumn,
+		"covariate_column", config.CovariateColumn,
+		"ancestry_id_column", config.AncestryIDColumn,
+		"ancestry_column", config.AncestryColumn,
+		"plink2_bin", config.Plink2Bin,
+	)
+}
+
+func validatePartyConfig(config *Config, partyID int) error {
+	if err := validateGlobalConfig(config); err != nil {
+		return err
+	}
+	if err := requireStrings(
+		"run_dir", config.RunDir,
+		"shared_keys_path", config.SharedKeysPath,
+	); err != nil {
+		return err
+	}
+	if config.LocalNumThreads < 1 {
+		return fmt.Errorf("local_num_threads must be positive")
+	}
+	if partyID == auxiliaryPartyID {
+		return nil
+	}
+	if partyID != cohortAPartyID && partyID != cohortBPartyID {
+		return fmt.Errorf("unknown party %d", partyID)
+	}
+	if err := requireStrings(
+		"genotype_dir", config.GenotypeDirectory,
+		"phenotype_file", config.PhenotypeFile,
+		"covariate_file", config.CovariateFile,
+		"genes_file", config.GenesFile,
+		"variant_counts_file", config.VariantCountsFile,
+	); err != nil {
+		return err
+	}
+	if partyID == cohortBPartyID {
+		return requireStrings(
+			"private_genotype_dir",
+			config.PrivateGenotypeDirectory,
 		)
 	}
-	if config.MpcNumThreads < 1 {
-		return fmt.Errorf("mpc_num_threads must be positive")
-	}
+	return nil
+}
 
-	if config.DataBits < 1 {
-		return fmt.Errorf("data_bits must be positive")
+func writeConfigFiles(directory, runDir string, filenames ...string) error {
+	destination := filepath.Join(runDir, "config")
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		return err
 	}
-	if config.FractionalBits < 1 ||
-		config.FractionalBits > config.DataBits {
-		return fmt.Errorf(
-			"fractional_bits must be between 1 and data_bits",
-		)
-	}
-	if config.Probes < 1 {
-		return fmt.Errorf("probes must be positive")
-	}
-
-	switch config.GeneSelection.Mode {
-	case "random":
-		if config.GeneSelection.PerChromosome < 1 {
-			return fmt.Errorf(
-				"GeneSelection random -> gene_selection.per_chromosome must be positive",
-			)
+	for _, filename := range filenames {
+		contents, err := os.ReadFile(filepath.Join(directory, filename))
+		if err != nil {
+			return err
 		}
-	case "file":
-		if strings.TrimSpace(config.GeneSelection.Path) == "" {
-			return fmt.Errorf(
-				"GeneSelection file -> gene_selection.path is required in file mode",
-			)
+		if err := os.WriteFile(filepath.Join(destination, filename), contents, 0o644); err != nil {
+			return err
 		}
-	case "all":
-	default:
-		return fmt.Errorf(
-			"unsupported gene_selection.mode %q",
-			config.GeneSelection.Mode,
-		)
 	}
-
 	return nil
 }

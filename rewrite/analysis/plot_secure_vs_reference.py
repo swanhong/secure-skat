@@ -2,7 +2,6 @@
 
 import argparse
 import math
-import tomllib
 from pathlib import Path
 
 import matplotlib
@@ -11,6 +10,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from compare_secure_to_reference import read_rows, r_squared
+from config import load_party_config
 
 
 SCATTER_COMPARISONS = [
@@ -348,8 +348,7 @@ def plot_ancestry(run_dir: Path, ancestry: str) -> None:
 
 
 def plot_secure_vs_reference(config_path: Path) -> None:
-    with config_path.open("rb") as config_file:
-        config = tomllib.load(config_file)
+    config = load_party_config(config_path)
 
     run_dir = Path(config["run_dir"])
     success_path = run_dir / "comparison" / "_PLOTS_SUCCESS"
@@ -365,8 +364,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--config",
-        default="run.1kg.conf",
-        help="path to the run configuration",
+        default="config/1kg",
+        help="configuration directory",
     )
     args = parser.parse_args()
 

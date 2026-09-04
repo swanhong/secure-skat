@@ -126,10 +126,6 @@ func clearGeneratedOutputs(runDir string) error {
 }
 
 func Prepare(config *Config) error {
-	if err := ValidateConfig(config); err != nil {
-		return fmt.Errorf("validate config: %w", err)
-	}
-
 	payload, err := json.Marshal(
 		prepareRequestFromConfig(config),
 	)

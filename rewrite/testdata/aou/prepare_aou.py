@@ -350,10 +350,6 @@ def prepare_aou(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
-
-    with args.config.open("rb") as config_file:
-        config = tomllib.load(config_file)
-    args.chromosome = config["chromosomes"]
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -373,6 +369,10 @@ def main() -> None:
         default=os.environ.get("PLINK2", "~/plink2"),
     )
     args = parser.parse_args()
+
+    with (args.config / "configGlobal.toml").open("rb") as config_file:
+        config = tomllib.load(config_file)
+    args.chromosome = config["chromosomes"]
 
     if len(set(args.chromosome)) != len(args.chromosome):
         parser.error("chromosomes must not contain duplicates")

@@ -1,5 +1,4 @@
 run_dir = "output/1kg-2122-test"
-chromosomes = [21, 22]
 
 genotype = "rewrite/testdata/1kgenome/generated/genotype/chr{chromosome}"
 gene_panel = "rewrite/testdata/1kgenome/generated/gene_panel/chr{chromosome}.tsv"
@@ -13,43 +12,12 @@ covariate_id_column = "research_id"
 covariate_column = "pca_features"
 ancestry_id_column = "research_id"
 ancestry_column = "ancestry_pred_other"
-phenotype_columns = ["phenotype1", "phenotype2"]
-ancestries = ["EUR", "AFR", "AMR"]
-num_cov = 16
 masks = ["LoF=HC"]
 max_maf = 0.01
 samples_per_cohort = 0
 sample_seed = 42
 role_seed = 42
-
-ckks = "PN14QP436S45"
-mpc_num_threads = 2
-data_bits = 60
-fractional_bits = 30
-probes = 30
-seed = 42
-binding_ipaddr = "127.0.0.1"
 plink2_bin = "plink2"
 
 [gene_selection]
 mode = "all"
-# mode = "random"
-# per_chromosome = 20
-# seed = 42
-# option1: from file
-#   mode = "file"
-#   path = "${HOME}/selected_genes.tsv"
-# option2: all
-#   mode = "all"
-
-[servers.party0]
-ipaddr = "127.0.0.1"
-ports = {party1 = "18000", party2 = "18002"}
-
-[servers.party1]
-ipaddr = "127.0.0.1"
-ports = {party2 = "18004"}
-
-[servers.party2]
-ipaddr = "127.0.0.1"
-ports = {}

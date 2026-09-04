@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-config_path="${1:-run.aou.conf}"
+config_path="${1:-config/aou}"
 party_id="${2:-1}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 python_bin="${PYTHON_BIN:-python}"

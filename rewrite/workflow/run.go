@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 
@@ -23,47 +22,6 @@ type nullModel struct {
 	beta   mpc_core.RMat
 	xtxInv mpc_core.RMat
 	rss    mpc_core.RVec
-}
-
-func ancestryComplete(config *Config, ancestry string) (bool, error) {
-	paths := []string{
-		filepath.Join(
-			config.RunDir,
-			"secure",
-			ancestry,
-			"all_secure_results.tsv",
-		),
-	}
-	for _, chromosome := range config.Chromosomes {
-		paths = append(paths, filepath.Join(
-			config.RunDir,
-			"secure",
-			ancestry,
-			fmt.Sprintf("chr%d.tsv", chromosome),
-		))
-	}
-	for partyID := 0; partyID < partyCount; partyID++ {
-		paths = append(paths, filepath.Join(
-			config.RunDir,
-			"metrics",
-			ancestry,
-			fmt.Sprintf("metrics_party%d.csv", partyID),
-		))
-	}
-
-	for _, path := range paths {
-		info, err := os.Stat(path)
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		if err != nil {
-			return false, fmt.Errorf("inspect ancestry output %s: %w", path, err)
-		}
-		if !info.Mode().IsRegular() || info.Size() == 0 {
-			return false, nil
-		}
-	}
-	return true, nil
 }
 
 func runChromosome(
@@ -121,10 +79,10 @@ func runChromosome(
 	) ([]*mat.Dense, []*mat.Dense, error) {
 		return readGeneBatch(
 			chromosome.GenotypeDirectory,
+			chromosome.PrivateGenotypeDirectory,
 			chromosome.Genes,
 			batch,
 			input.SampleCount,
-			mpcObject.GetPid() == cohortBPartyID,
 		)
 	}
 
@@ -199,29 +157,12 @@ func runChromosome(
 	}, nil
 }
 
-func runParty(
-	config *Config,
-	partyID int,
-	sharedKeysPath string,
-) error {
-	if err := ValidateConfig(config); err != nil {
-		return fmt.Errorf("validate config: %w", err)
-	}
+func runParty(config *Config, partyID int) error {
 	for _, ancestry := range config.Ancestries {
-		complete, err := ancestryComplete(config, ancestry)
-		if err != nil {
-			return err
-		}
-		if complete {
-			if partyID == cohortAPartyID {
-				fmt.Printf("Skip completed ancestry %s\n", ancestry)
-			}
-			continue
-		}
 		if err := runAncestry(
 			config,
 			partyID,
-			filepath.Join(sharedKeysPath, ancestry),
+			filepath.Join(config.SharedKeysPath, ancestry),
 			ancestry,
 		); err != nil {
 			return fmt.Errorf("run ancestry %s: %w", ancestry, err)

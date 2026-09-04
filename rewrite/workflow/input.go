@@ -18,10 +18,11 @@ const (
 )
 
 type ChromosomeInput struct {
-	Chromosome        int
-	GenotypeDirectory string
-	Genes             []protocol.Gene
-	CryptoParams      protocol.CryptoParams
+	Chromosome               int
+	GenotypeDirectory        string
+	PrivateGenotypeDirectory string
+	Genes                    []protocol.Gene
+	CryptoParams             protocol.CryptoParams
 }
 
 type PartyInput struct {
@@ -49,14 +50,14 @@ func readTextMatrix(path string, columns int) (*mat.Dense, error) {
 }
 
 func readRows(
-	directory string,
+	covariatePath, phenotypePath string,
 	covariateCount, phenotypeCount int,
 ) (*mat.Dense, *mat.Dense, error) {
-	covariates, err := readTextMatrix(directory+"/cov.txt", covariateCount)
+	covariates, err := readTextMatrix(covariatePath, covariateCount)
 	if err != nil {
 		return nil, nil, err
 	}
-	y, err := readTextMatrix(directory+"/pheno.txt", phenotypeCount)
+	y, err := readTextMatrix(phenotypePath, phenotypeCount)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -72,12 +73,12 @@ func readRows(
 	return x, y, nil
 }
 
-func readGenes(directory string) ([]protocol.Gene, error) {
-	geneData, err := os.ReadFile(filepath.Join(directory, "genes.txt"))
+func readGenes(genePath, countPath string) ([]protocol.Gene, error) {
+	geneData, err := os.ReadFile(genePath)
 	if err != nil {
 		return nil, err
 	}
-	countData, err := os.ReadFile(filepath.Join(directory, "block_sizes.txt"))
+	countData, err := os.ReadFile(countPath)
 	if err != nil {
 		return nil, err
 	}
@@ -153,17 +154,16 @@ func readPrivateInt8Matrix(
 }
 
 func readGeneBatch(
-	directory string,
+	genotypeDirectory, privateGenotypeDirectory string,
 	genes []protocol.Gene,
 	batch protocol.GeneBatch,
 	rows int,
-	includePrivate bool,
 ) (public, private []*mat.Dense, err error) {
-	if directory == "" {
+	if genotypeDirectory == "" {
 		return nil, nil, nil
 	}
 
-	if includePrivate {
+	if privateGenotypeDirectory != "" {
 		private = make([]*mat.Dense, len(genes))
 	}
 	public = make([]*mat.Dense, len(genes))
@@ -173,7 +173,7 @@ func readGeneBatch(
 		block := fmt.Sprintf("block.%d.bin", geneIndex)
 
 		public[geneIndex], err = readInt8Matrix(
-			filepath.Join(directory, "geno", block),
+			filepath.Join(genotypeDirectory, block),
 			rows,
 			gene.VariantCount,
 		)
@@ -181,9 +181,9 @@ func readGeneBatch(
 			return nil, nil, err
 		}
 
-		if includePrivate {
+		if privateGenotypeDirectory != "" {
 			private[geneIndex], err = readPrivateInt8Matrix(
-				filepath.Join(directory, "private", block),
+				filepath.Join(privateGenotypeDirectory, block),
 				rows,
 			)
 			if err != nil {
@@ -216,7 +216,6 @@ func readPublicDosageSums(
 
 		data, err := os.ReadFile(filepath.Join(
 			directory,
-			"geno",
 			fmt.Sprintf("block.%d.bin", geneIndex),
 		))
 		if err != nil {
@@ -241,14 +240,7 @@ func loadPartyInput(
 	partyID int,
 	ancestry string,
 ) (*PartyInput, error) {
-	cohort := ""
-	switch partyID {
-	case auxiliaryPartyID:
-	case cohortAPartyID:
-		cohort = "A"
-	case cohortBPartyID:
-		cohort = "B"
-	default:
+	if partyID < auxiliaryPartyID || partyID > cohortBPartyID {
 		return nil, fmt.Errorf("unknown party %d", partyID)
 	}
 
@@ -266,16 +258,11 @@ func loadPartyInput(
 		return input, nil
 	}
 
-	firstDirectory := filepath.Join(
-		config.RunDir,
-		"prepared",
-		ancestry,
-		fmt.Sprintf("chr%d", config.Chromosomes[0]),
-		cohort,
-	)
+	firstChromosome := config.Chromosomes[0]
 	var err error
 	input.X, input.Y, err = readRows(
-		firstDirectory,
+		expandInputPath(config.CovariateFile, ancestry, firstChromosome),
+		expandInputPath(config.PhenotypeFile, ancestry, firstChromosome),
 		config.NumCov,
 		len(config.PhenotypeColumns),
 	)
@@ -285,24 +272,34 @@ func loadPartyInput(
 	input.SampleCount, _ = input.X.Dims()
 
 	for index, chromosome := range config.Chromosomes {
-		directory := filepath.Join(
-			config.RunDir,
-			"prepared",
-			ancestry,
-			fmt.Sprintf("chr%d", chromosome),
+		genes, err := readGenes(
+			expandInputPath(config.GenesFile, ancestry, chromosome),
+			expandInputPath(config.VariantCountsFile, ancestry, chromosome),
 		)
-
-		genes, err := readGenes(directory)
 		if err != nil {
 			return nil, err
 		}
 
 		input.Chromosomes[index] = ChromosomeInput{
-			Chromosome:        chromosome,
-			GenotypeDirectory: filepath.Join(directory, cohort),
-			Genes:             genes,
+			Chromosome: chromosome,
+			GenotypeDirectory: expandInputPath(
+				config.GenotypeDirectory,
+				ancestry,
+				chromosome,
+			),
+			PrivateGenotypeDirectory: expandInputPath(
+				config.PrivateGenotypeDirectory,
+				ancestry,
+				chromosome,
+			),
+			Genes: genes,
 		}
 	}
 
 	return input, nil
+}
+
+func expandInputPath(path, ancestry string, chromosome int) string {
+	path = strings.ReplaceAll(path, "{ancestry}", ancestry)
+	return strings.ReplaceAll(path, "{chromosome}", strconv.Itoa(chromosome))
 }

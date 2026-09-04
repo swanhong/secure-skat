@@ -9,11 +9,11 @@ Run commands from the repository root.
 ```bash
 source setup/env.sh
 python3 rewrite/testdata/1kgenome/prepare_1kgenome.py \
-  --config run.1kg.conf \
+  --config config/1kg \
   --num-pheno 2
 ```
 
-The generator reads the chromosomes from `run.1kg.conf`. It downloads missing
+The generator reads the chromosomes from `config/1kg/configGlobal.toml`. It downloads missing
 1000 Genomes VCFs and sample metadata plus GENCODE v50, then writes the local
 fixture under:
 

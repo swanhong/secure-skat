@@ -8,117 +8,99 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"time"
 
 	"github.com/aead/chacha20/chacha"
 )
 
-func createSharedPRGKeys(ancestries []string) (string, error) {
-	directory, err := os.MkdirTemp("", "secure-rvas-keys-")
-	if err != nil {
-		return "", fmt.Errorf("create shared PRG key directory: %w", err)
-	}
+var partyKeyNames = [][]string{
+	{"shared_key_global.bin", "shared_key_0_1.bin", "shared_key_0_2.bin"},
+	{"shared_key_global.bin", "shared_key_0_1.bin", "shared_key_1_2.bin"},
+	{"shared_key_global.bin", "shared_key_0_2.bin", "shared_key_1_2.bin"},
+}
 
-	keyNames := []string{
-		"shared_key_global.bin",
-		"shared_key_0_1.bin",
-		"shared_key_0_2.bin",
-		"shared_key_1_2.bin",
+func runKeygenCommand(args []string) error {
+	flags := flag.NewFlagSet("secure-rvas keygen", flag.ContinueOnError)
+	configDirectory := flags.String("config", "config/1kg", "configuration directory")
+	if err := flags.Parse(args); err != nil {
+		return fmt.Errorf("parse keygen arguments: %w", err)
 	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected keygen arguments: %v", flags.Args())
+	}
+	return GenerateSharedPRGKeys(*configDirectory)
+}
 
-	for _, ancestry := range ancestries {
-		ancestryDirectory := filepath.Join(directory, ancestry)
-		if err := os.Mkdir(ancestryDirectory, 0o700); err != nil {
-			os.RemoveAll(directory)
-			return "", fmt.Errorf(
-				"create shared PRG key directory for %s: %w",
-				ancestry,
-				err,
-			)
+func GenerateSharedPRGKeys(configDirectory string) error {
+	configs := make([]*Config, partyCount)
+	for partyID := range configs {
+		config, err := LoadPartyConfig(configDirectory, partyID)
+		if err != nil {
+			return err
 		}
+		if err := validatePartyConfig(config, partyID); err != nil {
+			return fmt.Errorf("validate party %d config: %w", partyID, err)
+		}
+		configs[partyID] = config
+	}
 
-		for _, name := range keyNames {
-			key := make([]byte, chacha.KeySize)
-			if _, err := rand.Read(key); err != nil {
-				os.RemoveAll(directory)
-				return "", fmt.Errorf(
-					"generate shared PRG key for %s: %w",
-					ancestry,
-					err,
-				)
-			}
-			if err := os.WriteFile(
-				filepath.Join(ancestryDirectory, name),
-				key,
-				0o600,
-			); err != nil {
-				os.RemoveAll(directory)
-				return "", fmt.Errorf(
-					"write shared PRG key for %s: %w",
-					ancestry,
-					err,
-				)
+	for _, ancestry := range configs[0].Ancestries {
+		keys := make(map[string][]byte, 4)
+		for _, name := range []string{
+			"shared_key_global.bin",
+			"shared_key_0_1.bin",
+			"shared_key_0_2.bin",
+			"shared_key_1_2.bin",
+		} {
+			keys[name] = make([]byte, chacha.KeySize)
+			if _, err := rand.Read(keys[name]); err != nil {
+				return err
 			}
 		}
+
+		for partyID, config := range configs {
+			directory := filepath.Join(config.SharedKeysPath, ancestry)
+			if err := os.MkdirAll(directory, 0o700); err != nil {
+				return err
+			}
+			for _, name := range partyKeyNames[partyID] {
+				if err := os.WriteFile(filepath.Join(directory, name), keys[name], 0o600); err != nil {
+					return err
+				}
+			}
+		}
 	}
-	return directory, nil
+	return nil
 }
 
 func runPartyCommand(args []string) error {
-	flags := flag.NewFlagSet(
-		"secure-rvas party",
-		flag.ContinueOnError,
-	)
-	configPath := flags.String(
-		"config",
-		"run.1kg.conf",
-		"path to the run configuration",
-	)
-	partyID := flags.Int(
-		"party",
-		-1,
-		"Internal party ID",
-	)
-	sharedKeysPath := flags.String(
-		"shared-keys",
-		"",
-		"path to the shared PRG keys",
-	)
-
+	flags := flag.NewFlagSet("secure-rvas party", flag.ContinueOnError)
+	configDirectory := flags.String("config", "config/1kg", "configuration directory")
+	partyID := flags.Int("party", -1, "party ID")
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse party arguments: %w", err)
 	}
 	if flags.NArg() != 0 {
-		return fmt.Errorf(
-			"unexpected party arguments: %v",
-			flags.Args(),
-		)
+		return fmt.Errorf("unexpected party arguments: %v", flags.Args())
 	}
 	if *partyID < 0 || *partyID >= partyCount {
-		return fmt.Errorf(
-			"party ID must be between 0 and %d",
-			partyCount-1,
-		)
+		return fmt.Errorf("party ID must be between 0 and %d", partyCount-1)
 	}
 
-	if *sharedKeysPath == "" {
-		return fmt.Errorf("shared-keys is required")
-	}
-
-	config, err := LoadConfig(*configPath)
+	config, err := LoadPartyConfig(*configDirectory, *partyID)
 	if err != nil {
 		return err
 	}
-
-	return runParty(config, *partyID, *sharedKeysPath)
+	if err := validatePartyConfig(config, *partyID); err != nil {
+		return fmt.Errorf("validate config: %w", err)
+	}
+	runtime.GOMAXPROCS(config.LocalNumThreads)
+	return runParty(config, *partyID)
 }
 
-func runPartyProcesses(
-	executable string,
-	configPath string,
-	sharedKeysPath string,
-) ([]processMetric, error) {
+func runPartyProcesses(executable, configDirectory string) ([]processMetric, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -128,25 +110,21 @@ func runPartyProcesses(
 		err     error
 	}
 	results := make(chan partyResult, partyCount)
-
 	for partyID := 0; partyID < partyCount; partyID++ {
 		go func(partyID int) {
 			command := exec.CommandContext(
 				ctx,
 				executable,
 				"party",
-				"--config", configPath,
+				"--config", configDirectory,
 				"--party", strconv.Itoa(partyID),
-				"--shared-keys", sharedKeysPath,
 			)
 			command.Stdout = os.Stdout
 			command.Stderr = os.Stderr
 
 			startedAt := time.Now()
 			runErr := command.Run()
-			peakRSS, peakRSSErr := childProcessPeakRSSBytes(
-				command.ProcessState,
-			)
+			peakRSS, peakRSSErr := childProcessPeakRSSBytes(command.ProcessState)
 			result := partyResult{
 				partyID: partyID,
 				metric: processMetric{
@@ -155,13 +133,11 @@ func runPartyProcesses(
 					peakRSSBytes: peakRSS,
 				},
 			}
-			switch {
-			case runErr != nil:
+			if runErr != nil {
 				result.err = fmt.Errorf("party %d failed: %w", partyID, runErr)
-			case peakRSSErr != nil:
+			} else if peakRSSErr != nil {
 				result.err = fmt.Errorf("party %d peak RSS: %w", partyID, peakRSSErr)
 			}
-
 			results <- result
 			if result.err != nil {
 				cancel()
@@ -181,59 +157,36 @@ func runPartyProcesses(
 	return metrics, firstError
 }
 
-func Run(configPath string) error {
+func Run(configDirectory string) error {
 	startedAt := time.Now()
-
-	config, err := LoadConfig(configPath)
+	config, err := LoadPartyConfig(configDirectory, cohortAPartyID)
 	if err != nil {
 		return err
 	}
-	if err := ValidateConfig(config); err != nil {
-		return fmt.Errorf("validate config: %w", err)
-	}
-
-	successPath := filepath.Join(
-		config.RunDir,
-		"secure",
-		"_SUCCESS",
-	)
+	successPath := filepath.Join(config.RunDir, "secure", "_SUCCESS")
 	if err := os.Remove(successPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove _SUCCESS file: %w", err)
+		return err
 	}
 
 	executable, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("get executable path: %w", err)
-	}
-
-	sharedKeysPath, err := createSharedPRGKeys(config.Ancestries)
-	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(sharedKeysPath)
-
-	partyMetrics, err := runPartyProcesses(
-		executable,
-		configPath,
-		sharedKeysPath,
-	)
+	partyMetrics, err := runPartyProcesses(executable, configDirectory)
 	if err != nil {
 		return err
 	}
 
 	parentPeakRSS, err := currentProcessPeakRSSBytes()
 	if err != nil {
-		return fmt.Errorf("read parent peak RSS: %w", err)
+		return err
 	}
 	parentMetric := processMetric{
 		process:      "parent",
 		duration:     time.Since(startedAt),
 		peakRSSBytes: parentPeakRSS,
 	}
-	processMetrics := append(
-		[]processMetric{parentMetric},
-		partyMetrics...,
-	)
+	processMetrics := append([]processMetric{parentMetric}, partyMetrics...)
 	if err := writeProcessMetricsCSV(
 		filepath.Join(config.RunDir, "metrics", "process_summary.csv"),
 		processMetrics,
@@ -254,11 +207,7 @@ func Run(configPath string) error {
 	)
 
 	if err := os.MkdirAll(filepath.Dir(successPath), 0o755); err != nil {
-		return fmt.Errorf("create secure directory: %w", err)
+		return err
 	}
-	if err := os.WriteFile(successPath, []byte{}, 0o644); err != nil {
-		return fmt.Errorf("write _SUCCESS file: %w", err)
-	}
-
-	return nil
+	return os.WriteFile(successPath, []byte{}, 0o644)
 }

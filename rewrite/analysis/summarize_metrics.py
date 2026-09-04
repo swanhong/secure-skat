@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 
 import argparse
-import tomllib
 from pathlib import Path
 
 import pandas as pd
+
+from config import load_party_config
 
 from compare_secure_to_reference import R2_COMPARISONS, comparison_r_squared
 
@@ -447,8 +448,7 @@ def main() -> None:
     args = parse_args()
 
     try:
-        with args.config.open("rb") as config_file:
-            config = tomllib.load(config_file)
+        config = load_party_config(args.config, int(args.party_id))
 
         configured_run_dir = str(config.get("run_dir", "")).strip()
         if not configured_run_dir:

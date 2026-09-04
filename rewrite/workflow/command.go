@@ -8,20 +8,22 @@ import (
 func Main(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf(
-			"usage: secure-rvas <prepare|run> [--config path]",
+			"usage: secure-rvas <prepare|keygen|run|party> [--config directory]",
 		)
 	}
 
 	switch args[0] {
 	case "prepare":
 		return runPrepareCommand(args[1:])
+	case "keygen":
+		return runKeygenCommand(args[1:])
 	case "run":
 		return runRunCommand(args[1:])
 	case "party":
 		return runPartyCommand(args[1:])
 	default:
 		return fmt.Errorf(
-			"unknown command %q; expected <prepare|run>",
+			"unknown command %q; expected <prepare|keygen|run|party>",
 			args[0],
 		)
 	}
@@ -32,10 +34,10 @@ func runPrepareCommand(args []string) error {
 		"secure-rvas prepare",
 		flag.ContinueOnError,
 	)
-	configPath := flags.String(
+	configDirectory := flags.String(
 		"config",
-		"run.1kg.conf",
-		"path to the run configuration",
+		"config/1kg",
+		"configuration directory",
 	)
 	clearOutputs := flags.Bool(
 		"clear",
@@ -53,12 +55,12 @@ func runPrepareCommand(args []string) error {
 		)
 	}
 
-	config, err := LoadConfig(*configPath)
+	config, err := LoadPrepareConfig(*configDirectory)
 	if err != nil {
 		return err
 	}
 
-	if err := ValidateConfig(config); err != nil {
+	if err := validatePrepareConfig(config); err != nil {
 		return fmt.Errorf("validate config: %w", err)
 	}
 	if *clearOutputs {
@@ -68,13 +70,18 @@ func runPrepareCommand(args []string) error {
 		fmt.Printf("Cleared generated outputs from %s\n", config.RunDir)
 	}
 
-	if err := writeConfig(*configPath, config.RunDir); err != nil {
+	if err := writeConfigFiles(
+		*configDirectory,
+		config.RunDir,
+		globalConfigFilename,
+		prepareConfigFilename,
+	); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 
 	fmt.Println("Running secure-rvas::prepare")
-	fmt.Printf("Read configuration from %s\n", *configPath)
-	fmt.Printf("Saved run configuration to %s/%s\n", config.RunDir, runConfigFilename)
+	fmt.Printf("Read configuration from %s\n", *configDirectory)
+	fmt.Printf("Saved configuration to %s/config\n", config.RunDir)
 
 	return Prepare(config)
 }
@@ -84,10 +91,10 @@ func runRunCommand(args []string) error {
 		"secure-rvas run",
 		flag.ContinueOnError,
 	)
-	configPath := flags.String(
+	configDirectory := flags.String(
 		"config",
-		"run.1kg.conf",
-		"path to the run configuration",
+		"config/1kg",
+		"configuration directory",
 	)
 
 	if err := flags.Parse(args); err != nil {
@@ -101,7 +108,7 @@ func runRunCommand(args []string) error {
 	}
 
 	fmt.Println("Running secure-rvas::run")
-	fmt.Printf("Read configuration from %s\n", *configPath)
+	fmt.Printf("Read configuration from %s\n", *configDirectory)
 
-	return Run(*configPath)
+	return Run(*configDirectory)
 }
