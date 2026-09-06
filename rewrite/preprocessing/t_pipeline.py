@@ -1,10 +1,13 @@
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Barrier
 from unittest.mock import Mock
 
-from .model import GeneRef, GeneVariants, PhenoCovRows, VariantRef
-from .pipeline import assign_roles, prepare_blocks
+import numpy as np
+
+from .model import GenePlan, GeneRef, GeneVariants, PhenoCovRows, VariantRef
+from .pipeline import assign_roles, extract_genotypes, prepare_blocks
 
 
 class AssignRolesTest(unittest.TestCase):
@@ -44,6 +47,23 @@ class AssignRolesTest(unittest.TestCase):
 
             self.assertEqual(result, out_dir)
             extractor.assert_not_called()
+
+    def test_extract_genotypes_runs_cohorts_in_parallel(self):
+        variant = VariantRef("1:1:A:G", 1, "PASS")
+        plan = GenePlan(GeneRef("ENSG1", "G1", "1", 0), ((variant, "shared"),))
+        rows_a = PhenoCovRows(("A",), (), ())
+        rows_b = PhenoCovRows(("B",), (), ())
+        barrier = Barrier(2)
+
+        def extractor(_, sample_ids, variant_keys):
+            barrier.wait(timeout=5)
+            value = 1 if sample_ids == ("A",) else 2
+            return np.full((1, 1), value, dtype=np.int8), variant_keys
+
+        result = extract_genotypes(Path("unused"), rows_a, rows_b, (plan,), extractor)
+
+        self.assertEqual(result[1][0, 0], 1)
+        self.assertEqual(result[3][0, 0], 2)
 
 
 if __name__ == "__main__":

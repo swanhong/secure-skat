@@ -1,6 +1,7 @@
 import math
 import random
 from collections.abc import Collection, Mapping, Sequence, Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
 import numpy as np
@@ -72,16 +73,15 @@ def extract_genotypes(
 
     # extract genotypes for the variants in the plans
     # extractor is for PLINK2 pgen/pvar/psam files
-    geno_a, emitted_a = extractor(
-        pgen_prefix,
-        rows_a.sample_ids,
-        tuple(keys_a),
-    )
-    geno_b, emitted_b = extractor(
-        pgen_prefix,
-        rows_b.sample_ids,
-        tuple(keys_b),
-    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_a = executor.submit(
+            extractor, pgen_prefix, rows_a.sample_ids, tuple(keys_a)
+        )
+        future_b = executor.submit(
+            extractor, pgen_prefix, rows_b.sample_ids, tuple(keys_b)
+        )
+        geno_a, emitted_a = future_a.result()
+        geno_b, emitted_b = future_b.result()
 
     key_column_a = {
         key: column for column, key in enumerate(emitted_a)
@@ -421,6 +421,7 @@ def prepare_blocks(
         shared_rate=shared_rate,
     )
 
+    print("Running PLINK2:", out_dir, flush=True)
     (
         extracted_plans,
         geno_a,
