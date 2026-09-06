@@ -7,9 +7,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/setup/env.sh"
 config_path="${CONFIG_PATH:-config/1kg}"
 reference_engine="${REFERENCE_ENGINE:-python}"
 prepare_args=(--config "${config_path}")
-if [[ "${CLEAR_RUN_DIR:-0}" == "1" ]]; then
-  prepare_args+=(--clear)
-fi
+# if [[ "${CLEAR_RUN_DIR:-0}" == "1" ]]; then
+#   prepare_args+=(--clear)
+# fi
 
 echo "[0/7] Generate 1000 Genomes test data"
 python3 rewrite/testdata/1kgenome/prepare_1kgenome.py \

@@ -14,7 +14,6 @@ python3 rewrite/testdata/aou/prepare_aou.py \
 echo "[1/7] Prepare ancestry-specific secure inputs"
 go run -mod=vendor secure-rvas.go prepare \
   --config "${config_path}" \
-  --clear
 
 echo "[2/7] Generate shared PRG keys"
 go run -mod=vendor secure-rvas.go keygen \
