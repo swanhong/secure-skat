@@ -7,7 +7,7 @@ def write_selected_genes(
         path: Path,
         genes: tuple[GeneRef, ...],
 ) -> None:
-    with path.open("x", newline="") as file:
+    with path.open("w", newline="") as file:
         writer = csv.writer(
             file,
             delimiter="\t",

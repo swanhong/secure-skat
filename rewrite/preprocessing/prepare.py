@@ -1,9 +1,12 @@
-from collections.abc import Collection, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Collection, Mapping
+from dataclasses import asdict, dataclass
 from functools import partial
 from pathlib import Path
 from typing import Literal, TextIO
+import fcntl
+import hashlib
 import json
+from tempfile import TemporaryDirectory
 import sys
 
 from .input import (
@@ -22,7 +25,7 @@ from .pipeline import (
     select_gene_variants,
     select_rows,
 )
-from .plink import plink_extract
+from .plink import pgen_extract
 from .output import write_selected_genes
 from .selection import (
     select_file_genes,
@@ -67,6 +70,7 @@ class PrepareRequest:
     shared_rate: float
 
     gene_selection: GeneSelectionRequest
+    prepared_cache_dir: Path | None = None
 
 
 def chromosome_path(
@@ -133,6 +137,69 @@ def select_gene_groups(
     )
 
 
+def prepared_cache_config(request: PrepareRequest, chromosome: int, ancestry: str) -> dict:
+    """Identify prepared inputs without reading the genotype file contents."""
+    def source(path: Path) -> dict:
+        path = path.resolve()
+        stat = path.stat()
+        return {"path": str(path), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+    config = asdict(request)
+    for name in ("run_dir", "prepared_cache_dir", "chromosomes", "ancestries", "plink2_bin"):
+        del config[name]
+    prefix = chromosome_path(request.genotype, chromosome)
+    config["genotype"] = {
+        extension: source(Path(f"{prefix}.{extension}"))
+        for extension in ("pgen", "pvar", "psam")
+    }
+    for name in ("annotation", "gene_panel"):
+        config[name] = source(chromosome_path(getattr(request, name), chromosome))
+    for name in ("phenotype", "covariate", "ancestry"):
+        config[name] = source(getattr(request, name))
+    selection = config["gene_selection"]
+    selection["path"] = source(selection["path"]) if selection["mode"] == "file" else None
+    config["mask"] = {
+        column: sorted({values} if isinstance(values, str) else set(values))
+        for column, values in request.mask.items()
+    }
+    config.update(format_version=1, chromosome=chromosome, ancestry_group=ancestry)
+    return config
+
+
+def prepare_cached_blocks(
+    request: PrepareRequest, chromosome: int, ancestry: str, build: Callable[..., Path],
+) -> Path:
+    cache_root = request.prepared_cache_dir.resolve()
+    if cache_root.is_relative_to(request.run_dir.resolve()):
+        raise ValueError("prepared_cache_dir must be outside run_dir")
+    output = request.run_dir / "prepared" / ancestry / f"chr{chromosome}"
+    if output.exists() and not output.is_symlink():
+        raise ValueError(f"{output} is not a link; use a new run_dir or prepare --clear")
+    config = json.dumps(prepared_cache_config(request, chromosome, ancestry), sort_keys=True, indent=2) + "\n"
+    key = hashlib.sha256(config.encode()).hexdigest()
+    parent = cache_root / ancestry / f"chr{chromosome}"
+    parent.mkdir(parents=True, exist_ok=True)
+    cached = parent / key
+    with (parent / f"{key}.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if cached.exists():
+            if (cached / "config.json").read_text() != config:
+                raise ValueError(f"prepared cache config mismatch: {cached}")
+            print("Reusing prepared cache:", cached, flush=True)
+        else:
+            print("Creating prepared cache:", cached, flush=True)
+            with TemporaryDirectory(prefix=f".{key}.", dir=parent) as temporary:
+                directory = Path(temporary)
+                build(out_dir=directory)
+                (directory / "config.json").write_text(config)
+                directory.rename(cached)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if output.is_symlink():
+        output.unlink()
+    output.symlink_to(cached, target_is_directory=True)
+    return output
+
+
 def prepare_chromosomes(
     request: PrepareRequest,
     extractor: GenotypeExtractor | None = None,
@@ -143,10 +210,7 @@ def prepare_chromosomes(
     selected_genes_path = request.run_dir / "selected_genes.tsv"
 
     if extractor is None:
-        extractor = partial(
-            plink_extract,
-            plink2_bin=request.plink2_bin,
-        )
+        extractor = pgen_extract
     sample_inputs = load_sample_inputs(
         phenotype_path=request.phenotype,
         covariate_path=request.covariate,
@@ -235,21 +299,20 @@ def prepare_chromosomes(
 
         for ancestry in request.ancestries:
             rows_a, rows_b = rows_by_ancestry[ancestry]
-            prepare_blocks(
+            build = partial(
+                prepare_blocks,
                 pgen_prefix=inputs.pgen_prefix,
                 gene_variants=chromosome_groups,
                 rows_a=rows_a,
                 rows_b=rows_b,
                 role_seed=request.role_seed,
                 shared_rate=request.shared_rate,
-                out_dir=(
-                    request.run_dir
-                    / "prepared"
-                    / ancestry
-                    / f"chr{chromosome}"
-                ),
                 extractor=extractor,
             )
+            if request.prepared_cache_dir is not None:
+                prepare_cached_blocks(request, chromosome, ancestry, build)
+            else:
+                build(out_dir=request.run_dir / "prepared" / ancestry / f"chr{chromosome}")
 
     selected_genes = tuple(selected_genes)
     if request.gene_selection.mode != "all":
@@ -269,6 +332,7 @@ def read_prepare_request(
 
     return PrepareRequest(
         run_dir=Path(payload["run_dir"]),
+        prepared_cache_dir=Path(payload["prepared_cache_dir"]) if payload.get("prepared_cache_dir") else None,
         chromosomes=tuple(payload["chromosomes"]),
         genotype=payload["genotype"],
         gene_panel=payload["gene_panel"],

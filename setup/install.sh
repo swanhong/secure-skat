@@ -25,6 +25,8 @@ else
   install -m 0755 "$work_dir/unpacked/plink2" "$PLINK2"
 fi
 
+python3 -m pip install pgenlib==0.94.1
+
 mkdir -p "$R_LIBS_USER"
 Rscript - <<'RS'
 library_path <- Sys.getenv("R_LIBS_USER")

@@ -18,8 +18,9 @@ type prepareGeneSelection struct {
 }
 
 type prepareRequest struct {
-	RunDir      string `json:"run_dir"`
-	Chromosomes []int  `json:"chromosomes"`
+	RunDir           string `json:"run_dir"`
+	PreparedCacheDir string `json:"prepared_cache_dir"`
+	Chromosomes      []int  `json:"chromosomes"`
 
 	Genotype   string `json:"genotype"`
 	GenePanel  string `json:"gene_panel"`
@@ -57,6 +58,7 @@ func prepareRequestFromConfig(config *Config) prepareRequest {
 
 	return prepareRequest{
 		RunDir:            config.RunDir,
+		PreparedCacheDir:  config.PreparedCacheDir,
 		Chromosomes:       config.Chromosomes,
 		Genotype:          config.Genotype,
 		GenePanel:         config.GenePanel,

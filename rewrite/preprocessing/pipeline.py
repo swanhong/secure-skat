@@ -17,7 +17,7 @@ from .model import (
 )
 
 from .output import write_outputs
-from .plink import plink_extract
+from .plink import pgen_extract
 
 GenotypeExtractor = Callable[
     [Path, tuple[str, ...], tuple[str, ...]],
@@ -409,7 +409,7 @@ def prepare_blocks(
         role_seed: int,
         out_dir: Path,
         shared_rate: float=0.6,
-        extractor: GenotypeExtractor = plink_extract,
+        extractor: GenotypeExtractor = pgen_extract,
 ) -> Path:
     if (out_dir / "pos.txt").is_file():
         print("Skipping completed output:", out_dir)
@@ -421,7 +421,7 @@ def prepare_blocks(
         shared_rate=shared_rate,
     )
 
-    print("Running PLINK2:", out_dir, flush=True)
+    print("Reading PGEN:", out_dir, flush=True)
     (
         extracted_plans,
         geno_a,
