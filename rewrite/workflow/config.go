@@ -85,6 +85,17 @@ func loadConfig(directory string, filenames ...string) (*Config, error) {
 	for index, ancestry := range config.Ancestries {
 		config.Ancestries[index] = strings.ToUpper(strings.TrimSpace(ancestry))
 	}
+	for _, path := range []*string{
+		&config.SharedKeysPath,
+		&config.GenotypeDirectory,
+		&config.PrivateGenotypeDirectory,
+		&config.PhenotypeFile,
+		&config.CovariateFile,
+		&config.GenesFile,
+		&config.VariantCountsFile,
+	} {
+		*path = strings.ReplaceAll(*path, "{run_dir}", config.RunDir)
+	}
 	return config, nil
 }
 

@@ -1,8 +1,9 @@
-run_dir = "output/1kg-test"
+run_dir = "output/1kg-test3"
 
 chromosomes = [
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
-  12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+  #1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+  #12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+  21, 22,
 ]
 phenotype_columns = ["phenotype1", "phenotype2"]
 ancestries = ["EUR", "AFR", "AMR"]

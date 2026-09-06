@@ -176,23 +176,26 @@ def prepare_cached_blocks(
     if output.exists() and not output.is_symlink():
         raise ValueError(f"{output} is not a link; use a new run_dir or prepare --clear")
     config = json.dumps(prepared_cache_config(request, chromosome, ancestry), sort_keys=True, indent=2) + "\n"
-    key = hashlib.sha256(config.encode()).hexdigest()
+    full_key = hashlib.sha256(config.encode()).hexdigest()
+    key = full_key[:10]
     parent = cache_root / ancestry / f"chr{chromosome}"
     parent.mkdir(parents=True, exist_ok=True)
     cached = parent / key
-    with (parent / f"{key}.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        if cached.exists():
-            if (cached / "config.json").read_text() != config:
-                raise ValueError(f"prepared cache config mismatch: {cached}")
-            print("Reusing prepared cache:", cached, flush=True)
-        else:
-            print("Creating prepared cache:", cached, flush=True)
-            with TemporaryDirectory(prefix=f".{key}.", dir=parent) as temporary:
-                directory = Path(temporary)
-                build(out_dir=directory)
-                (directory / "config.json").write_text(config)
-                directory.rename(cached)
+    if not cached.exists() and (parent / full_key).exists():
+        cached = parent / full_key
+    if cached.exists():
+        if (cached / "config.json").read_text() != config:
+            raise ValueError(f"prepared cache config mismatch: {cached}")
+        print(f"Using existing prepared cache: {cached}", flush=True)
+        print(f"    ancestry: {ancestry}, chromosome: {chromosome}, MAF: {request.max_maf}, shared_rate: {request.shared_rate}", flush=True)
+        print(f"    key: {key}", flush=True)
+    else:
+        print("Creating prepared cache:", cached, flush=True)
+        with TemporaryDirectory(prefix=f".{key}.", dir=parent) as temporary:
+            directory = Path(temporary)
+            build(out_dir=directory)
+            (directory / "config.json").write_text(config)
+            directory.rename(cached)
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.is_symlink():
         output.unlink()

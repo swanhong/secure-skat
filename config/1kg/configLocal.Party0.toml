@@ -1,2 +1,2 @@
-shared_keys_path = "output/1kg-test/secure/keys"
+shared_keys_path = "{run_dir}/secure/keys"
 local_num_threads = 4

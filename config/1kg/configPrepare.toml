@@ -1,3 +1,4 @@
+prepared_cache_dir = "rewrite/testdata/1kgenome/prepared"
 genotype = "rewrite/testdata/1kgenome/generated/genotype/chr{chromosome}"
 gene_panel = "rewrite/testdata/1kgenome/generated/gene_panel/chr{chromosome}.tsv"
 annotation = "rewrite/testdata/1kgenome/generated/annotation/chr{chromosome}.tsv"
@@ -15,7 +16,7 @@ max_maf = 0.01
 samples_per_cohort = 0
 sample_seed = 42
 role_seed = 42
-shared_rate = 0.6
+shared_rate = 0.7
 plink2_bin = "plink2"
 
 [gene_selection]

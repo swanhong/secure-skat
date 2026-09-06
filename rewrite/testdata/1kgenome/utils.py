@@ -115,15 +115,33 @@ def create_pca(
             Path(f"{pca_input}.pvar"),
             Path(f"{pca_input}.psam"),
         ]
-        if not all(path.exists() for path in merged_files):
+        complete = all(path.is_file() for path in merged_files)
+        if complete:
+            with merged_files[0].open("rb") as file:
+                header = file.read(12)
+            # The standard PGEN header's variant/sample counts are finalized last.
+            complete = (len(header) == 12 and header[:3] == b"\x6c\x1b\x10"
+                        and int.from_bytes(header[3:7], "little") > 0
+                        and int.from_bytes(header[7:11], "little") > 0)
+        if not complete:
+            print(f"Rebuilding incomplete PCA merge: {pca_input}", flush=True)
+            partial = work_dir / "merged.partial"
+            for path in merged_files + [Path(f"{partial}{path.suffix}") for path in merged_files] + [
+                work_dir / name for name in ("pruned.prune.in", "pruned.prune.out", "pca.eigenvec", "pca.eigenval")
+            ]:
+                path.unlink(missing_ok=True)
             subprocess.run(
                 [
                     "plink2",
                     "--pmerge-list", str(merge_list),
-                    "--out", str(pca_input),
+                    "--merge-info-mode", "erase",
+                    "--out", str(partial),
                 ],
                 check=True,
             )
+            for path in merged_files:
+                Path(f"{partial}{path.suffix}").replace(path)
+            Path(f"{partial}.log").replace(work_dir / "merged.log")
 
     prune_prefix = work_dir / "pruned"
     prune_in = Path(f"{prune_prefix}.prune.in")
@@ -168,6 +186,9 @@ def create_ancestry_table(
     out_path: Path,
     num_components: int = 16,
 ) -> Path:
+    if out_path.exists():
+        print(f"exists: {out_path}")
+        return out_path
     ancestries = {}
     with panel_path.open() as panel:
         columns = next(panel).split()
@@ -225,6 +246,9 @@ def create_inputs_from_gencode(
         chromosome: str = "22",
         seed: int = 42,
 ) -> tuple[Path, Path]:
+    if gene_panel_path.exists() and annotation_path.exists():
+        print(f"create_inputs_from_gencode - exists: {gene_panel_path}, {annotation_path}")
+        return gene_panel_path, annotation_path
     chromosome = chromosome.removeprefix("chr")
     gtf_chromosome = f"chr{chromosome}"
 
@@ -372,6 +396,9 @@ def create_phenotype(
     num_pheno: int = 1,
     seed: int = 42,
 ) -> Path:
+    if out_path.exists():
+        print(f"create_phenotype - exists: {out_path}")
+        return out_path
     with psam_path.open() as psam:
         columns = next(psam).lstrip("#").split()
         iid_column = columns.index("IID")
