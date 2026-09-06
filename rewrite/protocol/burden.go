@@ -67,13 +67,25 @@ func PublicGtGActionExact(
 		       + Transpose(Gp[B,g]) * Gp[B,g]) / N
 		gtgRight[g] = pooledGtG[g] * R[g]
 	*/
+	pooledGtG := sharePooledGtG(mpcObj, dataParams, batch, localGtG)
+	return multiplyPooledGtG(mpcObj, dataParams, batch, pooledGtG, rightMatrix)
+}
+
+func sharePooledGtG(
+	mpcObj *mpc.MPC, dataParams DataParams, batch GeneBatch, localGtG []*mat.Dense,
+) []mpc_core.RMat {
 	shapes := make([][2]int, len(batch.GeneIndices))
 	for position, geneIndex := range batch.GeneIndices {
 		variantCount := dataParams.Genes[geneIndex].VariantCount
 		shapes[position] = [2]int{variantCount, variantCount}
 	}
-	pooledGtG := shareDenseMatrices(mpcObj, localGtG, shapes, 1)
+	return shareDenseMatrices(mpcObj, localGtG, shapes, 1)
+}
 
+func multiplyPooledGtG(
+	mpcObj *mpc.MPC, dataParams DataParams, batch GeneBatch,
+	pooledGtG, rightMatrix []mpc_core.RMat,
+) []mpc_core.RMat {
 	gtgRightMatrix := make([]mpc_core.RMat, len(batch.GeneIndices))
 	for position, geneIndex := range batch.GeneIndices {
 		if dataParams.Genes[geneIndex].VariantCount == 0 {

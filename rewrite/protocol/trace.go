@@ -780,6 +780,22 @@ func ApplyGtG(
 	rightMatrix []mpc_core.RMat,
 	rhsCount int,
 ) []mpc_core.RMat {
+	var transform lintrans.LinearTransformation
+	return applyGtG(mpcObj, heParams, dataParams, cryptoParams, batch,
+		localGtG, rightMatrix, rhsCount, &transform)
+}
+
+func applyGtG(
+	mpcObj *mpc.MPC,
+	heParams *securecrypto.CryptoParams,
+	dataParams DataParams,
+	cryptoParams CryptoParams,
+	batch GeneBatch,
+	localGtG []*mat.Dense,
+	rightMatrix []mpc_core.RMat,
+	rhsCount int,
+	transform *lintrans.LinearTransformation,
+) []mpc_core.RMat {
 	/*
 		Compute normalized pooledGtG * rightMatrix using packed HE.
 
@@ -863,71 +879,74 @@ func ApplyGtG(
 		// 3. Encode and apply the cohort-local GtG transform.
 		inputLevel := packedRightCipher[0].Level()
 
-		diagonalIndices := make([]int, batch.W)
-		diagonals := make(
-			lintrans.Diagonals[float64],
-			batch.W,
-		)
+		// The same batch uses this transform twice; encoding depends on the input level.
+		if transform.Vec == nil || transform.LevelQ != inputLevel {
+			diagonalIndices := make([]int, batch.W)
+			diagonals := make(
+				lintrans.Diagonals[float64],
+				batch.W,
+			)
 
-		for diagonal := 0; diagonal < batch.W; diagonal++ {
-			diagonalIndex := diagonal * nu
-			diagonalIndices[diagonal] = diagonalIndex
+			for diagonal := 0; diagonal < batch.W; diagonal++ {
+				diagonalIndex := diagonal * nu
+				diagonalIndices[diagonal] = diagonalIndex
 
-			values := make([]float64, slots)
+				values := make([]float64, slots)
 
-			for position, geneIndex := range batch.GeneIndices {
-				variantCount :=
-					dataParams.Genes[geneIndex].VariantCount
-				laneBase := position * h
-				gamma := localGtG[position]
+				for position, geneIndex := range batch.GeneIndices {
+					variantCount :=
+						dataParams.Genes[geneIndex].VariantCount
+					laneBase := position * h
+					gamma := localGtG[position]
 
-				if gamma == nil {
-					continue
-				}
-
-				for row := 0; row < variantCount; row++ {
-					column := (row + diagonal) % batch.W
-					if column >= variantCount {
+					if gamma == nil {
 						continue
 					}
 
-					for lane := 0; lane < h; lane++ {
-						slot := row*nu + laneBase + lane
-						values[slot] = gamma.At(row, column)
+					for row := 0; row < variantCount; row++ {
+						column := (row + diagonal) % batch.W
+						if column >= variantCount {
+							continue
+						}
+
+						for lane := 0; lane < h; lane++ {
+							slot := row*nu + laneBase + lane
+							values[slot] = gamma.At(row, column)
+						}
 					}
 				}
+
+				diagonals[diagonalIndex] = values
 			}
 
-			diagonals[diagonalIndex] = values
-		}
+			transformParameters := lintrans.Parameters{
+				DiagonalsIndexList: diagonalIndices,
+				LevelQ:             inputLevel,
+				LevelP:             heParams.Params.MaxLevelP(),
+				Scale: heParams.Params.GetOptimalScalingFactor(
+					heParams.Params.DefaultScale(),
+					heParams.Params.DefaultScale(),
+					inputLevel,
+				),
+				LogDimensions:             heParams.Params.LogMaxDimensions(),
+				LogBabyStepGiantStepRatio: 0,
+			}
 
-		transformParameters := lintrans.Parameters{
-			DiagonalsIndexList: diagonalIndices,
-			LevelQ:             inputLevel,
-			LevelP:             heParams.Params.MaxLevelP(),
-			Scale: heParams.Params.GetOptimalScalingFactor(
-				heParams.Params.DefaultScale(),
-				heParams.Params.DefaultScale(),
-				inputLevel,
-			),
-			LogDimensions:             heParams.Params.LogMaxDimensions(),
-			LogBabyStepGiantStepRatio: 0,
-		}
-
-		transform := lintrans.NewTransformation(
-			heParams.Params,
-			transformParameters,
-		)
-		if err := heParams.WithEncoder(
-			func(encoder *ckks.Encoder) error {
-				return lintrans.Encode(
-					encoder,
-					diagonals,
-					transform,
-				)
-			},
-		); err != nil {
-			panic(err)
+			*transform = lintrans.NewTransformation(
+				heParams.Params,
+				transformParameters,
+			)
+			if err := heParams.WithEncoder(
+				func(encoder *ckks.Encoder) error {
+					return lintrans.Encode(
+						encoder,
+						diagonals,
+						*transform,
+					)
+				},
+			); err != nil {
+				panic(err)
+			}
 		}
 
 		localResult := make(
@@ -943,7 +962,7 @@ func ApplyGtG(
 					result, err :=
 						linearEvaluator.EvaluateNew(
 							ciphertext,
-							transform,
+							*transform,
 						)
 					if err != nil {
 						return err
@@ -1080,6 +1099,25 @@ func PublicGtGAction(
 		rightMatrix,
 		rhsCount,
 	)
+}
+
+// newPublicGtGAction owns scratch for one batch and one MPC lane only.
+func newPublicGtGAction(
+	mpcObj *mpc.MPC, heParams *securecrypto.CryptoParams,
+	dataParams DataParams, cryptoParams CryptoParams, batch GeneBatch,
+	localGtG []*mat.Dense,
+) func([]mpc_core.RMat, int) []mpc_core.RMat {
+	if batch.W <= cryptoParams.R {
+		pooledGtG := sharePooledGtG(mpcObj, dataParams, batch, localGtG)
+		return func(right []mpc_core.RMat, _ int) []mpc_core.RMat {
+			return multiplyPooledGtG(mpcObj, dataParams, batch, pooledGtG, right)
+		}
+	}
+	var transform lintrans.LinearTransformation
+	return func(right []mpc_core.RMat, columns int) []mpc_core.RMat {
+		return applyGtG(mpcObj, heParams, dataParams, cryptoParams, batch,
+			localGtG, right, columns, &transform)
+	}
 }
 
 func ComputeGeneBatchKernelStatistics(
@@ -1403,10 +1441,8 @@ func ComputeKernelTraces(
 	// Hutchinson rhsCount = 2*R + 2*C + 1.
 	// Exact mode ignores rhsCount because its widths are gene-specific.
 	done := observe("first_gtg_action")
-	firstGtgAction := PublicGtGAction(
-		mpcObj, heParams, dataParams, cryptoParams, batch, localGtG, firstRight,
-		2*cryptoParams.R+2*covariateCount+1,
-	)
+	gtgAction := newPublicGtGAction(mpcObj, heParams, dataParams, cryptoParams, batch, localGtG)
+	firstGtgAction := gtgAction(firstRight, 2*cryptoParams.R+2*covariateCount+1)
 	done()
 
 	// 6. Split the first action and compute kProbe and basisAction.
@@ -1469,10 +1505,7 @@ func ComputeKernelTraces(
 	}
 
 	done = observe("second_gtg_action")
-	secondGtgAction := PublicGtGAction(
-		mpcObj, heParams, dataParams, cryptoParams, batch,
-		localGtG, weightedKProbe, cryptoParams.R,
-	)
+	secondGtgAction := gtgAction(weightedKProbe, cryptoParams.R)
 	done()
 
 	kSquaredProbe := make([]mpc_core.RMat, geneCount)

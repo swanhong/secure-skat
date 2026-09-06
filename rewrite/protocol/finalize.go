@@ -52,16 +52,16 @@ func Finalize(
 		work func(workerMPC *mpc.MPC, start, end int),
 	) {
 		workerCount := len(mpcObjects)
-		if workerCount > outputLength {
-			workerCount = outputLength
+		if workerCount > geneCount {
+			workerCount = geneCount
 		}
 
 		var workers sync.WaitGroup
 		workers.Add(workerCount)
 
 		for lane := 0; lane < workerCount; lane++ {
-			start := lane * outputLength / workerCount
-			end := (lane + 1) * outputLength / workerCount
+			start := lane * geneCount / workerCount
+			end := (lane + 1) * geneCount / workerCount
 
 			go func(lane, start, end int) {
 				defer workers.Done()
@@ -89,11 +89,8 @@ func Finalize(
 	alphaByGene := mpc_core.InitRVec(rtype.Zero(), outputLength)
 	scoreQuadratic := mpc_core.InitRVec(rtype.Zero(), outputLength)
 	burdenLinear := mpc_core.InitRVec(rtype.Zero(), outputLength)
-	variance := mpc_core.InitRVec(rtype.Zero(), outputLength)
 	invS1 := mpc_core.InitRVec(rtype.Zero(), outputLength)
 	s1 := mpc_core.InitRVec(rtype.Zero(), outputLength)
-	s2 := mpc_core.InitRVec(rtype.Zero(), outputLength)
-	s3 := mpc_core.InitRVec(rtype.Zero(), outputLength)
 
 	for gene := 0; gene < geneCount; gene++ {
 		for phenotype := 0; phenotype < phenotypeCount; phenotype++ {
@@ -108,10 +105,7 @@ func Finalize(
 				gvL[gene][phenotype],
 			)
 
-			variance[index] = geneV[gene].Copy()
 			invS1[index] = geneInvS1[gene].Copy()
-			s2[index] = geneS2[gene].Copy()
-			s3[index] = geneS3[gene].Copy()
 		}
 	}
 	if mpcObj.GetPid() == mpcObj.GetHubPid() {
@@ -132,19 +126,19 @@ func Finalize(
 
 	runChunks(func(workerMPC *mpc.MPC, start, end int) {
 		sqrtBurdenQuadratic, _ := workerMPC.SqrtAndSqrtInverse(
-			burdenQuadratic[start:end],
+			burdenQuadratic[start*phenotypeCount:end*phenotypeCount],
 			false,
 		)
 		_, invSqrtVariance := workerMPC.SqrtAndSqrtInverse(
-			variance[start:end],
+			geneV[start:end],
 			false,
 		)
 		chunk := multiply(
 			workerMPC,
 			sqrtBurdenQuadratic,
-			invSqrtVariance,
+			repeatGeneValues(invSqrtVariance, phenotypeCount),
 		)
-		copy(b[start:end], chunk)
+		copy(b[start*phenotypeCount:end*phenotypeCount], chunk)
 	})
 	done()
 
@@ -153,14 +147,15 @@ func Finalize(
 	z = mpc_core.InitRVec(rtype.Zero(), outputLength)
 
 	runChunks(func(workerMPC *mpc.MPC, start, end int) {
-		chunk := WilsonHilferty(
+		chunk := wilsonHilferty(
 			workerMPC,
-			scoreQuadratic[start:end],
-			s1[start:end],
-			s2[start:end],
-			s3[start:end],
+			scoreQuadratic[start*phenotypeCount:end*phenotypeCount],
+			s1[start*phenotypeCount:end*phenotypeCount],
+			geneS2[start:end],
+			geneS3[start:end],
+			phenotypeCount,
 		)
-		copy(z[start:end], chunk)
+		copy(z[start*phenotypeCount:end*phenotypeCount], chunk)
 	})
 	done()
 	return b, z
@@ -170,7 +165,28 @@ func WilsonHilferty(
 	mpcObj *mpc.MPC,
 	qStatistic, s1, s2, s3 mpc_core.RVec,
 ) mpc_core.RVec {
+	return wilsonHilferty(mpcObj, qStatistic, s1, s2, s3, 1)
+}
+
+// repeatGeneValues expands gene shares into the existing gene-major phenotype order.
+func repeatGeneValues(values mpc_core.RVec, phenotypeCount int) mpc_core.RVec {
+	result := make(mpc_core.RVec, len(values)*phenotypeCount)
+	for gene, value := range values {
+		for phenotype := 0; phenotype < phenotypeCount; phenotype++ {
+			result[gene*phenotypeCount+phenotype] = value.Copy()
+		}
+	}
+	return result
+}
+
+func wilsonHilferty(
+	mpcObj *mpc.MPC,
+	qStatistic, s1, s2, s3 mpc_core.RVec,
+	phenotypeCount int,
+) mpc_core.RVec {
 	/*
+		s2 and s3 contain one value per gene; qStatistic and s1 use gene-major phenotype order.
+
 		Compute the Wilson-Hilferty pivot:
 
 		gamma = S3 / S2^(3/2)
@@ -193,8 +209,8 @@ func WilsonHilferty(
 		return mpcObj.TruncVec(product, dataBits, fracBits)
 	}
 
-	publicVector := func(value float64) mpc_core.RVec {
-		result := mpc_core.InitRVec(rtype.Zero(), len(s2))
+	publicVector := func(value float64, length int) mpc_core.RVec {
+		result := mpc_core.InitRVec(rtype.Zero(), length)
 		if mpcObj.GetPid() == mpcObj.GetHubPid() {
 			result.AddScalar(rtype.FromFloat64(value, fracBits))
 		}
@@ -213,11 +229,8 @@ func WilsonHilferty(
 	valid := mpcObj.SSMultElemVec(s2Positive, s3Positive)
 	valid = mpcObj.SSMultElemVec(valid, s2BelowCeil)
 
-	publicZero := publicVector(0)
-	publicOne := publicVector(1)
+	publicOne := publicVector(1, len(s2))
 
-	qStatistic = mux(mpcObj, valid, qStatistic, publicZero)
-	s1 = mux(mpcObj, valid, s1, publicZero)
 	s2 = mux(mpcObj, valid, s2, publicOne)
 	s3 = mux(mpcObj, valid, s3, publicOne)
 
@@ -228,7 +241,21 @@ func WilsonHilferty(
 	gamma = multiply(gamma, invSqrtS2)
 	gamma = multiply(gamma, invSqrtS2)
 
-	// 2. Compute argument = 1 + (Q - S1) * gamma / sqrt(S2).
+	// These values depend only on the gene, so compute them before expanding phenotypes.
+	// 2. Compute eta = 2 * gamma^2 / 9.
+	eta := multiply(gamma, gamma)
+	eta.MulScalar(rtype.FromFloat64(2.0/9.0, fracBits))
+	eta = mpcObj.TruncVec(eta, dataBits, fracBits)
+
+	_, invSqrtEta := mpcObj.SqrtAndSqrtInverse(eta, false)
+	for _, values := range []*mpc_core.RVec{&valid, &invSqrtS2, &gamma, &eta, &invSqrtEta} {
+		*values = repeatGeneValues(*values, phenotypeCount)
+	}
+	publicZero := publicVector(0, len(qStatistic))
+	qStatistic = mux(mpcObj, valid, qStatistic, publicZero)
+	s1 = mux(mpcObj, valid, s1, publicZero)
+
+	// 3. Compute argument = 1 + (Q - S1) * gamma / sqrt(S2).
 	qMinusS1 := qStatistic.Copy()
 	qMinusS1.Sub(s1)
 
@@ -238,11 +265,6 @@ func WilsonHilferty(
 	if mpcObj.GetPid() == mpcObj.GetHubPid() {
 		argument.AddScalar(rtype.FromFloat64(1, fracBits))
 	}
-
-	// 3. Compute eta = 2 * gamma^2 / 9.
-	eta := multiply(gamma, gamma)
-	eta.MulScalar(rtype.FromFloat64(2.0/9.0, fracBits))
-	eta = mpcObj.TruncVec(eta, dataBits, fracBits)
 
 	// 4. Compute z = (cbrt(argument) - 1 + eta) / sqrt(eta).
 	root := SecureCubeRoot(mpcObj, argument)
@@ -257,9 +279,8 @@ func WilsonHilferty(
 
 	// 5. Return z = candidateZ if valid, else -9
 	// if z=-9, then final p-value will be 1
-	_, invSqrtEta := mpcObj.SqrtAndSqrtInverse(eta, false)
 	candidateZ := multiply(numerator, invSqrtEta)
-	return mux(mpcObj, valid, candidateZ, publicVector(-9))
+	return mux(mpcObj, valid, candidateZ, publicVector(-9, len(qStatistic)))
 }
 
 func SecureCubeRoot(
