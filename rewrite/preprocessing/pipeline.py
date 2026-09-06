@@ -168,15 +168,8 @@ def build_blocks(
 def assign_roles(
         gene_variants: Sequence[GeneVariants],
         role_seed: int=42,
+        shared_rate: float=0.6,
 ) -> tuple[GenePlan, ...]:
-    """Assign roles to variants for each gene.
-
-    Args:
-        gene_variants: A sequence of GeneVariants objects.
-        role_seed: Random seed for role assignment.
-    Returns:
-        A tuple of GenePlan objects, one for each gene in gene_variants.
-    """
     rng = random.Random(role_seed)
     plans = []
 
@@ -184,9 +177,10 @@ def assign_roles(
         shuffled = list(gene_group.variants)
         rng.shuffle(shuffled)
 
-        shared_count = round(0.6 * len(shuffled))
-        public_only_count = round(0.2 * len(shuffled))
-        public_only_end = shared_count + public_only_count
+        shared_count = round(shared_rate * len(shuffled))
+        public_only_end = shared_count + round(
+            (1 - shared_rate) / 2 * len(shuffled)
+        )
 
         role_by_variant = {}
 
@@ -414,11 +408,13 @@ def prepare_blocks(
         rows_b: PhenoCovRows,
         role_seed: int,
         out_dir: Path,
+        shared_rate: float=0.6,
         extractor: GenotypeExtractor = plink_extract,
 ) -> Path:
     plans = assign_roles(
         gene_variants=gene_variants,
         role_seed=role_seed,
+        shared_rate=shared_rate,
     )
 
     (

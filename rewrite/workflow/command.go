@@ -82,6 +82,7 @@ func runPrepareCommand(args []string) error {
 	fmt.Println("Running secure-rvas::prepare")
 	fmt.Printf("Read configuration from %s\n", *configDirectory)
 	fmt.Printf("Saved configuration to %s/config\n", config.RunDir)
+	fmt.Printf("Shared variant rate: %g\n", config.SharedRate)
 
 	return Prepare(config)
 }

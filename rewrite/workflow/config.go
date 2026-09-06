@@ -38,9 +38,10 @@ type Config struct {
 	Masks             []string `toml:"masks"`
 	MaxMAF            *float64 `toml:"max_maf"`
 
-	SamplesPerCohort int64 `toml:"samples_per_cohort"`
-	SampleSeed       int64 `toml:"sample_seed"`
-	RoleSeed         int64 `toml:"role_seed"`
+	SamplesPerCohort int64   `toml:"samples_per_cohort"`
+	SampleSeed       int64   `toml:"sample_seed"`
+	RoleSeed         int64   `toml:"role_seed"`
+	SharedRate       float64 `toml:"shared_rate"`
 
 	CKKS           string `toml:"ckks"`
 	MpcNumThreads  int    `toml:"mpc_num_threads"`
@@ -73,7 +74,7 @@ type GeneSelection struct {
 }
 
 func loadConfig(directory string, filenames ...string) (*Config, error) {
-	config := new(Config)
+	config := &Config{SharedRate: 0.6}
 	for _, filename := range filenames {
 		path := filepath.Join(directory, filename)
 		if _, err := toml.DecodeFile(path, config); err != nil {
@@ -127,6 +128,9 @@ func validateGlobalConfig(config *Config) error {
 func validatePrepareConfig(config *Config) error {
 	if err := validateGlobalConfig(config); err != nil {
 		return err
+	}
+	if config.SharedRate < 0 || config.SharedRate > 1 {
+		return fmt.Errorf("shared_rate must be between 0 and 1")
 	}
 	return requireStrings(
 		"run_dir", config.RunDir,

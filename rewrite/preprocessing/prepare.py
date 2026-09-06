@@ -64,6 +64,7 @@ class PrepareRequest:
     samples_per_cohort: int
     sample_seed: int
     role_seed: int
+    shared_rate: float
 
     gene_selection: GeneSelectionRequest
 
@@ -240,6 +241,7 @@ def prepare_chromosomes(
                 rows_a=rows_a,
                 rows_b=rows_b,
                 role_seed=request.role_seed,
+                shared_rate=request.shared_rate,
                 out_dir=(
                     request.run_dir
                     / "prepared"
@@ -291,6 +293,7 @@ def read_prepare_request(
         samples_per_cohort=payload["samples_per_cohort"],
         sample_seed=payload["sample_seed"],
         role_seed=payload["role_seed"],
+        shared_rate=payload["shared_rate"],
         gene_selection=GeneSelectionRequest(
             mode=gene_selection["mode"],
             per_chromosome=gene_selection["per_chromosome"],
