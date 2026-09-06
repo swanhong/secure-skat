@@ -1,7 +1,10 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import Mock
 
-from .model import GeneRef, GeneVariants, VariantRef
-from .pipeline import assign_roles
+from .model import GeneRef, GeneVariants, PhenoCovRows, VariantRef
+from .pipeline import assign_roles, prepare_blocks
 
 
 class AssignRolesTest(unittest.TestCase):
@@ -29,6 +32,18 @@ class AssignRolesTest(unittest.TestCase):
         for seed in (1, 999):
             plans = assign_roles(groups, role_seed=seed, shared_rate=1.0)
             self.assertEqual(tuple(plan.variant_roles for plan in plans), expected)
+
+    def test_prepare_blocks_skips_completed_output(self):
+        with TemporaryDirectory() as directory:
+            out_dir = Path(directory)
+            (out_dir / "pos.txt").touch()
+            extractor = Mock(side_effect=AssertionError("extractor called"))
+            rows = PhenoCovRows((), (), ())
+
+            result = prepare_blocks(Path("unused"), (), rows, rows, 42, out_dir, extractor=extractor)
+
+            self.assertEqual(result, out_dir)
+            extractor.assert_not_called()
 
 
 if __name__ == "__main__":

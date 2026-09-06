@@ -411,6 +411,10 @@ def prepare_blocks(
         shared_rate: float=0.6,
         extractor: GenotypeExtractor = plink_extract,
 ) -> Path:
+    if (out_dir / "pos.txt").is_file():
+        print("Skipping completed output:", out_dir)
+        return out_dir
+
     plans = assign_roles(
         gene_variants=gene_variants,
         role_seed=role_seed,
