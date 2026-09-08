@@ -1,18 +1,10 @@
 .local/*
-*.txt
 *.log
 *.bin
 vendor/
-cache/*
 output/*
-out/*
 *.test
 /secure-rvas
-# Testing outputs and caches
-out/
-cache/
-test_stdout_*.txt
-*.skat.bin
 
 CLAUDE.md
 AGENTS.md
@@ -20,27 +12,11 @@ docs/*
 skills-lock.json
 .claude/*
 .agents/*
-test_data/*
 *.pyc
-out_*
-tmp/
+.DS_Store
 
 # VAT-derived annotation tables: the variant list alone is Controlled Tier (it reveals which
 # alleles exist in the AoU callset). The extraction code is public; its output never is.
 *_annotation.tsv
 
-rewrite/testdata/**
-!rewrite/testdata/1kgenome/
-!rewrite/testdata/1kgenome/utils.py
-!rewrite/testdata/1kgenome/prepare_1kgenome.py
-!rewrite/testdata/1kgenome/smoke_genes_21_22.tsv
-!rewrite/testdata/1kgenome/README.md
-!rewrite/testdata/aou/
-!rewrite/testdata/aou/prepare_aou.py
-!rewrite/testdata/aou/vat_simplify.py
-test_*.py
-*_test.py
-rewrite/preprocessing/*.md
-
-rewrite/protocol/*.md
-*_test.go
+/data/
