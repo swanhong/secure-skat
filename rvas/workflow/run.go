@@ -7,7 +7,7 @@ import (
 
 	mpc_core "github.com/hhcho/mpc-core"
 	"github.com/hhcho/sfgwas/mpc"
-	"github.com/hhcho/sfgwas/rewrite/protocol"
+	"github.com/hhcho/sfgwas/rvas/protocol"
 	"gonum.org/v1/gonum/mat"
 )
 

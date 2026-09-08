@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/hhcho/sfgwas/rewrite/workflow"
+	"github.com/hhcho/sfgwas/rvas/workflow"
 )
 
 func main() {

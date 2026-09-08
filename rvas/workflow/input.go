@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/hhcho/sfgwas/rewrite/protocol"
+	"github.com/hhcho/sfgwas/rvas/protocol"
 	"gonum.org/v1/gonum/mat"
 )
 

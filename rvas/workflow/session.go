@@ -7,7 +7,7 @@ import (
 	mpc_core "github.com/hhcho/mpc-core"
 	securecrypto "github.com/hhcho/sfgwas/crypto"
 	"github.com/hhcho/sfgwas/mpc"
-	"github.com/hhcho/sfgwas/rewrite/protocol"
+	"github.com/hhcho/sfgwas/rvas/protocol"
 	"github.com/tuneinsight/lattigo/v6/schemes/ckks"
 )
 
