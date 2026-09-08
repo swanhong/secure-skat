@@ -11,8 +11,8 @@ covariate_id_column = "research_id"
 covariate_column = "pca_features"
 ancestry_id_column = "research_id"
 ancestry_column = "ancestry_pred_other"
-masks = ["LoF=HC"]
-max_maf = 0.02
+masks = ["annotation=pLoF"]
+max_maf = 0.01
 samples_per_cohort = 0
 sample_seed = 42
 role_seed = 42

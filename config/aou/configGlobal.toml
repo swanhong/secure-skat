@@ -1,4 +1,4 @@
-run_dir = "output/aou-test"
+run_dir = "output/aou-all-split1-maf01"
 
 chromosomes = [
   1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
@@ -17,7 +17,7 @@ num_cov = 16
 ckks = "PN14QP436S45"
 mpc_num_threads = 8
 data_bits = 70
-fractional_bits = 30
+fractional_bits = 40
 probes = 50
 seed = 42
 

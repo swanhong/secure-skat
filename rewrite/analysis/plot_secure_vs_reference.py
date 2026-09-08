@@ -32,7 +32,7 @@ MANHATTAN_COMPARISONS = [
         "secure_burden_p",
         "Secure Burden",
         "r_burden_p",
-        "Reference Burden",
+        "Plain Burden",
     ),
     (
         "skat_liu",
@@ -40,7 +40,15 @@ MANHATTAN_COMPARISONS = [
         "secure_skat_wh_p",
         "Secure SKAT WH",
         "r_skat_liu_p",
-        "Reference SKAT Liu",
+        "Plain SKAT Liu",
+    ),
+    (
+        "skat_davies",
+        "SKAT",
+        "secure_skat_wh_p",
+        "Secure SKAT WH",
+        "r_skat_davies_p",
+        "Plain SKAT Davies",
     ),
 ]
 
@@ -220,6 +228,8 @@ def write_manhattan_plot(
         ),
         key=lambda item: item[:2],
     )
+    count, score = r_squared(rows, secure_column, reference_column)
+    score_text = "NA" if score is None else f"{score:.6f}"
     chromosome_indices = defaultdict(list)
     for index, (chromosome, _, _) in enumerate(positioned_rows):
         chromosome_indices[chromosome].append(index)
@@ -303,8 +313,10 @@ def write_manhattan_plot(
         fontsize=9,
     )
     axes[-1].set_xlabel("Gene order")
-    figure.suptitle(title)
-    figure.tight_layout(rect=(0, 0, 1, 0.97))
+    figure.suptitle(
+        f"{title}\nn={count}, $R^2$ (-log10 p)={score_text}",
+    )
+    figure.tight_layout(rect=(0, 0, 1, 0.94))
 
     lower = axes[0].get_ylim()[0]
     axes[0].set_ylim(lower, plot_peak + 0.15 * (plot_peak - lower))

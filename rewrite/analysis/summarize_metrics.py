@@ -437,6 +437,34 @@ def make_accuracy_table(comparisons: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=columns)
 
 
+def make_genomewide_r2_table(comparisons: pd.DataFrame) -> pd.DataFrame:
+    columns = ["Ancestry", "Phenotype", "Comparison", "#gene", "R^2"]
+    rows = []
+    if comparisons.empty:
+        return pd.DataFrame(columns=columns)
+
+    for (ancestry, index, name), group in comparisons.groupby(
+        ["ancestry", "phenotype_index", "phenotype_name"],
+        sort=False,
+    ):
+        records = group.to_dict("records")
+        for label, secure, reference, convergence in R2_COMPARISONS:
+            if convergence is not None:
+                continue
+            count, _, score, _ = comparison_r_squared(
+                records, secure, reference, convergence
+            )
+            rows.append([
+                ancestry,
+                f"{index}:{name}",
+                label,
+                count,
+                format_r_squared(score),
+            ])
+
+    return pd.DataFrame(rows, columns=columns)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
@@ -485,6 +513,7 @@ def main() -> None:
 
         accuracy = read_accuracy(comparison_specs)
         accuracy_table = make_accuracy_table(accuracy)
+        genomewide_r2_table = make_genomewide_r2_table(accuracy)
     except (OSError, ValueError, pd.errors.ParserError) as error:
         raise SystemExit(str(error)) from error
 
@@ -505,6 +534,15 @@ def main() -> None:
         print_table(
             accuracy_table,
             {"Ancestry", "Comparison", "Worst phenotype"},
+        )
+
+    print("\nAll-chromosome R^2 by phenotype on -log10(p)")
+    if genomewide_r2_table.empty:
+        print("Unavailable: no comparison CSV files were found.")
+    else:
+        print_table(
+            genomewide_r2_table,
+            {"Ancestry", "Phenotype", "Comparison"},
         )
 
 if __name__ == "__main__":

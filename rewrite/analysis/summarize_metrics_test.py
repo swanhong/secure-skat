@@ -2,7 +2,11 @@ import unittest
 
 import pandas as pd
 
-from summarize_metrics import make_accuracy_table, make_time_table
+from summarize_metrics import (
+    make_accuracy_table,
+    make_genomewide_r2_table,
+    make_time_table,
+)
 
 
 class TimingTableTest(unittest.TestCase):
@@ -78,6 +82,12 @@ class AccuracyTableTest(unittest.TestCase):
         self.assertEqual(davies["Worst phenotype"], "0:phenotype1")
         self.assertEqual(davies["Worst Chr"], "21")
         self.assertEqual(davies["Worst #gene (total(failed))"], "2(1)")
+
+        genomewide = make_genomewide_r2_table(pd.DataFrame(rows))
+        self.assertEqual(
+            genomewide[["Comparison", "#gene", "R^2"]].values.tolist(),
+            [["Burden", 4, "0.000000"], ["SKAT WH vs Liu", 4, "0.000000"]],
+        )
 
 
 if __name__ == "__main__":
