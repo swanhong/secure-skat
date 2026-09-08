@@ -7,8 +7,8 @@ Run commands from the repository root.
 ## Download and generate the test data
 
 ```bash
-source setup/env.sh
-python3 rewrite/testdata/1kgenome/prepare_1kgenome.py \
+source scripts/setup/env.sh
+python3 python/datasets/onekg/prepare_1kgenome.py \
   --config config/1kg \
   --num-pheno 2
 ```
@@ -18,7 +18,7 @@ The generator reads the chromosomes from `config/1kg/configGlobal.toml`. It down
 fixture under:
 
 ```text
-rewrite/testdata/1kgenome/generated/
+data/1kg/generated/
 ```
 
 Downloaded files are reused on later runs.
@@ -26,7 +26,7 @@ Downloaded files are reused on later runs.
 ## Run the complete workflow
 
 ```bash
-./run_1kg_workflow.sh
+./scripts/run_1kg_workflow.sh
 ```
 
 The workflow also runs the download/generation step automatically, followed by secure preprocessing, secure Burden/SKAT, the reference calculation, comparison, plots, and the metrics summary.

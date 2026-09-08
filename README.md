@@ -1,7 +1,7 @@
 # Secure RVAS
 
 Secure RVAS runs privacy-preserving Burden and SKAT rare-variant association tests.
-The local 1000 Genomes test workflow is documented separately in [`rewrite/testdata/1kgenome/README.md`](rewrite/testdata/1kgenome/README.md).
+The local 1000 Genomes test workflow is documented separately in [`python/datasets/onekg/README.md`](python/datasets/onekg/README.md).
 
 ## Initial setup
 
@@ -9,18 +9,18 @@ Run these commands once after a fresh clone in a Linux x86-64 environment:
 
 ```bash
 cd "$HOME/secure-skat"
-bash setup/install.sh
-source setup/env.sh
+bash scripts/setup/install.sh
+source scripts/setup/env.sh
 go mod vendor
 ```
 
-`setup/install.sh` installs PLINK 2 at `$HOME/plink2` and R::SKAT under `$HOME/R/library`. `go mod vendor` is required because every Go command in this repository uses `-mod=vendor`, while `vendor/` is not stored in Git.
+`scripts/setup/install.sh` installs PLINK 2 at `$HOME/plink2` and R::SKAT under `$HOME/R/library`. `go mod vendor` is required because every Go command in this repository uses `-mod=vendor`, while `vendor/` is not stored in Git.
 
 In each new terminal, load the installed paths before running individual commands:
 
 ```bash
 cd secure-skat
-source setup/env.sh
+source scripts/setup/env.sh
 ```
 
 ## Configure the AoU run
@@ -61,7 +61,7 @@ Python command.
 
 ```bash
 cd "$HOME/secure-skat"
-source setup/env.sh
+source scripts/setup/env.sh
 
 billing_project="${GOOGLE_PROJECT:-${GOOGLE_CLOUD_PROJECT:-}}"
 if [[ -z "$billing_project" ]]; then
@@ -80,7 +80,7 @@ for chromosome in {1..22}; do
 
   gsutil -u "$billing_project" ls "$pvar_uri" || break
 
-  python3 rewrite/testdata/aou/vat_simplify.py \
+  python3 python/datasets/aou/vat_simplify.py \
     --chromosome "$chromosome" \
     --pvar <(gsutil -u "$billing_project" cat "$pvar_uri") \
     --output "$output_path" || break
@@ -110,7 +110,7 @@ The simplifier applies the following deterministic contract:
 After Step 0 has produced every configured chromosome annotation:
 
 ```bash
-./run_aou_workflow.sh
+./scripts/run_aou_workflow.sh
 ```
 
 The script performs the following stages:
@@ -137,7 +137,7 @@ script replaces the configured `run_dir` before creating new secure inputs.
 To select another configuration or the R::SKAT reference engine:
 
 ```bash
-CONFIG_PATH=config/aou REFERENCE_ENGINE=r ./run_aou_workflow.sh
+CONFIG_PATH=config/aou REFERENCE_ENGINE=r ./scripts/run_aou_workflow.sh
 ```
 
 ### Detached execution and monitoring
@@ -146,7 +146,7 @@ Use a date-and-time log path and print it before detaching:
 
 ```bash
 log_path="run-aou-$(date +'%m%d-%H%M').log"
-nohup env PYTHONUNBUFFERED=1 ./run_aou_workflow.sh \
+nohup env PYTHONUNBUFFERED=1 ./scripts/run_aou_workflow.sh \
   > "$log_path" 2>&1 < /dev/null &
 echo $! > "${log_path%.log}.pid"
 echo "log: $log_path"
@@ -165,16 +165,16 @@ All commands below run from the repository root.
 ### 1. Localize and normalize AoU inputs
 
 ```bash
-source setup/env.sh
+source scripts/setup/env.sh
 
-python3 rewrite/testdata/aou/prepare_aou.py \
+python3 python/datasets/aou/prepare_aou.py \
   --config config/aou
 ```
 
 `prepare_aou.py` downloads missing PGEN/PVAR/PSAM, phenotype, and ancestry
 files for the chromosomes listed in `config/aou/configGlobal.toml`. Existing localized files are
 reused. It normalizes the Step 0 VAT output, computes minor allele frequency
-from `gnomad_af`, and writes inputs under `rewrite/testdata/aou/generated/`.
+from `gnomad_af`, and writes inputs under `data/aou/generated/`.
 
 ### 2. Preprocess secure inputs
 
@@ -226,9 +226,9 @@ multi-lane-only failure.
 ### 5. Run the reference
 
 ```bash
-source setup/env.sh
+source scripts/setup/env.sh
 
-python3 rewrite/analysis/run_reference.py \
+python3 python/analysis/run_reference.py \
   --config config/aou \
   --engine python
 ```
@@ -239,7 +239,7 @@ task parallelism and `REFERENCE_BLAS_THREADS` controls BLAS threads per task.
 ### 6. Compare results
 
 ```bash
-python3 rewrite/analysis/compare_secure_to_reference.py \
+python3 python/analysis/compare_secure_to_reference.py \
   --config config/aou
 ```
 
@@ -254,10 +254,10 @@ exclude only rows where R::SKAT reports `Is_Converged=0`.
 ### 7. Generate plots and summarize metrics
 
 ```bash
-python3 rewrite/analysis/plot_secure_vs_reference.py \
+python3 python/analysis/plot_secure_vs_reference.py \
   --config config/aou
 
-./summarize_metrics.sh config/aou
+./scripts/summarize_metrics.sh config/aou
 ```
 
 
@@ -286,25 +286,15 @@ reconstruct wall-clock time.
 ```text
 crypto/                         Lattigo v6 MHE backend
 mpc/                            Network and MPC backend
-rewrite/preprocessing/          A/B preprocessing
-rewrite/protocol/               Secure Burden/SKAT protocol
-rewrite/workflow/               secure-rvas orchestration
-rewrite/analysis/               Reference, comparison, and plotting
-rewrite/testdata/aou/            AoU localization and VAT tools
-rewrite/testdata/1kgenome/       Local public-data test workflow
-config/aou/                      AoU prepare/global/local configurations
-config/1kg/                      Local 1000 Genomes configurations
+rvas/protocol/                  Secure Burden/SKAT protocol
+rvas/workflow/                  secure-rvas orchestration
+python/preprocessing/           A/B preprocessing
+python/analysis/                Reference, comparison, and plotting
+python/datasets/aou/            AoU localization and VAT tools
+python/datasets/onekg/          Local public-data preparation
+config/aou/                     AoU prepare/global/local configurations
+config/1kg/                     Local 1000 Genomes configurations
+scripts/                        Workflow, metrics, and setup scripts
+data/                           Generated inputs and prepared caches (not tracked)
+output/                         Run results (not tracked)
 ```
-
-## Development principles
-
-- Use `-mod=vendor` for every Go build, test, and run command.
-- `rewrite/protocol/` directly reuses primitives from `crypto/` and `mpc/`.
-- Secure protocol computation remains separate from workflow orchestration and
-  reference analysis.
-- Do not commit AoU Controlled Tier inputs or VAT-derived outputs.
-
-## License and attribution
-
-The MHE and MPC backend is derived from the Lattigo v6-based SF-GWAS
-implementation. See [`LICENSE`](LICENSE) for licensing information.
