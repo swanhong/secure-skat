@@ -449,8 +449,6 @@ def make_genomewide_r2_table(comparisons: pd.DataFrame) -> pd.DataFrame:
     ):
         records = group.to_dict("records")
         for label, secure, reference, convergence in R2_COMPARISONS:
-            if convergence is not None:
-                continue
             count, _, score, _ = comparison_r_squared(
                 records, secure, reference, convergence
             )

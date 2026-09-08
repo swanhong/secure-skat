@@ -86,7 +86,11 @@ class AccuracyTableTest(unittest.TestCase):
         genomewide = make_genomewide_r2_table(pd.DataFrame(rows))
         self.assertEqual(
             genomewide[["Comparison", "#gene", "R^2"]].values.tolist(),
-            [["Burden", 4, "0.000000"], ["SKAT WH vs Liu", 4, "0.000000"]],
+            [
+                ["Burden", 4, "0.000000"],
+                ["SKAT WH vs Liu", 4, "0.000000"],
+                ["SKAT WH vs Davies+fallback", 4, "0.000000"],
+            ],
         )
 
 

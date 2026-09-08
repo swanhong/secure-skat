@@ -24,6 +24,12 @@ SCATTER_COMPARISONS = [
         "secure_skat_wh_p",
         "r_skat_liu_p",
     ),
+    (
+        "skat_davies",
+        "SKAT WH vs Reference Davies (Liu fallback)",
+        "secure_skat_wh_p",
+        "r_skat_davies_p",
+    ),
 ]
 MANHATTAN_COMPARISONS = [
     (
@@ -48,7 +54,7 @@ MANHATTAN_COMPARISONS = [
         "secure_skat_wh_p",
         "Secure SKAT WH",
         "r_skat_davies_p",
-        "Plain SKAT Davies",
+        "Plain SKAT Davies+fallback",
     ),
 ]
 
