@@ -353,7 +353,7 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path(__file__).resolve().parent / "generated",
+        default=Path(__file__).resolve().parents[3] / "data" / "aou" / "generated",
     )
     parser.add_argument("--genotype", default=DEFAULT_GENOTYPE)
     parser.add_argument("--phenotype", default=DEFAULT_PHENOTYPE)

@@ -154,7 +154,7 @@ def main() -> None:
 
     if args.num_pheno < 1:
         raise ValueError("num-pheno must be at least 1")
-    prepare_1kgenome(Path(__file__).resolve().parent, args)
+    prepare_1kgenome(Path(__file__).resolve().parents[3] / "data" / "1kg", args)
 
 
 if __name__ == "__main__":
