@@ -140,7 +140,7 @@ func Prepare(config *Config) error {
 	command := exec.Command(
 		"python3",
 		"-m",
-		"rewrite.preprocessing.prepare",
+		"python.preprocessing.prepare",
 	)
 	command.Stdin = bytes.NewReader(payload)
 	command.Stdout = os.Stdout
