@@ -31,6 +31,8 @@ type Config struct {
 	PhenotypeIDColumn string   `toml:"phenotype_id_column"`
 	CovariateIDColumn string   `toml:"covariate_id_column"`
 	CovariateColumn   string   `toml:"covariate_column"`
+	CovariateColumns  []string `toml:"covariate_columns"`
+	IsCovSingleColumn bool     `toml:"is_cov_single_column"`
 	AncestryIDColumn  string   `toml:"ancestry_id_column"`
 	AncestryColumn    string   `toml:"ancestry_column"`
 	PhenotypeColumns  []string `toml:"phenotype_columns"`
@@ -75,7 +77,7 @@ type GeneSelection struct {
 }
 
 func loadConfig(directory string, filenames ...string) (*Config, error) {
-	config := &Config{SharedRate: 0.6}
+	config := &Config{SharedRate: 0.6, IsCovSingleColumn: true}
 	for _, filename := range filenames {
 		path := filepath.Join(directory, filename)
 		if _, err := toml.DecodeFile(path, config); err != nil {
@@ -144,6 +146,12 @@ func validatePrepareConfig(config *Config) error {
 	if config.SharedRate < 0 || config.SharedRate > 1 {
 		return fmt.Errorf("shared_rate must be between 0 and 1")
 	}
+	if config.IsCovSingleColumn && strings.TrimSpace(config.CovariateColumn) == "" {
+		return fmt.Errorf("covariate_column is required")
+	}
+	if !config.IsCovSingleColumn && len(config.CovariateColumns) != config.NumCov {
+		return fmt.Errorf("covariate_columns must contain num_cov columns")
+	}
 	return requireStrings(
 		"run_dir", config.RunDir,
 		"genotype", config.Genotype,
@@ -154,7 +162,6 @@ func validatePrepareConfig(config *Config) error {
 		"ancestry", config.Ancestry,
 		"phenotype_id_column", config.PhenotypeIDColumn,
 		"covariate_id_column", config.CovariateIDColumn,
-		"covariate_column", config.CovariateColumn,
 		"ancestry_id_column", config.AncestryIDColumn,
 		"ancestry_column", config.AncestryColumn,
 		"plink2_bin", config.Plink2Bin,

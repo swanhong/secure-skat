@@ -227,6 +227,9 @@ def load_sample_inputs(
     phenotype_columns: tuple[str, ...],
     covariate_id_column: str,
     covariate_column: str,
+    covariate_columns: tuple[str, ...],
+    is_cov_single_column: bool,
+    ancestry_groups: tuple[str, ...],
     ancestry_id_column: str,
     ancestry_column: str,
     num_cov: int,
@@ -235,6 +238,22 @@ def load_sample_inputs(
     print(f"  phenotype: {phenotype_path}")
     print(f"  covariate: {covariate_path}")
     print(f"  ancestry: {ancestry_path}")
+    covariates = {}
+    for ancestry in ancestry_groups if "{anc}" in str(covariate_path) else ("",):
+        path = Path(str(covariate_path).replace("{anc}", ancestry.lower()))
+        if is_cov_single_column:
+            table = read_covariate_table(
+                path, "\t", covariate_id_column, covariate_column, num_cov,
+            )
+        else:
+            rows = read_phenotype_table(
+                path, "\t", covariate_id_column, covariate_columns,
+            )
+            table = {
+                sample_id: tuple(values[column] for column in covariate_columns)
+                for sample_id, values in rows.items()
+            }
+        covariates.update(table)
     return SampleInputs(
         phenotypes=read_phenotype_table(
             phenotype_path,
@@ -242,13 +261,7 @@ def load_sample_inputs(
             id_column=phenotype_id_column,
             value_columns=phenotype_columns,
         ),
-        covariates=read_covariate_table(
-            covariate_path,
-            delimiter="\t",
-            id_column=covariate_id_column,
-            covariate_column=covariate_column,
-            num_cov=num_cov,
-        ),
+        covariates=covariates,
         ancestries=read_ancestry_table(
             ancestry_path,
             delimiter="\t",

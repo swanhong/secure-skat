@@ -33,6 +33,8 @@ type prepareRequest struct {
 	PhenotypeIDColumn string            `json:"phenotype_id_column"`
 	CovariateIDColumn string            `json:"covariate_id_column"`
 	CovariateColumn   string            `json:"covariate_column"`
+	CovariateColumns  []string          `json:"covariate_columns"`
+	IsCovSingleColumn bool              `json:"is_cov_single_column"`
 	AncestryIDColumn  string            `json:"ancestry_id_column"`
 	AncestryColumn    string            `json:"ancestry_column"`
 	PhenotypeColumns  []string          `json:"phenotype_columns"`
@@ -70,6 +72,8 @@ func prepareRequestFromConfig(config *Config) prepareRequest {
 		PhenotypeIDColumn: config.PhenotypeIDColumn,
 		CovariateIDColumn: config.CovariateIDColumn,
 		CovariateColumn:   config.CovariateColumn,
+		CovariateColumns:  config.CovariateColumns,
+		IsCovSingleColumn: config.IsCovSingleColumn,
 		AncestryIDColumn:  config.AncestryIDColumn,
 		AncestryColumn:    config.AncestryColumn,
 		PhenotypeColumns:  config.PhenotypeColumns,

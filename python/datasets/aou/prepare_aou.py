@@ -22,6 +22,7 @@ DEFAULT_ANCESTRY = (
     "gs://vwb-aou-datasets-controlled/v9/wgs/short_read/"
     "snpindel/aux/ancestry/ancestry_preds.tsv"
 )
+DEFAULT_COVARIATE_ROOT = "gs://gwas-data-wgs-wb-jaunty-blueberry-8679/v9_intermediate_results/pca_aou"
 REQUIRED_ANNOTATION_COLUMNS = (
     "variant_key",
     "gene_id",
@@ -328,6 +329,11 @@ def prepare_aou(args: argparse.Namespace) -> None:
     copy_input(
         args.ancestry,
         output_dir / "ancestry_preds.tsv",
+        project,
+    )
+    copy_gcs_files(
+        tuple(f"{DEFAULT_COVARIATE_ROOT}/{ancestry}_pca.eigenvec" for ancestry in ("ALL", "afr", "amr", "eur")),
+        output_dir / "covariate",
         project,
     )
 

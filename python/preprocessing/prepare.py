@@ -56,6 +56,8 @@ class PrepareRequest:
     phenotype_id_column: str
     covariate_id_column: str
     covariate_column: str
+    covariate_columns: tuple[str, ...]
+    is_cov_single_column: bool
     ancestry_id_column: str
     ancestry_column: str
     phenotype_columns: tuple[str, ...]
@@ -154,8 +156,9 @@ def prepared_cache_config(request: PrepareRequest, chromosome: int, ancestry: st
     }
     for name in ("annotation", "gene_panel"):
         config[name] = source(chromosome_path(getattr(request, name), chromosome))
-    for name in ("phenotype", "covariate", "ancestry"):
+    for name in ("phenotype", "ancestry"):
         config[name] = source(getattr(request, name))
+    config["covariate"] = source(Path(str(request.covariate).replace("{anc}", ancestry.lower())))
     selection = config["gene_selection"]
     selection["path"] = source(selection["path"]) if selection["mode"] == "file" else None
     config["mask"] = {
@@ -222,6 +225,9 @@ def prepare_chromosomes(
         phenotype_columns=request.phenotype_columns,
         covariate_id_column=request.covariate_id_column,
         covariate_column=request.covariate_column,
+        covariate_columns=request.covariate_columns,
+        is_cov_single_column=request.is_cov_single_column,
+        ancestry_groups=request.ancestries,
         ancestry_id_column=request.ancestry_id_column,
         ancestry_column=request.ancestry_column,
         num_cov=request.num_cov,
@@ -347,6 +353,8 @@ def read_prepare_request(
         phenotype_id_column=payload["phenotype_id_column"],
         covariate_id_column=payload["covariate_id_column"],
         covariate_column=payload["covariate_column"],
+        covariate_columns=tuple(payload["covariate_columns"] or ()),
+        is_cov_single_column=payload["is_cov_single_column"],
         ancestry_id_column=payload["ancestry_id_column"],
         ancestry_column=payload["ancestry_column"],
         phenotype_columns=tuple(payload["phenotype_columns"]),
