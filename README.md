@@ -146,7 +146,11 @@ Use a date-and-time log path and print it before detaching:
 
 ```bash
 log_path="run-aou-$(date +'%m%d-%H%M').log"
-nohup env PYTHONUNBUFFERED=1 ./scripts/run_aou_workflow.sh \
+nohup /usr/bin/time -v env \
+  PYTHONUNBUFFERED=1 \
+  CONFIG_PATH=config/aou \
+  REFERENCE_ENGINE=r \
+  ./scripts/run_aou_workflow.sh \
   > "$log_path" 2>&1 < /dev/null &
 echo $! > "${log_path%.log}.pid"
 echo "log: $log_path"
