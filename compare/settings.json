@@ -1,0 +1,22 @@
+{
+  "ancestry": "EUR",
+  "annotation": "pLoF",
+  "max_maf": 0.01,
+  "allxall_root": "gs://vwb-aou-allxall/v8/ht/gene",
+  "phenotypes": [
+    {"name": "LDL", "column": "LDLC_final_mgdl_6sd_masked", "axa_id": "3028288"},
+    {"name": "HDL", "column": "HDLC_mgdl_6sd_masked", "axa_id": "3007070"},
+    {"name": "TC", "column": "TotChol_corrected_mvp_explicit_duration_mgdl_6sd_masked", "axa_id": "3027114"},
+    {"name": "TG", "column": "ln_Trig_6sd_masked", "axa_id": "3022192"},
+    {"name": "nonHDL", "column": "nonHDL_corrected_mvp_explicit_duration_mgdl_6sd_masked", "axa_id": "3044491"}
+  ],
+  "pilot_genes": [
+    {"gene_id": "ENSG00000084674", "symbol": "APOB", "chromosome": 2},
+    {"gene_id": "ENSG00000169174", "symbol": "PCSK9", "chromosome": 1},
+    {"gene_id": "ENSG00000130164", "symbol": "LDLR", "chromosome": 19},
+    {"gene_id": "ENSG00000172667", "symbol": "ZMAT3", "chromosome": 3},
+    {"gene_id": "ENSG00000244734", "symbol": "HBB", "chromosome": 11},
+    {"gene_id": "ENSG00000115758", "symbol": "ODC1", "chromosome": 2},
+    {"gene_id": "ENSG00000143248", "symbol": "RGS5", "chromosome": 1}
+  ]
+}
