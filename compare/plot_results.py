@@ -84,6 +84,8 @@ def scatter(ax, rows, qc, test, name, threshold, label_top):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--r-dir", type=Path, required=True, help="Directory containing comparison.csv")
+    parser.add_argument("--mode", choices=("all", "pilot", "both"), default="all",
+                        help="Plot all input genes, selected pilot genes, or both")
     parser.add_argument("--threshold", type=float, help="Label genes with either p below this cutoff; no default")
     parser.add_argument("--label-top", type=int, help="Optional maximum number of significant labels per panel")
     args = parser.parse_args()
@@ -98,30 +100,36 @@ def main():
     index_rows(rows, key)
     qc = index_rows(read_rows(directory / "comparison_qc.csv"), key)
     phenotypes = config["phenotypes"]
-    for test in ("burden", "skat"):
-        nrows = math.ceil(len(phenotypes) / 3)
-        fig, axes = plt.subplots(nrows, 3, figsize=(15, 5 * nrows), squeeze=False,
-                                 constrained_layout=True)
-        panels = list(axes.flat)
-        for ax, pheno in zip(panels, phenotypes):
-            selected = [r for r in rows if r["axa_phenotype_id"] == pheno["axa_id"]]
-            scatter(ax, selected, qc, test, pheno["name"], args.threshold, args.label_top)
-        for ax in panels[len(phenotypes):]:
-            ax.set_axis_off()
-        handles = [Line2D([], [], color="#2f5597", marker="o", ls="", label="R status OK"),
-                   Line2D([], [], color="#777777", marker="x", ls="", label="R flagged / QC unknown"),
-                   Line2D([], [], color="#c00000", ls="--", label="Equal p-values")]
-        if args.threshold is not None:
-            handles.append(Line2D([], [], color="#a6a6a6", ls=":", label=f"p = {args.threshold:.3g}"))
-        fig.legend(handles=handles, loc="lower right", bbox_to_anchor=(0.98, 0.14),
-                   frameon=False, fontsize=10)
-        title = "Burden" if test == "burden" else "SKAT"
-        fig.suptitle(f"{title} · {config['ancestry']} · {config['annotation']} · "
-                     f"MAF {config['max_maf']:.1%}", fontsize=16)
-        path = directory / f"{test}_scatter.png"
-        fig.savefig(path, dpi=180)
-        plt.close(fig)
-        print(f"Saved: {path}")
+    pilot_ids = {g["gene_id"] for g in config["pilot_genes"]}
+    modes = ("all", "pilot") if args.mode == "both" else (args.mode,)
+    for mode in modes:
+        view_rows = rows if mode == "all" else [r for r in rows if r["gene_id"] in pilot_ids]
+        view_title = "All input genes" if mode == "all" else "Selected genes"
+        print(f"Plot mode: {mode}; gene-phenotype rows: {len(view_rows)}")
+        for test in ("burden", "skat"):
+            nrows = math.ceil(len(phenotypes) / 3)
+            fig, axes = plt.subplots(nrows, 3, figsize=(15, 5 * nrows), squeeze=False,
+                                     constrained_layout=True)
+            panels = list(axes.flat)
+            for ax, pheno in zip(panels, phenotypes):
+                selected = [r for r in view_rows if r["axa_phenotype_id"] == pheno["axa_id"]]
+                scatter(ax, selected, qc, test, pheno["name"], args.threshold, args.label_top)
+            for ax in panels[len(phenotypes):]:
+                ax.set_axis_off()
+            handles = [Line2D([], [], color="#2f5597", marker="o", ls="", label="R status OK"),
+                       Line2D([], [], color="#777777", marker="x", ls="", label="R flagged / QC unknown"),
+                       Line2D([], [], color="#c00000", ls="--", label="Equal p-values")]
+            if args.threshold is not None:
+                handles.append(Line2D([], [], color="#a6a6a6", ls=":", label=f"p = {args.threshold:.3g}"))
+            fig.legend(handles=handles, loc="lower right", bbox_to_anchor=(0.98, 0.14),
+                       frameon=False, fontsize=10)
+            title = "Burden" if test == "burden" else "SKAT"
+            fig.suptitle(f"{title} · {view_title} · {config['ancestry']} · {config['annotation']} · "
+                         f"MAF {config['max_maf']:.1%}", fontsize=16)
+            path = directory / f"{test}_scatter_{mode}.png"
+            fig.savefig(path, dpi=180)
+            plt.close(fig)
+            print(f"Saved: {path}")
 
 
 if __name__ == "__main__":
