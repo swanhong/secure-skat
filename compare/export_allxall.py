@@ -35,7 +35,8 @@ def main():
                            (ht.max_MAF == config["max_maf"]))
             if ht.take(1) == []:
                 raise ValueError(f"No matching rows: {uri}")
-            ht = ht.key_by().select(
+            ht = ht.key_by()
+            ht = ht.select(
                 "gene_id", "gene_symbol", "annotation", "max_MAF",
                 phenotype=phenotype["name"], axa_phenotype_id=phenotype["axa_id"],
                 ancestry=config["ancestry"], release="v8", source_uri=uri,
