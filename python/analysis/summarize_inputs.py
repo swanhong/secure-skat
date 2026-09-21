@@ -35,7 +35,7 @@ def write_summaries(config: dict, output_dir: Path) -> None:
         variant_rows = csv.writer(variant_file)
         variant_rows.writerow(("variant_id", "gene", "N", "MAC", "MAF"))
         gene_rows = csv.writer(gene_file)
-        gene_rows.writerow(("gene", "N_variants", "N_samples", "total_MAC"))
+        gene_rows.writerow(("chromosome", "gene", "N_variants", "nz_samples", "total_MAC", "N_variants_MAC_gt_0"))
 
         for chromosome in chromosomes:
             print(f"Summarizing chromosome {chromosome}", flush=True)
@@ -83,12 +83,12 @@ def write_summaries(config: dict, output_dir: Path) -> None:
                         if gene in genes:
                             raise ValueError(f"duplicate gene ID: {gene}")
                         genes.add(gene)
-                        observed_any = np.zeros(len(sample_ids), dtype=bool)
+                        nonzero_any = np.zeros(len(sample_ids), dtype=bool)
                         total_mac = 0
                         for key in keys:
                             reader.read_dosages(variant_indices[key], dosages)
                             observed = dosages != -9
-                            observed_any |= observed
+                            nonzero_any |= dosages > 0
                             if key not in variant_stats:
                                 if not np.isin(dosages, (-9, 0, 1, 2)).all():
                                     raise ValueError(f"{key}: fractional dosages are unsupported")
@@ -100,7 +100,8 @@ def write_summaries(config: dict, output_dir: Path) -> None:
                             variant_rows.writerow((key, gene, n, mac, maf))
                             total_mac += mac
                         gene_rows.writerow((
-                            gene, len(keys), int(np.count_nonzero(observed_any)), total_mac,
+                            chromosome, gene, len(keys), int(np.count_nonzero(nonzero_any)), total_mac,
+                            sum(variant_stats[key][1] > 0 for key in keys),
                         ))
 
     with (output_dir / "dataset_summary.csv").open("w", newline="") as dataset_file:

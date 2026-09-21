@@ -20,9 +20,12 @@ The configured autosomes must contain the same ordered sample IDs.
 - Variant columns: `variant_id,gene,N,MAC,MAF`. `N` counts nonmissing calls;
   `MAC = min(ALT_count, 2*N - ALT_count)` and `MAF = MAC/(2*N)`. All-missing
   variants have `N=0,MAC=0` and an empty MAF. Missing genotypes are not imputed.
-- Gene columns: `gene,N_variants,N_samples,total_MAC`. `N_samples` counts samples
-  with at least one observed call among the retained gene variants, including
-  `0/0`. Genes with no retained variants are omitted; MAC=0 variants are retained.
+- Gene columns: `chromosome,gene,N_variants,nz_samples,total_MAC,N_variants_MAC_gt_0`.
+  `chromosome` is 1-22. `nz_samples` counts each sample with at least one ALT allele
+  among the retained gene variants once; missing calls and `0/0` do not count.
+  `N_variants_MAC_gt_0` counts retained variants with MAC > 0. Genes with no
+  retained variants are omitted; MAC=0 variants still count toward `N_variants`.
+  ALT carriers can exist even when MAC=0 if all observed calls are `1/1`.
 - Dataset columns: `N_samples_total,N_variants_total,N_genes_total,MAC_total`.
   Samples are counted once across chromosomes. Variant count and MAC are counted
   once per variant ID, even when a variant maps to multiple genes.
