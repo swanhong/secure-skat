@@ -30,10 +30,9 @@ def main() -> None:
     axis.set_axisbelow(True)
     axis.grid(axis="y", alpha=0.15)
     figure.suptitle(f"Variant summary ({len(mac):,} unique variants)")
-    for extension in (".png", ".pdf"):
-        output = args.csv.with_suffix(extension)
-        figure.savefig(output, dpi=200)
-        print(f"Saved {output}")
+    output = args.csv.with_suffix(".png")
+    figure.savefig(output, dpi=200)
+    print(f"Saved {output}")
     plt.close(figure)
 
 

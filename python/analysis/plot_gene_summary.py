@@ -34,10 +34,9 @@ def main() -> None:
         axis.grid(axis="y", alpha=0.15)
     axes[0].set_ylabel("Number of genes")
     figure.suptitle(f"Gene summary ({len(rows):,} genes)")
-    for extension in (".png", ".pdf"):
-        output = args.csv.with_suffix(extension)
-        figure.savefig(output, dpi=200)
-        print(f"Saved {output}")
+    output = args.csv.with_suffix(".png")
+    figure.savefig(output, dpi=200)
+    print(f"Saved {output}")
     plt.close(figure)
 
 
