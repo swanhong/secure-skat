@@ -1,0 +1,24 @@
+prepared_cache_dir = "data/mvp/prepared"
+genotype = "data/mvp/generated/genotype/chr{chromosome}"
+gene_panel = "data/mvp/generated/gene_panel/chr{chromosome}.tsv"
+annotation = "data/mvp/generated/annotation/chr{chromosome}.tsv"
+phenotype = "data/mvp/generated/phenotype.csv"
+covariate = "data/mvp/generated/covariate/{anc}_pca.eigenvec"
+ancestry = "data/mvp/generated/ancestry_preds.tsv"
+
+phenotype_id_column = "IID"
+covariate_id_column = "IID"
+is_cov_single_column = false
+covariate_columns = ["PC1", "PC2", "PC3", "PC4", "PC5", "PC6", "PC7", "PC8", "PC9", "PC10"]
+ancestry_id_column = "IID"
+ancestry_column = "ancestry"
+masks = ["annotation=pLoF"]
+max_maf = 0.01
+samples_per_cohort = 0
+sample_seed = 42
+role_seed = 42
+shared_rate = 0.6
+plink2_bin = "plink2"
+
+[gene_selection]
+mode = "all"

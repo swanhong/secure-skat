@@ -19,6 +19,7 @@ const (
 type Config struct {
 	RunDir           string `toml:"run_dir"`
 	PreparedCacheDir string `toml:"prepared_cache_dir"`
+	PublicVarList    string `toml:"public_var_list"`
 	Chromosomes      []int  `toml:"chromosomes"`
 
 	Genotype   string `toml:"genotype"`

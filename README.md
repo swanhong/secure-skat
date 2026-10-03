@@ -186,6 +186,83 @@ go run -mod=vendor secure-rvas.go prepare \
 
 Omit `--clear` when the configured `run_dir` must not be replaced.
 
+### Prepare MVP and AoU separately
+
+Use Party 1 for MVP (A) and Party 2 for AoU (B):
+
+```bash
+# MVP: use an MVP configuration directory pointing at normalized local inputs.
+go run -mod=vendor secure-rvas.go prepare --config config/mvp --party 1
+
+# Copy MVP's public variant lists and set public_var_list in config/aou/configPrepare.toml.
+go run -mod=vendor secure-rvas.go prepare --config config/aou --party 2
+```
+
+For B, set the input list path in `configPrepare.toml`:
+
+```toml
+public_var_list = "/path/mvp-public/chr{chromosome}/public_variants.tsv"
+```
+
+`--public-var-list PATH` overrides this setting. Party 2 requires a list;
+other prepare modes require no list setting. Each site needs only the global,
+prepare, and its own local party configuration. Party 0 needs only the global
+and Party 0 local configuration. Generate matching keys once with all three
+configuration directories:
+
+```bash
+go run -mod=vendor secure-rvas.go keygen --config-party0 config/cp0 --config-party1 config/mvp --config-party2 config/aou
+```
+
+Start these commands concurrently on their corresponding sites:
+
+```bash
+go run -mod=vendor secure-rvas.go party --config config/cp0 --party 0
+go run -mod=vendor secure-rvas.go party --config config/mvp --party 1
+go run -mod=vendor secure-rvas.go party --config config/aou --party 2
+```
+
+The complete AoU workflow and single-directory examples below describe the
+original split/local layout. They require all three Local files and a prepare
+configuration without `public_var_list`; use the separate-site commands above
+with the current `config/aou`.
+The single-directory `keygen --config` and `run --config` commands continue to
+support local configurations containing all three parties.
+
+`config/mvp` is the Party 1 template. Update its input paths and column names
+for normalized MVP data. `config/aou` is Party 2, and `config/cp0` is Party 0.
+The AoU configuration receives copied MVP lists under `data/mvp/public/chrN/`;
+change `public_var_list` to their actual location.
+Both sites must use inputs on the same genome build with biallelic variant IDs
+in `chromosome:position:REF:ALT` form and corresponding gene IDs. Genome-build
+alignment is handled during data preparation. REF/ALT and coordinates are
+checked against PVAR during extraction.
+
+With `--party 1`, all selected variants become A's public columns and only `A/`
+is generated. The ordered list is saved at
+`<run_dir>/prepared/<ancestry>/chr<chromosome>/public_variants.tsv`, beside
+`block_sizes.txt`. No combined list is created at the run root. It includes empty genes so both
+sites retain identical gene/block order.
+
+With `--party 2`, the list fixes gene order and public column order. Public
+variants present in the local PGEN are read regardless of local annotation/MAF
+selection; absent public variants are zero-filled. Locally selected variants
+outside the public list become `B/private`, within the genes listed by MVP.
+Only `B/` is generated. A present variant that cannot be extracted as biallelic
+causes an error rather than silently becoming an absent variant. Missing calls
+retain the existing preprocessing behavior (zero dosage).
+
+For either site, `samples_per_cohort = 0` uses all eligible local samples;
+a positive value caps that site's sample count. `shared_rate` and random variant
+roles are unused. Party 2 takes gene selection from the public list, and both
+sites must configure the same chromosomes. Prepared-cache keys include the
+party and public-list content. Use separate run directories for the two sites
+and keep the received list outside generated directories when using `--clear`.
+`--public-var-list` accepts a `{chromosome}` path template or one combined TSV.
+The public list has no sample-specific fields, so one ancestry's lists can be shared.
+Lists inside `prepared/` are removed with that directory by `--clear`.
+Omitting `--party` retains the original A/B split mode.
+
 ### 3. Generate shared PRG keys
 
 ```bash

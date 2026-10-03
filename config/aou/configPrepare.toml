@@ -1,3 +1,4 @@
+public_var_list = "data/mvp/public/chr{chromosome}/public_variants.tsv"
 prepared_cache_dir = "data/aou/prepared"
 genotype = "data/aou/generated/genotype/exome.chr{chromosome}"
 gene_panel = "data/aou/generated/gene_panel/chr{chromosome}.tsv"

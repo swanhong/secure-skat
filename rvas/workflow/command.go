@@ -60,8 +60,8 @@ func runPrepareCommand(args []string) error {
 		)
 	}
 
-	if *party < 0 || *party > 2 || (*party == 2) != (*publicVarList != "") {
-		return fmt.Errorf("prepare: --party must be 0, 1, or 2; --public-var-list is required only for Party 2")
+	if *party < 0 || *party > 2 {
+		return fmt.Errorf("prepare: --party must be 0, 1, or 2")
 	}
 
 	config, err := LoadPrepareConfig(*configDirectory)
@@ -69,9 +69,18 @@ func runPrepareCommand(args []string) error {
 		return err
 	}
 
+	listPath := config.PublicVarList
+	flags.Visit(func(option *flag.Flag) {
+		if option.Name == "public-var-list" {
+			listPath = *publicVarList
+		}
+	})
+	if (*party == 2) != (listPath != "") {
+		return fmt.Errorf("prepare: public_var_list or --public-var-list is required only for Party 2")
+	}
 	if *party == 2 {
 		for _, chromosome := range config.Chromosomes {
-			path := strings.ReplaceAll(*publicVarList, "{chromosome}", strconv.Itoa(chromosome))
+			path := strings.ReplaceAll(listPath, "{chromosome}", strconv.Itoa(chromosome))
 			if _, err := os.Stat(path); err != nil {
 				return fmt.Errorf("public variant list: %w", err)
 			}
@@ -105,7 +114,7 @@ func runPrepareCommand(args []string) error {
 		fmt.Printf("Preparing Party %d only\n", *party)
 	}
 
-	return prepareSite(config, *party, *publicVarList)
+	return prepareSite(config, *party, listPath)
 }
 
 func runRunCommand(args []string) error {

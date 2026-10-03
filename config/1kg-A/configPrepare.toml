@@ -12,12 +12,14 @@ covariate_column = "pca_features"
 ancestry_id_column = "research_id"
 ancestry_column = "ancestry_pred_other"
 masks = ["LoF=HC"]
-max_maf = 0.01
-samples_per_cohort = 0
+max_maf = 0.001
+samples_per_cohort = 100
 sample_seed = 42
 role_seed = 42
 shared_rate = 0.7
 plink2_bin = "plink2"
 
 [gene_selection]
-mode = "all"
+mode = "random"
+per_chromosome = 3
+seed = 42

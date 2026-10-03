@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"time"
 
@@ -24,24 +25,50 @@ var partyKeyNames = [][]string{
 func runKeygenCommand(args []string) error {
 	flags := flag.NewFlagSet("secure-rvas keygen", flag.ContinueOnError)
 	configDirectory := flags.String("config", "config/1kg", "configuration directory")
+	partyDirectories := []*string{
+		flags.String("config-party0", "", "Party 0 configuration directory"),
+		flags.String("config-party1", "", "Party 1 configuration directory"),
+		flags.String("config-party2", "", "Party 2 configuration directory"),
+	}
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse keygen arguments: %w", err)
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("unexpected keygen arguments: %v", flags.Args())
 	}
-	return GenerateSharedPRGKeys(*configDirectory)
+	separate := false
+	for _, directory := range partyDirectories {
+		separate = separate || *directory != ""
+	}
+	if !separate {
+		return GenerateSharedPRGKeys(*configDirectory)
+	}
+	directories := make([]string, partyCount)
+	for partyID, directory := range partyDirectories {
+		if *directory == "" {
+			return fmt.Errorf("keygen: config-party0, config-party1, and config-party2 are required together")
+		}
+		directories[partyID] = *directory
+	}
+	return generateSharedPRGKeys(directories)
 }
 
 func GenerateSharedPRGKeys(configDirectory string) error {
+	return generateSharedPRGKeys([]string{configDirectory, configDirectory, configDirectory})
+}
+
+func generateSharedPRGKeys(directories []string) error {
 	configs := make([]*Config, partyCount)
 	for partyID := range configs {
-		config, err := LoadPartyConfig(configDirectory, partyID)
+		config, err := LoadPartyConfig(directories[partyID], partyID)
 		if err != nil {
 			return err
 		}
 		if err := validatePartyConfig(config, partyID); err != nil {
 			return fmt.Errorf("validate party %d config: %w", partyID, err)
+		}
+		if partyID > 0 && !slices.Equal(config.Ancestries, configs[0].Ancestries) {
+			return fmt.Errorf("keygen: party %d ancestries must match Party 0", partyID)
 		}
 		configs[partyID] = config
 	}
@@ -70,6 +97,7 @@ func GenerateSharedPRGKeys(configDirectory string) error {
 					return err
 				}
 			}
+			fmt.Printf("Party %d: key is generated in %q\n", partyID, directory)
 		}
 	}
 	return nil
