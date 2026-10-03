@@ -3,6 +3,9 @@ package workflow
 import (
 	"flag"
 	"fmt"
+	"os"
+	"strconv"
+	"strings"
 )
 
 func Main(args []string) error {
@@ -45,6 +48,8 @@ func runPrepareCommand(args []string) error {
 		"remove generated outputs before preprocessing",
 	)
 
+	party := flags.Int("party", 0, "prepare one site: 1=A, 2=B; 0=split A/B")
+	publicVarList := flags.String("public-var-list", "", "public variant list from Party 1 (required for Party 2)")
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse prepare arguments: %w", err)
 	}
@@ -55,11 +60,23 @@ func runPrepareCommand(args []string) error {
 		)
 	}
 
+	if *party < 0 || *party > 2 || (*party == 2) != (*publicVarList != "") {
+		return fmt.Errorf("prepare: --party must be 0, 1, or 2; --public-var-list is required only for Party 2")
+	}
+
 	config, err := LoadPrepareConfig(*configDirectory)
 	if err != nil {
 		return err
 	}
 
+	if *party == 2 {
+		for _, chromosome := range config.Chromosomes {
+			path := strings.ReplaceAll(*publicVarList, "{chromosome}", strconv.Itoa(chromosome))
+			if _, err := os.Stat(path); err != nil {
+				return fmt.Errorf("public variant list: %w", err)
+			}
+		}
+	}
 	if err := validatePrepareConfig(config); err != nil {
 		return fmt.Errorf("validate config: %w", err)
 	}
@@ -82,9 +99,13 @@ func runPrepareCommand(args []string) error {
 	fmt.Println("Running secure-rvas::prepare")
 	fmt.Printf("Read configuration from %s\n", *configDirectory)
 	fmt.Printf("Saved configuration to %s/config\n", config.RunDir)
-	fmt.Printf("Shared variant rate: %g\n", config.SharedRate)
+	if *party == 0 {
+		fmt.Printf("Shared variant rate: %g\n", config.SharedRate)
+	} else {
+		fmt.Printf("Preparing Party %d only\n", *party)
+	}
 
-	return Prepare(config)
+	return prepareSite(config, *party, *publicVarList)
 }
 
 func runRunCommand(args []string) error {

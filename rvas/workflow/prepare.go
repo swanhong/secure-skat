@@ -18,6 +18,8 @@ type prepareGeneSelection struct {
 }
 
 type prepareRequest struct {
+	Party            int    `json:"party"`
+	PublicVarList    string `json:"public_var_list"`
 	RunDir           string `json:"run_dir"`
 	PreparedCacheDir string `json:"prepared_cache_dir"`
 	Chromosomes      []int  `json:"chromosomes"`
@@ -134,9 +136,14 @@ func clearGeneratedOutputs(runDir string) error {
 }
 
 func Prepare(config *Config) error {
-	payload, err := json.Marshal(
-		prepareRequestFromConfig(config),
-	)
+	return prepareSite(config, 0, "")
+}
+
+func prepareSite(config *Config, party int, publicVarList string) error {
+	request := prepareRequestFromConfig(config)
+	request.Party = party
+	request.PublicVarList = publicVarList
+	payload, err := json.Marshal(request)
 	if err != nil {
 		return fmt.Errorf("encode preprocessing request: %w", err)
 	}

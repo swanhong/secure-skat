@@ -46,6 +46,7 @@ def extract_genotypes(
         rows_b: PhenoCovRows,
         plans: Sequence[GenePlan],
         extractor: GenotypeExtractor,
+        filter_unavailable: bool = True,
 ) -> tuple[
     tuple[GenePlan, ...],
     np.ndarray,
@@ -53,7 +54,7 @@ def extract_genotypes(
     np.ndarray,
     dict[str, int],
 ]:
-    """Extract party-specific genotypes and filter unavailable variants."""
+    """Extract genotypes; disabling filtering preserves plans and requires active-site variants."""
 
     # from plan, collect variants to extract, and their roles
     keys_a = []
@@ -83,12 +84,24 @@ def extract_genotypes(
         geno_a, emitted_a = future_a.result()
         geno_b, emitted_b = future_b.result()
 
+    if not filter_unavailable:
+        for rows, requested, emitted in (
+            (rows_a, keys_a, emitted_a), (rows_b, keys_b, emitted_b),
+        ):
+            if rows.sample_ids and (
+                set(emitted) != set(requested) or len(emitted) != len(requested)
+            ):
+                raise ValueError("site extraction dropped or duplicated requested variants; check biallelic input")
+
     key_column_a = {
         key: column for column, key in enumerate(emitted_a)
     }
     key_column_b = {
         key: column for column, key in enumerate(emitted_b)
     }
+
+    if not filter_unavailable:
+        return tuple(plans), geno_a, key_column_a, geno_b, key_column_b
 
     emitted_a_set = set(emitted_a)
     emitted_b_set = set(emitted_b)
@@ -137,14 +150,13 @@ def build_blocks(
             if role == "private"
         ]
 
-        public_columns_a = [
-            key_column_a[variant.key] for variant, _ in public
-        ]
-        private_columns_b = [
-            key_column_b[variant.key] for variant in private
-        ]
+        if geno_a.shape[0] == 0:
+            public_a = np.zeros((0, len(public)), dtype=np.int8)
+        else:
+            public_columns_a = [key_column_a[variant.key] for variant, _ in public]
+            public_a = geno_a[:, public_columns_a].copy()
+        private_columns_b = [key_column_b[variant.key] for variant in private]
 
-        public_a = geno_a[:, public_columns_a].copy()
         public_b = np.zeros((geno_b.shape[0], len(public)), dtype=np.int8)
 
         for block_column, (variant, role) in enumerate(public):
@@ -314,6 +326,7 @@ def select_rows(
     phenotype_columns: Sequence[str],
     samples_per_cohort: int | Literal["all"],
     sample_seed: int=42,
+    party: int=0,
 ) -> tuple[PhenoCovRows, PhenoCovRows]:
     print("Selecting rows for cohorts")
     print("  ancestry:", ancestry)
@@ -362,7 +375,12 @@ def select_rows(
 
     random.Random(sample_seed).shuffle(eligible)
 
-    if samples_per_cohort == "all":
+    if party:
+        count = len(eligible) if samples_per_cohort == "all" else samples_per_cohort
+        if count <= 0 or len(eligible) < count:
+            raise ValueError(f"need {count} eligible samples, found {len(eligible)}")
+        n_a, n_b = (count, 0) if party == 1 else (0, count)
+    elif samples_per_cohort == "all":
         if len(eligible) < 2:
             raise ValueError(
                 f"need 2 eligible samples, found {len(eligible)}"

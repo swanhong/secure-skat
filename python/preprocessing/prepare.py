@@ -27,6 +27,7 @@ from .pipeline import (
 )
 from .plink import pgen_extract
 from .output import write_selected_genes
+from .site import prepare_site_blocks, read_public_var_list
 from .selection import (
     select_file_genes,
     select_random_gene_groups,
@@ -73,6 +74,8 @@ class PrepareRequest:
 
     gene_selection: GeneSelectionRequest
     prepared_cache_dir: Path | None = None
+    party: int = 0
+    public_var_list: Path | None = None
 
 
 def chromosome_path(
@@ -161,6 +164,11 @@ def prepared_cache_config(request: PrepareRequest, chromosome: int, ancestry: st
     config["covariate"] = source(Path(str(request.covariate).replace("{anc}", ancestry.lower())))
     selection = config["gene_selection"]
     selection["path"] = source(selection["path"]) if selection["mode"] == "file" else None
+    if request.party:
+        config["public_var_list"] = ({"sha256": hashlib.sha256(chromosome_path(str(request.public_var_list), chromosome).read_bytes()).hexdigest()}
+                                     if request.public_var_list else None)
+    else:
+        del config["party"], config["public_var_list"]
     config["mask"] = {
         column: sorted({values} if isinstance(values, str) else set(values))
         for column, values in request.mask.items()
@@ -213,6 +221,17 @@ def prepare_chromosomes(
     if not request.chromosomes:
         raise ValueError("at least one chromosome is required")
 
+    if request.party not in (0, 1, 2) or (request.party == 2) != (request.public_var_list is not None):
+        raise ValueError("party must be 0/1/2; public-var-list is required only for Party 2")
+    public_groups = ()
+    if request.party == 2:
+        paths = tuple(dict.fromkeys(chromosome_path(str(request.public_var_list), chromosome)
+                                    for chromosome in request.chromosomes))
+        public_groups = tuple(group for path in paths for group in read_public_var_list(path))
+        if len({group.gene.gene_id for group in public_groups}) != len(public_groups):
+            raise ValueError("duplicate gene across public variant lists")
+    if public_groups and {int(group.gene.chromosome) for group in public_groups} != set(request.chromosomes):
+        raise ValueError("public variant list chromosomes must match configured chromosomes")
     selected_genes_path = request.run_dir / "selected_genes.tsv"
 
     if extractor is None:
@@ -239,7 +258,7 @@ def prepare_chromosomes(
         samples_per_cohort = request.samples_per_cohort
 
     file_genes: tuple[GeneRef, ...] = ()
-    if request.gene_selection.mode == "file":
+    if request.gene_selection.mode == "file" and request.party != 2:
         if request.gene_selection.path is None:
             raise ValueError(
                 "gene selection path is required in file mode"
@@ -286,6 +305,7 @@ def prepare_chromosomes(
                     phenotype_columns=request.phenotype_columns,
                     samples_per_cohort=samples_per_cohort,
                     sample_seed=request.sample_seed,
+                    party=request.party,
                 )
         elif inputs.psam_ids != reference_psam_ids:
             raise ValueError(
@@ -293,14 +313,23 @@ def prepare_chromosomes(
                 f"{reference_chromosome} and chromosome {chromosome}"
             )
 
-        chromosome_groups = select_gene_groups(
-            request=request.gene_selection,
-            inputs=inputs,
-            chromosome=chromosome,
-            mask=request.mask,
-            max_maf=request.max_maf,
-            file_genes=file_genes,
-        )
+        chromosome_public = tuple(group for group in public_groups if group.gene.chromosome == str(chromosome))
+        if request.party == 2:
+            chromosome_groups = select_gene_variants(
+                gene_panel=tuple(group.gene for group in chromosome_public),
+                variants=inputs.variants, annotations=inputs.annotations,
+                annotation_columns=inputs.annotation_columns, chromosome=str(chromosome),
+                gene_selection="all", mask=request.mask, max_maf=request.max_maf,
+            )
+        else:
+            chromosome_groups = select_gene_groups(
+                request=request.gene_selection,
+                inputs=inputs,
+                chromosome=chromosome,
+                mask=request.mask,
+                max_maf=request.max_maf,
+                file_genes=file_genes,
+            )
         chromosome_genes = tuple(
             group.gene for group in chromosome_groups
         )
@@ -318,6 +347,13 @@ def prepare_chromosomes(
                 shared_rate=request.shared_rate,
                 extractor=extractor,
             )
+            if request.party:
+                build = partial(
+                    prepare_site_blocks, pgen_prefix=inputs.pgen_prefix,
+                    gene_variants=chromosome_groups, rows_a=rows_a, rows_b=rows_b,
+                    extractor=extractor, party=request.party,
+                    public_groups=chromosome_public, available_variants=inputs.variants,
+                )
             if request.prepared_cache_dir is not None:
                 prepare_cached_blocks(request, chromosome, ancestry, build)
             else:
@@ -341,6 +377,8 @@ def read_prepare_request(
 
     return PrepareRequest(
         run_dir=Path(payload["run_dir"]),
+        party=payload.get("party", 0),
+        public_var_list=Path(payload["public_var_list"]) if payload.get("public_var_list") else None,
         prepared_cache_dir=Path(payload["prepared_cache_dir"]) if payload.get("prepared_cache_dir") else None,
         chromosomes=tuple(payload["chromosomes"]),
         genotype=payload["genotype"],

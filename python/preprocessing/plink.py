@@ -33,7 +33,13 @@ def pgen_extract(
             key = pvar.get_variant_id(index).decode()
             if key not in wanted or pvar.get_allele_ct(index) != 2:
                 continue
-            if pvar.get_allele_code(index, 1).decode() != key.split(":", 3)[-1]:
+            fields = key.split(":", 3)
+            if (len(fields) != 4 or fields[0].removeprefix("chr") != pvar.get_variant_chrom(index).decode().removeprefix("chr")
+                    or fields[1] != str(pvar.get_variant_pos(index))):
+                raise ValueError(f"{key}: variant coordinates do not match PVAR")
+            if pvar.get_allele_code(index, 0).decode() != fields[2]:
+                raise ValueError(f"{key}: reference allele is not the key's REF")
+            if pvar.get_allele_code(index, 1).decode() != fields[-1]:
                 raise ValueError(f"{key}: counted allele is not the key's ALT")
             variant_indices.append(index)
             emitted_keys.append(key)
