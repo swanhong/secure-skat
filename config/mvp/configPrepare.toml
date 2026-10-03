@@ -14,11 +14,15 @@ ancestry_id_column = "IID"
 ancestry_column = "ancestry"
 masks = ["annotation=pLoF"]
 max_maf = 0.01
-samples_per_cohort = 0
+# samples_per_cohort = 0
+samples_per_cohort = 100
 sample_seed = 42
 role_seed = 42
 shared_rate = 0.6
 plink2_bin = "plink2"
 
 [gene_selection]
-mode = "all"
+# mode = "all"
+mode = "random"
+per_chromosome = 3
+seed = 42

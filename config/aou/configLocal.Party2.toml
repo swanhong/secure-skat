@@ -1,5 +1,6 @@
 shared_keys_path = "{run_dir}/secure/keys"
-local_num_threads = 8
+# local_num_threads = 8
+local_num_threads = 2
 
 genotype_dir = "{run_dir}/prepared/{ancestry}/chr{chromosome}/B/geno"
 private_genotype_dir = "{run_dir}/prepared/{ancestry}/chr{chromosome}/B/private"

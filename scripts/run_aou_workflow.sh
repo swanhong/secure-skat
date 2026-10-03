@@ -2,57 +2,50 @@
 
 set -euo pipefail
 
+cd "$(dirname "$0")/.."
 source scripts/setup/env.sh
 
-config_path="${CONFIG_PATH:-config/aou}"
+config_a="${CONFIG_A:-config/mvp}"
+config_b="${CONFIG_B:-config/aou}"
+config_0="${CONFIG_0:-config/cp0}"
 reference_engine="${REFERENCE_ENGINE:-python}"
-step_labels=()
-step_seconds=()
+log_dir="${LOG_DIR:-output/aou-logs}"
 
-run_step() {
-  local label="$1"
-  shift
-  echo "${label}"
-  local started_at="${SECONDS}"
-  "$@"
-  step_labels+=("${label}")
-  step_seconds+=("$((SECONDS - started_at))")
-}
+echo "[0/8] Prepare AoU chromosome inputs"
+python3 python/datasets/aou/prepare_aou.py --config "$config_b"
 
-run_step "[0/7] Prepare AoU chromosome inputs" \
-  python3 python/datasets/aou/prepare_aou.py \
-  --config "${config_path}"
+echo "[1/8] Prepare A and its public variant lists"
+go run -mod=vendor secure-rvas.go prepare --config "$config_a" --party 1
 
-run_step "[1/7] Prepare ancestry-specific secure inputs" \
-  go run -mod=vendor secure-rvas.go prepare \
-  --config "${config_path}"
+echo "[2/8] Prepare B using A's public variant lists"
+go run -mod=vendor secure-rvas.go prepare --config "$config_b" --party 2
 
-run_step "[2/7] Generate shared PRG keys" \
-  go run -mod=vendor secure-rvas.go keygen \
-  --config "${config_path}"
+echo "[3/8] Generate shared PRG keys"
+go run -mod=vendor secure-rvas.go keygen \
+  --config-party0 "$config_0" --config-party1 "$config_a" --config-party2 "$config_b"
 
-run_step "[3/7] Run secure Burden/SKAT" \
-  go run -mod=vendor secure-rvas.go run \
-  --config "${config_path}"
+echo "[4/8] Run secure Burden/SKAT; logs: $log_dir"
+mkdir -p "$log_dir"
+go run -mod=vendor secure-rvas.go party --config "$config_0" --party 0 > "$log_dir/party0.log" 2>&1 &
+pid_0=$!
+go run -mod=vendor secure-rvas.go party --config "$config_a" --party 1 > "$log_dir/party1.log" 2>&1 &
+pid_a=$!
+go run -mod=vendor secure-rvas.go party --config "$config_b" --party 2 > "$log_dir/party2.log" 2>&1 &
+pid_b=$!
+wait "$pid_0"
+wait "$pid_a"
+wait "$pid_b"
 
-run_step "[4/7] Run ancestry-specific ${reference_engine} reference" \
-  python3 python/analysis/run_reference.py \
-  --config "${config_path}" \
-  --engine "${reference_engine}"
+echo "[5/8] Run ancestry-specific $reference_engine reference"
+python3 python/analysis/run_reference.py --config "$config_a" --config-b "$config_b" --engine "$reference_engine"
 
-run_step "[5/7] Compare secure and reference results" \
-  python3 python/analysis/compare_secure_to_reference.py \
-  --config "${config_path}"
+echo "[6/8] Compare secure and reference results"
+python3 python/analysis/compare_secure_to_reference.py --config "$config_a"
 
-run_step "[6/7] Generate scatter and Manhattan plots" \
-  python3 python/analysis/plot_secure_vs_reference.py \
-  --config "${config_path}"
+echo "[7/8] Generate scatter and Manhattan plots"
+python3 python/analysis/plot_secure_vs_reference.py --config "$config_a"
 
-run_step "[7/7] Summarize metrics" \
-  ./scripts/summarize_metrics.sh "${config_path}"
+echo "[8/8] Summarize metrics"
+"${PYTHON_BIN:-python}" python/analysis/summarize_metrics.py --config "$config_a" --config-b "$config_b"
 
-echo "Secure RVAS AoU workflow completed"
-echo "Workflow timing summary"
-for index in "${!step_labels[@]}"; do
-  printf "  %-65s %d seconds\n" "${step_labels[index]}" "${step_seconds[index]}"
-done
+echo "Secure RVAS MVP/AoU workflow completed"

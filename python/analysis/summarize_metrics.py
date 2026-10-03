@@ -466,7 +466,8 @@ def make_genomewide_r2_table(comparisons: pd.DataFrame) -> pd.DataFrame:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--party-id", required=True)
+    parser.add_argument("--party-id", type=int, default=1)
+    parser.add_argument("--config-b", type=Path, help="B configuration directory for a combined A/B summary")
     return parser.parse_args()
 
 
@@ -474,25 +475,27 @@ def main() -> None:
     args = parse_args()
 
     try:
-        config = load_party_config(args.config, int(args.party_id))
+        if args.config_b is not None and args.party_id != 1:
+            raise ValueError("--config-b requires --party-id 1")
+        sites = [(args.config, args.party_id)]
+        if args.config_b is not None:
+            sites.append((args.config_b, 2))
+        summaries = []
+        for config_path, party_id in sites:
+            config = load_party_config(config_path, party_id)
+            configured_run_dir = str(config.get("run_dir", "")).strip()
+            if not configured_run_dir:
+                raise ValueError(f"run_dir is missing from {config_path}")
+            run_dir = Path(configured_run_dir)
+            metrics_dir = run_dir / "metrics"
+            metric_paths = sorted(metrics_dir.rglob(f"metrics_party{party_id}.csv"))
+            if not metric_paths:
+                raise ValueError(f"no metrics_party{party_id}.csv files found under {metrics_dir}")
+            metrics = read_metrics(metric_paths)
+            summaries.append((config_path, party_id, run_dir, make_time_table(metrics), make_comm_table(metrics)))
 
-        configured_run_dir = str(config.get("run_dir", "")).strip()
-        if not configured_run_dir:
-            raise ValueError(f"run_dir is missing from {args.config}")
-
-        run_dir = Path(configured_run_dir)
-        metrics_dir = run_dir / "metrics"
-        metric_paths = sorted(
-            metrics_dir.rglob(
-                f"metrics_party{args.party_id}.csv"
-            )
-        )
-        if not metric_paths:
-            raise ValueError(
-                f"no metrics_party{args.party_id}.csv files "
-                f"found under {metrics_dir}"
-            )
-
+        config = load_party_config(args.config, args.party_id)
+        run_dir = summaries[0][2]
         ancestries = [
             str(ancestry).strip().upper()
             for ancestry in config.get("ancestries", [])
@@ -505,10 +508,6 @@ def main() -> None:
             for ancestry in ancestries
         ]
 
-        metrics = read_metrics(metric_paths)
-        time_table = make_time_table(metrics)
-        comm_table = make_comm_table(metrics)
-
         accuracy = read_accuracy(comparison_specs)
         accuracy_table = make_accuracy_table(accuracy)
         genomewide_r2_table = make_genomewide_r2_table(accuracy)
@@ -516,14 +515,13 @@ def main() -> None:
         raise SystemExit(str(error)) from error
 
     print("Secure RVAS metrics summary")
-    print(f"Config: {args.config}")
-    print(f"Run directory: {run_dir}")
-
-    print(f"\nTiming summary (party{args.party_id})")
-    print_table(time_table, {"Ancestry"})
-
-    print(f"\nCommunication summary (party{args.party_id})")
-    print_table(comm_table, {"Ancestry", "Scope"})
+    for config_path, party_id, run_dir, time_table, comm_table in summaries:
+        print(f"\nConfig: {config_path}")
+        print(f"Run directory: {run_dir}")
+        print(f"\nTiming summary (party{party_id})")
+        print_table(time_table, {"Ancestry"})
+        print(f"\nCommunication summary (party{party_id})")
+        print_table(comm_table, {"Ancestry", "Scope"})
 
     print("\nR^2 summary on -log10(p)")
     if accuracy_table.empty:

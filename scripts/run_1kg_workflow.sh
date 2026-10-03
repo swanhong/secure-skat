@@ -46,7 +46,6 @@ echo "[7/8] Generate scatter and Manhattan plots"
 python3 python/analysis/plot_secure_vs_reference.py --config "$config_a"
 
 echo "[8/8] Summarize metrics"
-./scripts/summarize_metrics.sh "$config_a" 1
-./scripts/summarize_metrics.sh "$config_b" 2
+"${PYTHON_BIN:-python}" python/analysis/summarize_metrics.py --config "$config_a" --config-b "$config_b"
 
 echo "Secure RVAS 1KG workflow completed"
