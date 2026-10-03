@@ -1,6 +1,6 @@
 args <- commandArgs(trailingOnly = TRUE)
-if (length(args) != 1) {
-  stop("usage: Rscript compute_reference.R <preprocessed-dir>")
+if (!length(args) %in% c(1, 2)) {
+  stop("usage: Rscript compute_reference.R <preprocessed-dir> [preprocessed-dir-b]")
 }
 
 # 1. Locate and load the analysis modules.
@@ -16,7 +16,7 @@ source(file.path(script_dir, "load_preprocessed.R"))
 source(file.path(script_dir, "skat_reference.R"))
 
 # 2. Read the preprocessing output.
-input <- read_preprocessed_input(args[[1]])
+input <- read_preprocessed_input(args[[1]], if (length(args) == 2) args[[2]] else args[[1]])
 
 # 3. Compute Burden, SKAT-Davies, and SKAT-Liu.
 results <- run_skat_analysis(input)

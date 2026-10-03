@@ -2,45 +2,51 @@
 
 set -euo pipefail
 
+cd "$(dirname "$0")/.."
 source scripts/setup/env.sh
 
-config_path="${CONFIG_PATH:-config/1kg}"
+config_a="${CONFIG_A:-config/1kg-A}"
+config_b="${CONFIG_B:-config/1kg-B}"
+config_0="${CONFIG_0:-config/1kg-cp0}"
 reference_engine="${REFERENCE_ENGINE:-python}"
-prepare_args=(--config "${config_path}")
-# if [[ "${CLEAR_RUN_DIR:-0}" == "1" ]]; then
-#   prepare_args+=(--clear)
-# fi
+log_dir="${LOG_DIR:-output/1kg-logs}"
 
-echo "[0/7] Generate 1000 Genomes test data"
-python3 python/datasets/onekg/prepare_1kgenome.py \
-  --config "${config_path}" \
-  --num-pheno 2
+echo "[0/8] Generate 1000 Genomes test data"
+python3 python/datasets/onekg/prepare_1kgenome.py --config "$config_a" --num-pheno 2
 
-echo "[1/7] Prepare ancestry-specific secure inputs"
-go run -mod=vendor secure-rvas.go prepare "${prepare_args[@]}"
+echo "[1/8] Prepare A and its public variant lists"
+go run -mod=vendor secure-rvas.go prepare --config "$config_a" --party 1
 
-echo "[2/7] Generate shared PRG keys"
+echo "[2/8] Prepare B using A's public variant lists"
+go run -mod=vendor secure-rvas.go prepare --config "$config_b" --party 2
+
+echo "[3/8] Generate shared PRG keys"
 go run -mod=vendor secure-rvas.go keygen \
-  --config "${config_path}"
+  --config-party0 "$config_0" --config-party1 "$config_a" --config-party2 "$config_b"
 
-echo "[3/7] Run secure Burden/SKAT"
-go run -mod=vendor secure-rvas.go run \
-  --config "${config_path}"
+echo "[4/8] Run secure Burden/SKAT; logs: $log_dir"
+mkdir -p "$log_dir"
+go run -mod=vendor secure-rvas.go party --config "$config_0" --party 0 > "$log_dir/party0.log" 2>&1 &
+pid_0=$!
+go run -mod=vendor secure-rvas.go party --config "$config_a" --party 1 > "$log_dir/party1.log" 2>&1 &
+pid_a=$!
+go run -mod=vendor secure-rvas.go party --config "$config_b" --party 2 > "$log_dir/party2.log" 2>&1 &
+pid_b=$!
+wait "$pid_0"
+wait "$pid_a"
+wait "$pid_b"
 
-echo "[4/7] Run ancestry-specific ${reference_engine} reference"
-python3 python/analysis/run_reference.py \
-  --config "${config_path}" \
-  --engine "${reference_engine}"
+echo "[5/8] Run ancestry-specific $reference_engine reference"
+python3 python/analysis/run_reference.py --config "$config_a" --config-b "$config_b" --engine "$reference_engine"
 
-echo "[5/7] Compare secure and reference results"
-python3 python/analysis/compare_secure_to_reference.py \
-  --config "${config_path}"
+echo "[6/8] Compare secure and reference results"
+python3 python/analysis/compare_secure_to_reference.py --config "$config_a"
 
-echo "[6/7] Generate scatter and Manhattan plots"
-python3 python/analysis/plot_secure_vs_reference.py \
-  --config "${config_path}"
+echo "[7/8] Generate scatter and Manhattan plots"
+python3 python/analysis/plot_secure_vs_reference.py --config "$config_a"
 
-echo "[7/7] Summarize metrics"
-./scripts/summarize_metrics.sh "${config_path}"
+echo "[8/8] Summarize metrics"
+./scripts/summarize_metrics.sh "$config_a" 1
+./scripts/summarize_metrics.sh "$config_b" 2
 
 echo "Secure RVAS 1KG workflow completed"

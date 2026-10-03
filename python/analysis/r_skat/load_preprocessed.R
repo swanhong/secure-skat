@@ -34,13 +34,20 @@ read_dosage_matrix <- function(path, row_count, column_count = NULL) {
   )
 }
 
-read_preprocessed_input <- function(input_dir) {
-  input_dir <- normalizePath(input_dir, mustWork = TRUE)
+read_preprocessed_input <- function(input_dir_a, input_dir_b = input_dir_a) {
+  input_dir_a <- normalizePath(input_dir_a, mustWork = TRUE)
+
+  input_dir_b <- normalizePath(input_dir_b, mustWork = TRUE)
+  for (name in c("genes.txt", "block_sizes.txt", "public_variants.tsv")) {
+    if (input_dir_a != input_dir_b && !identical(
+      readLines(file.path(input_dir_a, name)), readLines(file.path(input_dir_b, name))
+    )) stop(sprintf("A/B input mismatch: %s", name))
+  }
 
   # 1. Read the ordered gene list and public variant counts.
-  genes <- readLines(file.path(input_dir, "genes.txt"))
+  genes <- readLines(file.path(input_dir_a, "genes.txt"))
   public_variant_counts <- scan(
-    file.path(input_dir, "block_sizes.txt"),
+    file.path(input_dir_a, "block_sizes.txt"),
     what = integer(),
     quiet = TRUE
   )
@@ -51,21 +58,22 @@ read_preprocessed_input <- function(input_dir) {
 
   # 2. Read cohort-local covariates and phenotypes.
   covariates_a <- read_text_matrix(
-    file.path(input_dir, "A", "cov.txt")
+    file.path(input_dir_a, "A", "cov.txt")
   )
   covariates_b <- read_text_matrix(
-    file.path(input_dir, "B", "cov.txt")
+    file.path(input_dir_b, "B", "cov.txt")
   )
   phenotypes_a <- read_text_matrix(
-    file.path(input_dir, "A", "pheno.txt")
+    file.path(input_dir_a, "A", "pheno.txt")
   )
   phenotypes_b <- read_text_matrix(
-    file.path(input_dir, "B", "pheno.txt")
+    file.path(input_dir_b, "B", "pheno.txt")
   )
 
   # 3. Assemble the pooled X and Y in A-then-B sample order.
   list(
-    input_dir = input_dir,
+    input_dir_a = input_dir_a,
+    input_dir_b = input_dir_b,
     genes = genes,
     public_variant_counts = public_variant_counts,
     sample_count_a = nrow(covariates_a),
@@ -81,19 +89,19 @@ read_gene_genotype <- function(input, gene) {
 
   # 1. Read the public genotype block from A and B.
   public_a <- read_dosage_matrix(
-    file.path(input$input_dir, "A", "geno", block_name),
+    file.path(input$input_dir_a, "A", "geno", block_name),
     input$sample_count_a,
     public_variant_count
   )
   public_b <- read_dosage_matrix(
-    file.path(input$input_dir, "B", "geno", block_name),
+    file.path(input$input_dir_b, "B", "geno", block_name),
     input$sample_count_b,
     public_variant_count
   )
 
   # 2. Read the B-private genotype block and infer its width.
   private_b <- read_dosage_matrix(
-    file.path(input$input_dir, "B", "private", block_name),
+    file.path(input$input_dir_b, "B", "private", block_name),
     input$sample_count_b
   )
   private_variant_count <- ncol(private_b)

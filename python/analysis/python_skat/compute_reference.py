@@ -87,10 +87,10 @@ def analyze(input_data: PlainInput) -> list[dict[str, str | int | float]]:
 
 
 def main() -> None:
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: compute_reference.py <preprocessed-dir>")
+    if len(sys.argv) not in (2, 3):
+        raise SystemExit("usage: compute_reference.py <preprocessed-dir> [preprocessed-dir-b]")
 
-    rows = analyze(read_plain_input(Path(sys.argv[1])))
+    rows = analyze(read_plain_input(Path(sys.argv[1]), Path(sys.argv[2]) if len(sys.argv) == 3 else None))
     writer = csv.DictWriter(
         sys.stdout,
         fieldnames=OUTPUT_COLUMNS,

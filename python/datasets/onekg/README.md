@@ -9,11 +9,11 @@ Run commands from the repository root.
 ```bash
 source scripts/setup/env.sh
 python3 python/datasets/onekg/prepare_1kgenome.py \
-  --config config/1kg \
+  --config config/1kg-A \
   --num-pheno 2
 ```
 
-The generator reads the chromosomes from `config/1kg/configGlobal.toml`. It downloads missing
+The generator reads the chromosomes from `config/1kg-A/configGlobal.toml`. It downloads missing
 1000 Genomes VCFs and sample metadata plus GENCODE v50, then writes the local
 fixture under:
 
@@ -57,8 +57,7 @@ go run -mod=vendor secure-rvas.go party --config config/1kg-B --party 2
 
 Use direct `party` commands for these separated configurations. The `run`
 command expects all three local party files in one configuration directory.
-The existing reference workflow also expects A and B under one prepared
-directory, so it is not part of this separated smoke test.
+The reference accepts separate A/B configurations with `--config` and `--config-b`.
 
 ## Run the complete workflow
 
@@ -66,6 +65,15 @@ directory, so it is not part of this separated smoke test.
 ./scripts/run_1kg_workflow.sh
 ```
 
-The workflow also runs the download/generation step automatically, followed by secure preprocessing, secure Burden/SKAT, the reference calculation, comparison, plots, and the metrics summary.
+The workflow generates inputs, prepares A then B, generates matching keys,
+and starts all three parties concurrently with `go run`. Logs are saved under
+`output/1kg-logs/`. It waits for all three parties, then reads A/B inputs directly for the reference.
+Results are saved under `output/1kg-A/`. It runs the comparison, generates plots,
+and summarizes A/B metrics. Reference results use the same prepared A/B inputs, including their
+sample overlap.
+
+Override `CONFIG_A`, `CONFIG_B`, `CONFIG_0`, `LOG_DIR`, or `REFERENCE_ENGINE`
+(default `python`) through environment variables. With custom directories,
+update B's `public_var_list` to point at A's output.
 
 Setup, configuration, individual stages, and output details are the same as the AoU workflow. See the repository [`README.md`](../../../README.md).

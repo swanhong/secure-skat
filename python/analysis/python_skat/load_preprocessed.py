@@ -6,7 +6,8 @@ import numpy as np
 
 @dataclass(frozen=True)
 class PlainInput:
-    directory: Path
+    directory_a: Path
+    directory_b: Path
     genes: list[str]
     public_variant_counts: list[int]
     sample_count_a: int
@@ -19,22 +20,27 @@ def read_text_matrix(path: Path) -> np.ndarray:
     return np.loadtxt(path, ndmin=2)
 
 
-def read_plain_input(directory: Path) -> PlainInput:
-    directory = directory.resolve(strict=True)
-    genes = (directory / "genes.txt").read_text().splitlines()
+def read_plain_input(directory_a: Path, directory_b: Path | None = None) -> PlainInput:
+    directory_a = directory_a.resolve(strict=True)
+    directory_b = directory_a if directory_b is None else directory_b.resolve(strict=True)
+    for name in ("genes.txt", "block_sizes.txt", "public_variants.tsv"):
+        if directory_b != directory_a and (directory_a / name).read_bytes() != (directory_b / name).read_bytes():
+            raise ValueError(f"A/B input mismatch: {name}")
+    genes = (directory_a / "genes.txt").read_text().splitlines()
     public_variant_counts = [
         int(value)
-        for value in (directory / "block_sizes.txt").read_text().split()
+        for value in (directory_a / "block_sizes.txt").read_text().split()
     ]
     if len(genes) != len(public_variant_counts):
         raise ValueError("genes.txt and block_sizes.txt have different lengths")
 
-    covariates_a = read_text_matrix(directory / "A/cov.txt")
-    covariates_b = read_text_matrix(directory / "B/cov.txt")
-    phenotypes_a = read_text_matrix(directory / "A/pheno.txt")
-    phenotypes_b = read_text_matrix(directory / "B/pheno.txt")
+    covariates_a = read_text_matrix(directory_a / "A/cov.txt")
+    covariates_b = read_text_matrix(directory_b / "B/cov.txt")
+    phenotypes_a = read_text_matrix(directory_a / "A/pheno.txt")
+    phenotypes_b = read_text_matrix(directory_b / "B/pheno.txt")
     return PlainInput(
-        directory=directory,
+        directory_a=directory_a,
+        directory_b=directory_b,
         genes=genes,
         public_variant_counts=public_variant_counts,
         sample_count_a=covariates_a.shape[0],
@@ -53,17 +59,17 @@ def read_gene_genotype(input_data: PlainInput, gene_index: int) -> np.ndarray:
     block = f"block.{gene_index}.bin"
     public_count = input_data.public_variant_counts[gene_index]
     public_a = read_dosages(
-        input_data.directory / "A/geno" / block,
+        input_data.directory_a / "A/geno" / block,
         input_data.sample_count_a,
         public_count,
     )
     public_b = read_dosages(
-        input_data.directory / "B/geno" / block,
+        input_data.directory_b / "B/geno" / block,
         input_data.sample_count_b,
         public_count,
     )
     private_b = read_dosages(
-        input_data.directory / "B/private" / block,
+        input_data.directory_b / "B/private" / block,
         input_data.sample_count_b,
         -1,
     )

@@ -56,7 +56,8 @@ def write_csv(path: Path, rows: list[dict[str, str]]) -> None:
 
 
 def run_chromosome_reference(
-    run_dir: Path,
+    run_dir_a: Path,
+    run_dir_b: Path,
     reference_root: Path,
     engine_name: str,
     launcher: str,
@@ -72,12 +73,10 @@ def run_chromosome_reference(
         flush=True,
     )
 
+    relative = Path("prepared") / ancestry / f"chr{chromosome}"
+    command = [launcher, str(script), str(run_dir_a / relative), str(run_dir_b / relative)]
     completed = subprocess.run(
-        [
-            launcher,
-            str(script),
-            str(run_dir / "prepared" / ancestry / f"chr{chromosome}")
-        ],
+        command,
         check=True,
         stdout=subprocess.PIPE,
         text=True,
@@ -140,11 +139,19 @@ def worker_settings(engine: str, task_count: int) -> tuple[int, int]:
     return workers, blas_threads
 
 
-def run_reference(config_path: Path, engine: str = "r") -> None:
+def run_reference(config_path: Path, engine: str = "r", config_b: Path | None = None) -> None:
     config = load_party_config(config_path)
 
-    run_dir = Path(config["run_dir"])
-    reference_root = run_dir / "reference"
+    run_dir_a = Path(config["run_dir"])
+    run_dir_b = run_dir_a
+    if config_b is not None:
+        b = load_party_config(config_b, party_id=2)
+        for name in ("chromosomes", "ancestries", "phenotype_columns", "num_cov"):
+            if config[name] != b[name]:
+                raise ValueError(f"A and B {name} must match")
+        run_dir_b = Path(b["run_dir"])
+
+    reference_root = run_dir_a / "reference"
     reference_root.mkdir(parents=True, exist_ok=True)
 
     success_path = reference_root / "_SUCCESS"
@@ -178,7 +185,8 @@ def run_reference(config_path: Path, engine: str = "r") -> None:
         future_tasks = {
             executor.submit(
                 run_chromosome_reference,
-                run_dir,
+                run_dir_a,
+                run_dir_b,
                 reference_root,
                 engine_name,
                 launcher,
@@ -237,9 +245,10 @@ def main() -> None:
         default="r",
         help="reference engine (default: r)",
     )
+    parser.add_argument("--config-b", help="B configuration directory; defaults to the same inputs as --config")
     args = parser.parse_args()
 
-    run_reference(Path(args.config), args.engine)
+    run_reference(Path(args.config), args.engine, Path(args.config_b) if args.config_b else None)
 
 
 if __name__ == "__main__":
