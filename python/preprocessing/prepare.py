@@ -90,6 +90,44 @@ def chromosome_path(
     )
 
 
+def split_input_config(config: Mapping) -> dict:
+    """Normalize the input settings shared by TOML configs and PrepareRequest."""
+    fields = ("chromosomes", "ancestries", "phenotype_columns", "num_cov", "max_maf",
+              "samples_per_cohort", "sample_seed", "role_seed", "shared_rate",
+              "phenotype_id_column", "covariate_id_column", "covariate_column",
+              "covariate_columns", "is_cov_single_column", "ancestry_id_column", "ancestry_column")
+    result = {name: config.get(name, [] if name == "covariate_columns" else "") for name in fields}
+    result["max_maf"] = config.get("max_maf")
+    result["mask"] = {key: sorted({value} if isinstance(value, str) else value)
+                      for key, value in config["mask"].items()}
+    selection = config["gene_selection"]
+    result["gene_selection"] = {"mode": selection["mode"], "per_chromosome": selection.get("per_chromosome", 0),
+                                "seed": selection.get("seed", 0), "path": str(selection.get("path") or "")}
+    for name in ("genotype", "gene_panel", "annotation", "phenotype", "covariate", "ancestry"):
+        result[name] = str(Path(config[name]).resolve())
+    return json.loads(json.dumps(result))
+
+
+def validate_split_inputs(phenotype: Path, config: dict) -> dict | None:
+    marker = phenotype.resolve().parent / "split.json"
+    if not marker.exists():
+        return None
+    manifest = json.loads(marker.read_text())
+    if manifest["config"] != split_input_config(config):
+        raise ValueError(f"split settings changed: {marker}; regenerate both site inputs in empty directories")
+    files = dict(manifest["outputs"])
+    selection = config["gene_selection"]
+    if selection["mode"] == "file":
+        path = str(Path(selection["path"]).resolve())
+        if path in manifest["split"]["sources"]:
+            files[path] = manifest["split"]["sources"][path]
+    for name, signature in files.items():
+        path = Path(name)
+        if not path.is_file() or [path.stat().st_size, path.stat().st_mtime_ns] != signature:
+            raise ValueError(f"split input missing or changed: {path}; regenerate both site inputs")
+    return manifest
+
+
 def select_gene_groups(
     request: GeneSelectionRequest,
     inputs: PrepInputs,
@@ -173,6 +211,9 @@ def prepared_cache_config(request: PrepareRequest, chromosome: int, ancestry: st
         column: sorted({values} if isinstance(values, str) else set(values))
         for column, values in request.mask.items()
     }
+    marker = request.phenotype.resolve().parent / "split.json"
+    if marker.exists():
+        config["split"] = json.loads(marker.read_text())["split"]
     config.update(format_version=1, chromosome=chromosome, ancestry_group=ancestry)
     return config
 
@@ -218,6 +259,7 @@ def prepare_chromosomes(
     request: PrepareRequest,
     extractor: GenotypeExtractor | None = None,
 ) -> tuple[GeneRef, ...]:
+    validate_split_inputs(request.phenotype, asdict(request))
     if not request.chromosomes:
         raise ValueError("at least one chromosome is required")
 
