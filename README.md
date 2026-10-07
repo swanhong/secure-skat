@@ -188,15 +188,32 @@ Omit `--clear` when the configured `run_dir` must not be replaced.
 
 ### Prepare MVP and AoU separately
 
-Use Party 1 for MVP (A) and Party 2 for AoU (B):
+Use Party 1 for MVP (A) and Party 2 for AoU (B).
+First, split samples and variants into site inputs, preserving PGEN and table formats:
 
 ```bash
-# MVP: use an MVP configuration directory pointing at normalized local inputs.
+python3 -m python.datasets.aou.prepare_aou --config config/aou --config-mvp config/mvp
+```
+
+The source stays under `data/aou/generated`; site inputs use the paths in each
+config (currently `data/mvp/generated` and `data/aou/split`). Skip this command
+when using independent MVP/AoU inputs, and configure their paths directly.
+Both cases then use the same binary preparation commands:
+
+```bash
+# MVP: use an MVP configuration directory pointing at local inputs.
 go run -mod=vendor secure-rvas.go prepare --config config/mvp --party 1
 
 # Copy MVP's public variant lists and set public_var_list in config/aou/configPrepare.toml.
 go run -mod=vendor secure-rvas.go prepare --config config/aou --party 2
 ```
+
+The workflow defaults to splitting: `./scripts/run_aou_workflow.sh`.
+Use `INPUT_MODE=sites ./scripts/run_aou_workflow.sh` for independent inputs or
+an existing split. Completed splits record settings in `split.json` and are reused;
+changed settings/files or incomplete outputs require regenerating both sites.
+The source annotation must contain the configured mask columns; `annotation=pLoF`
+requires an `annotation` column containing `pLoF`.
 
 For B, set the input list path in `configPrepare.toml`:
 
@@ -222,17 +239,14 @@ go run -mod=vendor secure-rvas.go party --config config/mvp --party 1
 go run -mod=vendor secure-rvas.go party --config config/aou --party 2
 ```
 
-The complete AoU workflow and single-directory examples below describe the
-original split/local layout. They require all three Local files and a prepare
+The single-directory examples below describe the original split/local layout. They require all three Local files and a prepare
 configuration without `public_var_list`; use the separate-site commands above
 with the current `config/aou`.
 The single-directory `keygen --config` and `run --config` commands continue to
 support local configurations containing all three parties.
 
 `config/mvp` is the Party 1 template. Update its input paths and column names
-for normalized MVP data. `config/aou` is Party 2, and `config/cp0` is Party 0.
-The AoU configuration receives copied MVP lists under `data/mvp/public/chrN/`;
-change `public_var_list` to their actual location.
+for MVP data. `config/aou` is Party 2, and `config/cp0` is Party 0.
 Both sites must use inputs on the same genome build with biallelic variant IDs
 in `chromosome:position:REF:ALT` form and corresponding gene IDs. Genome-build
 alignment is handled during data preparation. REF/ALT and coordinates are

@@ -11,8 +11,14 @@ config_0="${CONFIG_0:-config/cp0}"
 reference_engine="${REFERENCE_ENGINE:-python}"
 log_dir="${LOG_DIR:-output/aou-logs}"
 
-echo "[0/8] Prepare AoU chromosome inputs"
-python3 python/datasets/aou/prepare_aou.py --config "$config_b"
+case "${INPUT_MODE:-split}" in
+  split)
+    echo "[0/8] Split AoU source into MVP/A and AoU/B inputs"
+    python3 -m python.datasets.aou.prepare_aou --config "$config_b" --config-mvp "$config_a"
+    ;;
+  sites) ;;
+  *) echo "INPUT_MODE must be split or sites" >&2; exit 1 ;;
+esac
 
 echo "[1/8] Prepare A and its public variant lists"
 go run -mod=vendor secure-rvas.go prepare --config "$config_a" --party 1

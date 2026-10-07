@@ -2,12 +2,22 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import shlex
 import shutil
 import subprocess
 import tomllib
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from python.preprocessing.input import load_inputs, load_sample_inputs, read_gene_panel
+from python.preprocessing.model import GeneVariants
+from python.preprocessing.output import write_selected_genes
+from python.preprocessing.pipeline import assign_roles, select_rows
+from python.preprocessing.prepare import (
+    GeneSelectionRequest, select_gene_groups, split_input_config, validate_split_inputs,
+)
+
 
 
 DEFAULT_GENOTYPE = (
@@ -305,6 +315,210 @@ def normalize_annotation(
     print(f"created: {gene_panel_output}, ({len(ordered_genes)} genes)")
 
 
+def write_table(path: Path, header, rows, delimiter="\t") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as stream:
+        writer = csv.writer(stream, delimiter=delimiter, lineterminator="\n")
+        writer.writerow(header)
+        writer.writerows(rows)
+
+
+def site_path(config: dict, field: str, chromosome=0, ancestry="") -> Path:
+    return Path(config[field].replace("{chromosome}", str(chromosome))
+                .replace("{anc}", ancestry.lower()))
+
+
+def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -> None:
+    # step1: Read MVP/A and AoU/B configs and normalize ancestry names.
+    configs = []
+    for directory in (args.config_mvp, args.config):
+        config = {"shared_rate": 0.6, "is_cov_single_column": True,
+                  "sample_seed": 0, "role_seed": 0, "samples_per_cohort": 0}
+        for name in ("configGlobal.toml", "configPrepare.toml"):
+            with (directory / name).open("rb") as stream:
+                config.update(tomllib.load(stream))
+        config["ancestries"] = [value.strip().upper() for value in config["ancestries"]]
+        config["mask"] = dict(tuple(part.strip() for part in item.split("=", 1))
+                              for item in config["masks"])
+        configs.append(config)
+    mvp, aou = configs
+
+    # step2: Check that both sites use matching sample selection and variant filters.
+    for field in ("chromosomes", "ancestries", "phenotype_columns", "num_cov",
+                  "samples_per_cohort", "sample_seed", "masks", "max_maf"):
+        if mvp.get(field) != aou.get(field):
+            raise ValueError(f"A/B splitting requires matching {field} in both configs")
+
+    # step3: Separate source and site output paths and prevent overwriting existing files.
+    roots = [site_path(config, "phenotype").resolve().parent for config in configs]
+    source = args.output_dir.resolve()
+    for index, (config, root) in enumerate(zip(configs, roots)):
+        for other in (source, roots[1 - index]):
+            if root.is_relative_to(other) or other.is_relative_to(root):
+                raise ValueError("source, MVP and AoU input directories must be separate")
+        for field in ("genotype", "gene_panel", "annotation", "covariate", "ancestry"):
+            if not site_path(config, field).resolve().is_relative_to(root):
+                raise ValueError(f"split {field} must be below {root}")
+
+    source_files = [source / "phenotype.csv", source / "ancestry_preds.tsv"]
+    source_files += [source / f"covariate/{ancestry.lower()}_pca.eigenvec" for ancestry in mvp["ancestries"]]
+    for chromosome, prefix in pgen_prefixes.items():
+        source_files += [Path(f"{prefix}.{extension}") for extension in ("pgen", "pvar", "psam")]
+        source_files += [source / f"{folder}/chr{chromosome}.tsv" for folder in ("annotation", "gene_panel")]
+    if mvp["gene_selection"].get("path"):
+        source_files.append(Path(mvp["gene_selection"]["path"]))
+    split = {"configs": [split_input_config(config) for config in configs],
+             "sources": {str(path.resolve()): [path.stat().st_size, path.stat().st_mtime_ns]
+                         for path in source_files}}
+    manifests = [validate_split_inputs(site_path(config, "phenotype"), config) for config in configs]
+    if all(manifests):
+        if any(manifest["split"] != split for manifest in manifests):
+            raise ValueError("split source or settings changed; regenerate both site inputs in empty directories")
+        print(f"exists: split inputs in {roots[0]} and {roots[1]}")
+        return
+    if any(root.exists() and any(root.iterdir()) for root in roots):
+        raise ValueError("incomplete or unmarked split; remove both site output directories or use empty paths")
+    for chromosome in pgen_prefixes:
+        with (source / f"annotation/chr{chromosome}.tsv").open() as stream:
+            columns = next(csv.reader(stream, delimiter="\t"))
+        required = set(mvp["mask"]) | ({"MAF"} if mvp.get("max_maf") is not None else set())
+        missing = required - set(columns)
+        if missing:
+            raise ValueError(f"mask columns missing on chromosome {chromosome}: {sorted(missing)}; "
+                             "provide these annotation columns or configure masks matching the source")
+
+    # step4: Read phenotype, covariate, and ancestry tables from the AoU source.
+    samples = load_sample_inputs(
+        phenotype_path=source / "phenotype.csv",
+        covariate_path=source / "covariate/{anc}_pca.eigenvec",
+        ancestry_path=source / "ancestry_preds.tsv",
+        phenotype_id_column=aou["phenotype_id_column"],
+        phenotype_columns=tuple(aou["phenotype_columns"]),
+        covariate_id_column=aou["covariate_id_column"],
+        covariate_column=aou.get("covariate_column", ""),
+        covariate_columns=tuple(aou.get("covariate_columns", ())),
+        is_cov_single_column=aou["is_cov_single_column"],
+        ancestry_groups=tuple(aou["ancestries"]),
+        ancestry_id_column=aou["ancestry_id_column"],
+        ancestry_column=aou["ancestry_column"], num_cov=aou["num_cov"],
+    )
+
+    # step5: Prepare gene selection and annotation masks from the MVP config.
+    selection = mvp["gene_selection"]
+    request = GeneSelectionRequest(selection["mode"], selection.get("per_chromosome", 0),
+                                   selection.get("seed", 0),
+                                   Path(selection["path"]) if selection.get("path") else None)
+    file_genes = read_gene_panel(request.path) if request.mode == "file" else ()
+    mask = mvp["mask"]
+    reference_ids = None
+    site_ids = []
+
+    # step6: Read source sample IDs, variants, genes, and annotations for each chromosome.
+    for chromosome, prefix in pgen_prefixes.items():
+        inputs = load_inputs(prefix, source / f"gene_panel/chr{chromosome}.tsv",
+                             source / f"annotation/chr{chromosome}.tsv")
+        if reference_ids is None:
+            # step7: Split samples into disjoint A/B groups by ancestry once, using the first chromosome.
+            reference_ids = inputs.psam_ids
+            if len(set(reference_ids)) != len(reference_ids):
+                raise ValueError("duplicate source sample IDs")
+            rows_by_site = [{}, {}]
+            for ancestry in mvp["ancestries"]:
+                rows = select_rows(reference_ids, samples.phenotypes, samples.covariates,
+                                   samples.ancestries, ancestry, tuple(mvp["phenotype_columns"]),
+                                   mvp["samples_per_cohort"] or "all", mvp["sample_seed"])
+                for index in (0, 1):
+                    rows_by_site[index][ancestry] = rows[index]
+
+            # step8: Write selected sample tables using each site's paths and column names.
+            for config, rows in zip(configs, rows_by_site):
+                members = [(ancestry, group, i) for ancestry, group in rows.items()
+                           for i in range(len(group.sample_ids))]
+                ids = {group.sample_ids[i] for _, group, i in members}
+                site_ids.append(tuple(sample for sample in reference_ids if sample in ids))
+                write_table(site_path(config, "phenotype"),
+                            (config["phenotype_id_column"], *config["phenotype_columns"]),
+                            ((group.sample_ids[i], *group.phenotypes[i]) for _, group, i in members), ",")
+                write_table(site_path(config, "ancestry"),
+                            (config["ancestry_id_column"], config["ancestry_column"]),
+                            ((group.sample_ids[i], ancestry) for ancestry, group, i in members))
+                covariate_rows = {}
+                for ancestry, group, i in members:
+                    path = site_path(config, "covariate", ancestry=ancestry)
+                    values = ((json.dumps(group.covariates[i]),) if config["is_cov_single_column"]
+                              else group.covariates[i])
+                    covariate_rows.setdefault(path, []).append((group.sample_ids[i], *values))
+                columns = ((config["covariate_column"],) if config["is_cov_single_column"]
+                           else tuple(config["covariate_columns"]))
+                for path, rows in covariate_rows.items():
+                    write_table(path, (config["covariate_id_column"], *columns), rows)
+        elif inputs.psam_ids != reference_ids:
+            raise ValueError(f"ordered source PSAM IDs differ on chromosome {chromosome}")
+
+        # step9: Apply gene selection, annotation masks, and the MAF threshold for this chromosome.
+        groups = select_gene_groups(request, inputs, chromosome, mask, mvp.get("max_maf"), file_genes)
+
+        # step10: Assign each variant one site role, even when it belongs to multiple genes.
+        seen, unique_groups = set(), []
+        for group in groups:
+            unique = tuple(variant for variant in group.variants if variant.key not in seen)
+            seen.update(variant.key for variant in unique)
+            unique_groups.append(GeneVariants(group.gene, unique))
+        roles = {variant.key: role for plan in assign_roles(unique_groups, mvp["role_seed"], mvp["shared_rate"])
+                 for variant, role in plan.variant_roles}
+        if not groups or (request.mode == "random" and any(
+                all(roles[v.key] == "private" for v in group.variants) for group in groups)):
+            raise ValueError(f"selected genes need MVP public variants on chromosome {chromosome}")
+        pairs = {(group.gene.gene_id, variant.key) for group in groups for variant in group.variants}
+
+        # step11: Select shared/public_only variants for A and shared/private variants for B.
+        for index, config in enumerate(configs):
+            allowed = {"shared", "public_only"} if index == 0 else {"shared", "private"}
+            keys = {variant.key for variant in inputs.variants if roles.get(variant.key) in allowed}
+            if not keys or not site_ids[index]:
+                raise ValueError(f"no samples or variants for site {index + 1}, chromosome {chromosome}")
+            output = site_path(config, "genotype", chromosome)
+            output.parent.mkdir(parents=True, exist_ok=True)
+
+            # step12: Pass sample and variant lists to PLINK and write site inputs in PGEN format.
+            with TemporaryDirectory() as temporary:
+                keep, extract = Path(temporary) / "keep.tsv", Path(temporary) / "variants.txt"
+                with Path(f"{prefix}.psam").open() as stream:
+                    reader = csv.DictReader(stream, delimiter="\t")
+                    reader.fieldnames = [name.lstrip("#") for name in reader.fieldnames]
+                    fields = [name for name in ("FID", "IID", "SID") if name in reader.fieldnames]
+                    members = set(site_ids[index])
+                    write_table(keep, ("#" + fields[0], *fields[1:]),
+                                (tuple(row[name] for name in fields) for row in reader if row["IID"] in members))
+                extract.write_text("".join(f"{key}\n" for key in keys))
+                with Path(f"{prefix}.pvar").open() as stream:
+                    chromosome_name = next(line for line in stream if not line.startswith("#")).split()[0]
+                run([os.path.expandvars(args.plink2_bin), "--pfile", str(prefix),
+                     "--keep", str(keep), "--extract", str(extract),
+                     "--output-chr", "chrMT" if chromosome_name.startswith("chr") else "MT",
+                     "--make-pgen", "--out", str(output)])
+                Path(f"{output}.log").unlink(missing_ok=True)
+
+            # step13: Write the selected gene panel and annotations retained at this site.
+            panel = site_path(config, "gene_panel", chromosome)
+            panel.parent.mkdir(parents=True, exist_ok=True)
+            write_selected_genes(panel, tuple(group.gene for group in groups))
+            write_table(site_path(config, "annotation", chromosome),
+                        ("variant_key", "gene_id", "gene_symbol", *inputs.annotation_columns),
+                        ((row.variant_key, row.gene_id, row.gene_symbol,
+                          *(row.values[column] for column in inputs.annotation_columns))
+                         for row in inputs.annotations if row.variant_key in keys
+                         and (row.gene_id, row.variant_key) in pairs))
+
+    # step14: Record completion after writing both sites and all chromosomes.
+    for root, config in zip(roots, configs):
+        outputs = {str(path.resolve()): [path.stat().st_size, path.stat().st_mtime_ns]
+                   for path in root.rglob("*") if path.is_file()}
+        (root / "split.json").write_text(json.dumps(
+            {"config": split_input_config(config), "split": split, "outputs": outputs},
+            sort_keys=True, indent=2) + "\n")
+
+
 def prepare_aou(args: argparse.Namespace) -> None:
     output_dir = args.output_dir
     project = args.billing_project or billing_project()
@@ -351,11 +565,14 @@ def prepare_aou(args: argparse.Namespace) -> None:
             chromosome=chromosome,
             maf_column=args.maf_column,
         )
+    if args.config_mvp is not None:
+        split_aou_inputs(args, pgen_prefixes)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--config-mvp", type=Path, help="split normalized inputs into the configured MVP/A and AoU/B paths")
     parser.add_argument(
         "--output-dir",
         type=Path,
