@@ -110,7 +110,7 @@ func LoadPartyConfig(directory string, partyID int) (*Config, error) {
 	return loadConfig(
 		directory,
 		globalConfigFilename,
-		fmt.Sprintf("configLocal.Party%d.toml", partyID),
+		"configLocal.toml",
 	)
 }
 

@@ -249,14 +249,14 @@ func runAncestry(
 		if err != nil {
 			return fmt.Errorf("run chromosome %d: %w", chromosome, err)
 		}
-		if partyID == cohortAPartyID {
+		if partyID == cohortAPartyID || partyID == cohortBPartyID {
 			results = append(results, result)
 		}
 		runtime.GC()
 	}
 
 	var resultErr error
-	if partyID == cohortAPartyID {
+	if partyID == cohortAPartyID || partyID == cohortBPartyID {
 		done := metrics.start("write_results", 0, nil)
 		resultErr = writeSecureResults(
 			config.RunDir,
