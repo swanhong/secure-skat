@@ -103,15 +103,21 @@ func loadConfig(directory string, filenames ...string) (*Config, error) {
 }
 
 func LoadPrepareConfig(directory string) (*Config, error) {
-	return loadConfig(directory, globalConfigFilename, prepareConfigFilename)
+	filenames := []string{globalConfigFilename}
+	if _, err := os.Stat(filepath.Join(directory, "configLocal.toml")); err == nil {
+		filenames = append(filenames, "configLocal.toml")
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	return loadConfig(directory, append(filenames, prepareConfigFilename)...)
 }
 
 func LoadPartyConfig(directory string, partyID int) (*Config, error) {
-	return loadConfig(
-		directory,
-		globalConfigFilename,
-		"configLocal.toml",
-	)
+	localFilename := "configLocal.toml"
+	if _, err := os.Stat(filepath.Join(directory, localFilename)); os.IsNotExist(err) {
+		localFilename = fmt.Sprintf("configLocal.Party%d.toml", partyID)
+	}
+	return loadConfig(directory, globalConfigFilename, localFilename)
 }
 
 func requireStrings(fields ...string) error {

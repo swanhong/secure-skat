@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -103,6 +104,12 @@ func runPrepareCommand(args []string) error {
 		prepareConfigFilename,
 	); err != nil {
 		return fmt.Errorf("write config: %w", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(*configDirectory, "configLocal.toml")); err == nil {
+		if err := writeConfigFiles(*configDirectory, config.RunDir, "configLocal.toml"); err != nil {
+			return fmt.Errorf("write local config: %w", err)
+		}
 	}
 
 	fmt.Println("Running secure-rvas::prepare")

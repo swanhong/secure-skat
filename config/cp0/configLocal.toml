@@ -1,2 +1,4 @@
+run_dir = "output/cp0"
+
 shared_keys_path = "{run_dir}/secure/keys"
 local_num_threads = 2
