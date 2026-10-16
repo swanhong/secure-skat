@@ -59,7 +59,7 @@ directories.
 ```bash
 go run -mod=vendor secure-rvas.go prepare --config config/mvp --party 1
 
-# On separate machines, copy MVP's lists to AoU and update public_var_list first.
+# On separate machines, copy MVP's public_variants.tsv to AoU and update public_var_list first.
 go run -mod=vendor secure-rvas.go prepare --config config/aou --party 2
 ```
 
@@ -67,9 +67,13 @@ Expected output: `<run_dir>/prepared/<ancestry>/chr<chromosome>/A/` for MVP and
 the corresponding `B/` for AoU, with phenotype, covariate, and genotype blocks.
 `genes.txt`, `block_sizes.txt`, `pos.txt`, and `public_variants.tsv` are at the
 chromosome root, beside `A/` or `B/`.
-Actual blocks live under `<run_dir>/cache/prepared/<ancestry>/chr<chromosome>/<hash>/`;
+Party 1 also writes all configured chromosomes to `<run_dir>/public_variants.tsv`;
+transfer this single file to Party 2.
+Actual blocks live under `<run_dir>/cache/prepared/<ancestry>/chr<chromosome>/`;
 the `prepared/` chromosome paths are symlinks to those caches. Matching completed
-caches are reused. Failed builds are discarded and rebuilt on the next run.
+caches are reused after checking their `config.json`. Changed preparation settings
+or old hash-folder caches require a new `run_dir`. Failed builds are discarded
+and rebuilt on the next run.
 Prepared caches and secure, reference, comparison, and metrics outputs stay under
 `run_dir`; input-generation paths are configured separately.
 AoU follows that list's gene/column order, zero-fills absent public variants,
@@ -78,12 +82,13 @@ and places locally selected variants outside the list in `B/private/`.
 AoU's `configPrepare.toml` defaults to:
 
 ```toml
-public_var_list = "output/mvp/prepared/EUR/chr{chromosome}/public_variants.tsv"
+public_var_list = "output/mvp/public_variants.tsv"
 ```
 
 This default assumes MVP's `run_dir` is `output/mvp`.
-For separate machines or custom MVP paths, copy the lists to AoU (for example,
-`<run_dir>/inputs/public/chrN/public_variants.tsv`) and update this setting.
+For separate machines or custom MVP paths, copy this file to AoU (for example,
+`<run_dir>/inputs/public_variants.tsv`) and update this setting.
+Party 2's `chromosomes` must match the chromosomes in the file.
 
 ### 4. Generate shared PRG keys
 

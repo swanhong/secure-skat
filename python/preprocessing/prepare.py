@@ -27,7 +27,7 @@ from .pipeline import (
 )
 from .plink import pgen_extract
 from .output import write_selected_genes
-from .site import prepare_site_blocks, read_public_var_list
+from .site import prepare_site_blocks, read_public_var_list, write_public_var_list
 from .selection import (
     select_file_genes,
     select_random_gene_groups,
@@ -226,22 +226,18 @@ def prepare_cached_blocks(
     if output.exists() and not output.is_symlink():
         raise ValueError(f"{output} is not a link; use a new run_dir or prepare --clear")
     config = json.dumps(prepared_cache_config(request, chromosome, ancestry), sort_keys=True, indent=2) + "\n"
-    full_key = hashlib.sha256(config.encode()).hexdigest()
-    key = full_key[:10]
-    parent = cache_root / ancestry / f"chr{chromosome}"
+    parent = cache_root / ancestry
     parent.mkdir(parents=True, exist_ok=True)
-    cached = parent / key
-    if not cached.exists() and (parent / full_key).exists():
-        cached = parent / full_key
+    cached = parent / f"chr{chromosome}"
     if cached.exists():
-        if (cached / "config.json").read_text() != config:
-            raise ValueError(f"prepared cache config mismatch: {cached}")
+        config_path = cached / "config.json"
+        if not config_path.is_file() or config_path.read_text() != config:
+            raise ValueError(f"prepared cache config missing or changed: {cached}; use a new run_dir")
         print(f"Using existing prepared cache: {cached}", flush=True)
         print(f"    ancestry: {ancestry}, chromosome: {chromosome}, MAF: {request.max_maf}, shared_rate: {request.shared_rate}", flush=True)
-        print(f"    key: {key}", flush=True)
     else:
         print("Creating prepared cache:", cached, flush=True)
-        with TemporaryDirectory(prefix=f".{key}.", dir=parent) as temporary:
+        with TemporaryDirectory(prefix=f".chr{chromosome}.", dir=parent) as temporary:
             directory = Path(temporary)
             build(out_dir=directory)
             (directory / "config.json").write_text(config)
@@ -308,6 +304,7 @@ def prepare_chromosomes(
         )
 
     selected_genes = []
+    export_groups = []
     rows_by_ancestry = {}
     print(
         f"Running preprocessing for "
@@ -374,6 +371,8 @@ def prepare_chromosomes(
             group.gene for group in chromosome_groups
         )
         selected_genes.extend(chromosome_genes)
+        if request.party == 1:
+            export_groups.extend(chromosome_groups)
 
         for ancestry in request.ancestries:
             rows_a, rows_b = rows_by_ancestry[ancestry]
@@ -398,6 +397,11 @@ def prepare_chromosomes(
                 prepare_cached_blocks(request, chromosome, ancestry, build)
             else:
                 build(out_dir=request.run_dir / "prepared" / ancestry / f"chr{chromosome}")
+
+    if request.party == 1:
+        path = request.run_dir / "public_variants.tsv"
+        write_public_var_list(path, export_groups)
+        print("Wrote public variant list to", path)
 
     selected_genes = tuple(selected_genes)
     if request.gene_selection.mode != "all":

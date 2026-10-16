@@ -1,83 +1,79 @@
-# Local 1000 Genomes workflow
+# Local 1000 Genomes test
 
-This workflow runs the secure Burden/SKAT pipeline locally with public 1000 Genomes data and synthetic annotations / phenotypes. The generated fixture is for correctness testing, not biological interpretation.
+Test secure Burden/SKAT against a plaintext reference using public 1000 Genomes data and synthetic annotations/phenotypes.
+The default fixture uses chr22/EUR with overlapping A/B samples; it is for correctness testing.
 
-Run commands from the repository root.
+Run all commands from the repository root using the same Python environment.
 
-## Download and generate the test data
+0. Install dependencies once (Linux x86-64; requires Go, Python 3.11+ with pip, and R).
+
+```bash
+bash scripts/setup/install.sh
+```
+
+On macOS, install PLINK 2 and R::SKAT separately, then run:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+1. Download inputs and generate test data (`data/1kg/generated/`).
 
 ```bash
 source scripts/setup/env.sh
-python3 python/datasets/onekg/prepare_1kgenome.py \
-  --config config/1kg-A \
-  --num-pheno 2
+python3 python/datasets/onekg/prepare_1kgenome.py --config config/1kg-A --num-pheno 2
 ```
 
-The generator reads the chromosomes from `config/1kg-A/configGlobal.toml`. It downloads missing
-1000 Genomes VCFs and sample metadata plus GENCODE v50, then writes the local
-fixture under:
-
-```text
-data/1kg/generated/
-```
-
-Downloaded files are reused on later runs.
-
-## Test separate A and B preparation
-
-`config/1kg-A`, `config/1kg-B`, and `config/1kg-cp0` contain only their own local
-party configuration. This smoke test uses chr22, EUR, 100 samples, and three
-A-selected genes. A uses MAF <= 0.001; B uses MAF <= 0.01 to allow private
-variants. Both sites use the same input and sample seed, so samples overlap.
-This fixture tests preparation and connectivity, not independent cohorts.
-
-Run these steps from the repository root:
+2. Prepare A, then B using A's combined `<A run_dir>/public_variants.tsv`.
 
 ```bash
-python3 python/datasets/onekg/prepare_1kgenome.py --config config/1kg-A --num-pheno 2
 go run -mod=vendor secure-rvas.go prepare --config config/1kg-A --party 1
 go run -mod=vendor secure-rvas.go prepare --config config/1kg-B --party 2
-go run -mod=vendor secure-rvas.go keygen --config-party0 config/1kg-cp0 --config-party1 config/1kg-A --config-party2 config/1kg-B
 ```
 
-B reads the public lists from `public_var_list` in its prepare configuration.
-Keys are written to each party's `<run_dir>/secure/keys/EUR/` directory.
-Generate all keys in one invocation; separate invocations create different keys.
+3. Generate matching keys for all three parties together.
 
-Start the following in three terminals at the same time:
+```bash
+go run -mod=vendor secure-rvas.go keygen \
+  --config-party0 config/1kg-cp0 --config-party1 config/1kg-A --config-party2 config/1kg-B
+```
+
+4. Start each party in a separate terminal, from the repository root.
 
 ```bash
 # Terminal 1
+source scripts/setup/env.sh
 go run -mod=vendor secure-rvas.go party --config config/1kg-cp0 --party 0
+```
+
+```bash
 # Terminal 2
+source scripts/setup/env.sh
 go run -mod=vendor secure-rvas.go party --config config/1kg-A --party 1
+```
+
+```bash
 # Terminal 3
+source scripts/setup/env.sh
 go run -mod=vendor secure-rvas.go party --config config/1kg-B --party 2
 ```
 
-Use direct `party` commands for these separated configurations. The `run`
-command expects all three local party files in one configuration directory.
-The reference accepts separate A/B configurations with `--config` and `--config-b`.
+5. After all parties finish, run the reference, compare results, and create plots/metrics.
 
-## Run the complete workflow
+```bash
+python3 python/analysis/run_reference.py --config config/1kg-A --config-b config/1kg-B --engine python
+python3 python/analysis/compare_secure_to_reference.py --config config/1kg-A
+python3 python/analysis/plot_secure_vs_reference.py --config config/1kg-A
+python3 python/analysis/summarize_metrics.py --config config/1kg-A --config-b config/1kg-B
+```
+
+Results: `output/1kg-A/{secure,reference,comparison,metrics}/`.
+Set each party's `run_dir` in its `configPrepare.toml`; caches use `<run_dir>/cache/prepared/<ancestry>/chrN/`.
+Matching `config.json` reuses the cache; changed settings or old hash-folder caches require a new `run_dir`.
+If A's `run_dir` changes, update B's `public_var_list` to match.
+
+Alternatively, run every step automatically (logs: `output/1kg-logs/`):
 
 ```bash
 ./scripts/run_1kg_workflow.sh
 ```
-
-The workflow generates inputs, prepares A then B, generates matching keys,
-and starts all three parties concurrently with `go run`. Logs are saved under
-`output/1kg-logs/`. It waits for all three parties, then reads A/B inputs directly for the reference.
-Results are saved under `output/1kg-A/`. It runs the comparison, generates plots,
-and summarizes A/B metrics. Reference results use the same prepared A/B inputs, including their
-sample overlap.
-
-Override `CONFIG_A`, `CONFIG_B`, `CONFIG_0`, `LOG_DIR`, or `REFERENCE_ENGINE`
-(default `python`) through environment variables. With custom directories,
-update B's `public_var_list` to point at A's output.
-
-Set each party's `run_dir` in its `configPrepare.toml`; every stage reads this
-setting. Prepared caches live under `<run_dir>/cache/prepared/`, and `prepared/`
-contains links to those caches. No separate cache directory setting is needed.
-
-Setup, configuration, individual stages, and output details are the same as the AoU workflow. See the repository [`README.md`](../../../README.md).

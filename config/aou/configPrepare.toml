@@ -1,8 +1,7 @@
 run_dir = "output/aou"
 vat_annotation = "~/fed_prep_out/chr{chromosome}_annotation.tsv"
 
-# public_var_list = "data/mvp/public/chr{chromosome}/public_variants.tsv"
-public_var_list = "output/mvp/prepared/EUR/chr{chromosome}/public_variants.tsv"
+public_var_list = "output/mvp/public_variants.tsv"
 genotype = "data/aou/split/genotype/exome.chr{chromosome}"
 gene_panel = "data/aou/split/gene_panel/chr{chromosome}.tsv"
 annotation = "data/aou/split/annotation/chr{chromosome}.tsv"

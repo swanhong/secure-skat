@@ -1,4 +1,4 @@
-run_dir = "output/1kg-A"
+run_dir = "output/test1016/1kg-A"
 
 genotype = "data/1kg/generated/genotype/chr{chromosome}"
 gene_panel = "data/1kg/generated/gene_panel/chr{chromosome}.tsv"

@@ -1,6 +1,6 @@
-run_dir = "output/1kg-B"
+run_dir = "output/test1016/1kg-B"
 
-public_var_list = "output/1kg-A/prepared/EUR/chr{chromosome}/public_variants.tsv"
+public_var_list = "output/test1016/1kg-A/public_variants.tsv"
 genotype = "data/1kg/generated/genotype/chr{chromosome}"
 gene_panel = "data/1kg/generated/gene_panel/chr{chromosome}.tsv"
 annotation = "data/1kg/generated/annotation/chr{chromosome}.tsv"
