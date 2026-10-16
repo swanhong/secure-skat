@@ -1,4 +1,5 @@
-prepared_cache_dir = "data/1kg/prepared"
+run_dir = "output/1kg-A"
+
 genotype = "data/1kg/generated/genotype/chr{chromosome}"
 gene_panel = "data/1kg/generated/gene_panel/chr{chromosome}.tsv"
 annotation = "data/1kg/generated/annotation/chr{chromosome}.tsv"

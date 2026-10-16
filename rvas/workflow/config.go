@@ -17,10 +17,9 @@ const (
 )
 
 type Config struct {
-	RunDir           string `toml:"run_dir"`
-	PreparedCacheDir string `toml:"prepared_cache_dir"`
-	PublicVarList    string `toml:"public_var_list"`
-	Chromosomes      []int  `toml:"chromosomes"`
+	RunDir        string `toml:"run_dir"`
+	PublicVarList string `toml:"public_var_list"`
+	Chromosomes   []int  `toml:"chromosomes"`
 
 	Genotype   string `toml:"genotype"`
 	GenePanel  string `toml:"gene_panel"`
@@ -81,8 +80,12 @@ func loadConfig(directory string, filenames ...string) (*Config, error) {
 	config := &Config{SharedRate: 0.6, IsCovSingleColumn: true}
 	for _, filename := range filenames {
 		path := filepath.Join(directory, filename)
-		if _, err := toml.DecodeFile(path, config); err != nil {
+		metadata, err := toml.DecodeFile(path, config)
+		if err != nil {
 			return nil, fmt.Errorf("decode config %q: %w", path, err)
+		}
+		if filename != prepareConfigFilename && metadata.IsDefined("run_dir") {
+			return nil, fmt.Errorf("%s: run_dir belongs in %s", path, prepareConfigFilename)
 		}
 	}
 	for index, ancestry := range config.Ancestries {
@@ -117,7 +120,7 @@ func LoadPartyConfig(directory string, partyID int) (*Config, error) {
 	if _, err := os.Stat(filepath.Join(directory, localFilename)); os.IsNotExist(err) {
 		localFilename = fmt.Sprintf("configLocal.Party%d.toml", partyID)
 	}
-	return loadConfig(directory, globalConfigFilename, localFilename)
+	return loadConfig(directory, globalConfigFilename, localFilename, prepareConfigFilename)
 }
 
 func requireStrings(fields ...string) error {

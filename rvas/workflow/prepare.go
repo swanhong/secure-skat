@@ -62,7 +62,7 @@ func prepareRequestFromConfig(config *Config) prepareRequest {
 
 	return prepareRequest{
 		RunDir:            config.RunDir,
-		PreparedCacheDir:  config.PreparedCacheDir,
+		PreparedCacheDir:  filepath.Join(config.RunDir, "cache", "prepared"),
 		Chromosomes:       config.Chromosomes,
 		Genotype:          config.Genotype,
 		GenePanel:         config.GenePanel,

@@ -1,391 +1,208 @@
 # Secure RVAS
 
-Secure RVAS runs privacy-preserving Burden and SKAT rare-variant association tests.
-The local 1000 Genomes test workflow is documented separately in [`python/datasets/onekg/README.md`](python/datasets/onekg/README.md).
+Secure RVAS runs privacy-preserving Burden and SKAT tests with MVP (Party 1),
+AoU (Party 2), and a helper without genomic inputs (Party 0).
 
-## Initial setup
+## Step-by-step commands
 
-Run these commands once after a fresh clone in a Linux x86-64 environment:
+### 1. Install and configure
+
+On Linux x86-64, install Go, Python 3.11+ (with pip), and R, then run from the repository root:
 
 ```bash
-cd "$HOME/secure-skat"
 bash scripts/setup/install.sh
 source scripts/setup/env.sh
 go mod vendor
 ```
 
-`scripts/setup/install.sh` installs PLINK 2 at `$HOME/plink2` and R::SKAT under `$HOME/R/library`. `go mod vendor` is required because every Go command in this repository uses `-mod=vendor`, while `vendor/` is not stored in Git.
+Edit each site's `configPrepare.toml` for `run_dir`, input paths, and preparation
+settings. `configLocal.toml` contains fixed `{run_dir}` path templates and local
+thread settings; it normally needs no edits. MVP, AoU, and the helper each have
+an identical `configGlobal.toml` for shared protocol/network settings.
+Every stage reads Global, Local, then Prepare before expanding `{run_dir}`.
+The helper's prepare config only needs `run_dir`.
 
-In each new terminal, load the installed paths before running individual commands:
+Expected output: PLINK 2 at `$HOME/plink2`, R::SKAT under `$HOME/R/library`,
+Python packages from `requirements.txt` in the current `python3` environment,
+and Go dependencies in `vendor/`. Use the same Python environment when running
+the workflow, and load `scripts/setup/env.sh` in each new terminal.
+On macOS, install PLINK 2 and R::SKAT separately, and install Python packages with
+`python3 -m pip install -r requirements.txt`; the installer above is Linux-only.
 
-```bash
-cd secure-skat
-source scripts/setup/env.sh
-```
+### 2. Provide site inputs
 
-## Configure the AoU run
+Choose one input mode:
 
-Review `config/aou/configPrepare.toml`, `configGlobal.toml`, and each
-`configLocal.PartyN.toml` before running. `configPrepare.toml` is used only to
-create A/B secure-ready inputs; each party run reads the global file and its own
-local file. `mpc_num_threads` is the number of independent MPC lanes, not just
-a CPU thread count. More lanes increase concurrent memory and communication use.
+- **AoU split test:** localize AoU inputs and split samples/variants into A/B.
+  Party 1 represents MVP but contains AoU-derived test data.
+- **Independent MVP/AoU:** provide each site's PGEN, phenotype, covariate,
+  ancestry, annotation, and gene-panel files at its configured paths; skip the
+  split command. MVP input creation is external to this workflow.
 
-`prepare` is optional. If Party 1 and Party 2 already have genotype blocks,
-phenotype, covariate, gene, and variant-count files in the secure-ready format,
-set those paths in their local configs and start with `keygen`.
-
-All stages read the same non-empty autosome array from the configuration:
-
-```toml
-chromosomes = [
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
-  12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
-]
-```
-
-The current AoU configuration selects high-confidence loss-of-function variants
-with MAF at most 0.02:
-
-```toml
-masks = ["LoF=HC"]
-max_maf = 0.02
-```
-
-## Step 0: Create chromosome VAT annotations
-
-`vat_simplify.py` reads the chromosome PVAR from Google Cloud Storage without
-first saving a separate local copy. The `--pvar` argument itself accepts a local
-file descriptor, so Bash process substitution connects `gsutil cat` to the
-Python command.
+For the AoU split test, first place chromosome annotations at
+`~/fed_prep_out/chr{chromosome}_annotation.tsv` (see Additional information),
+then run in an authorized AoU Workbench environment:
 
 ```bash
-cd "$HOME/secure-skat"
-source scripts/setup/env.sh
-
-billing_project="${GOOGLE_PROJECT:-${GOOGLE_CLOUD_PROJECT:-}}"
-if [[ -z "$billing_project" ]]; then
-  echo "Set GOOGLE_PROJECT or GOOGLE_CLOUD_PROJECT" >&2
-  exit 1
-fi
-export GOOGLE_PROJECT="$billing_project"
-
-mkdir -p "$HOME/fed_prep_out"
-
-for chromosome in {1..22}; do
-  echo "===== chromosome ${chromosome} ====="
-
-  pvar_uri="gs://vwb-aou-datasets-controlled/v9/wgs/short_read/snpindel/exome/pgen/exome.chr${chromosome}.pvar"
-  output_path="$HOME/fed_prep_out/chr${chromosome}_annotation.tsv"
-
-  gsutil -u "$billing_project" ls "$pvar_uri" || break
-
-  python3 python/datasets/aou/vat_simplify.py \
-    --chromosome "$chromosome" \
-    --pvar <(gsutil -u "$billing_project" cat "$pvar_uri") \
-    --output "$output_path" || break
-done
+python3 -m python.datasets.aou.prepare_aou \
+  --config config/aou --config-mvp config/mvp
 ```
 
-This code generates the configured autosomes sequentially. Each chromosome scans a large portion of the remote VAT and can take a long time.
+Expected output: localized source files in `data/aou/generated/`, MVP test inputs
+in `data/mvp/generated/`, AoU test inputs in `data/aou/split/`, and a `split.json`
+in each site input root. Matching completed splits are reused; changed
+sources/settings or incomplete outputs require regenerating both sites in empty
+directories.
 
-The default VAT is:
-```text
-gs://vwb-aou-datasets-controlled/v9/wgs/short_read/snpindel/aux/vat/vat_complete.bgz.tsv.gz
-```
-
-The simplifier applies the following deterministic contract:
-
-- retain PVAR rows whose `FILTER` is `PASS` or `.`, when `FILTER` is present;
-- retain biallelic PVAR rows only;
-- match VAT rows by chromosome, position, REF, and ALT;
-- group transcript rows by `(variant, gene_id)`;
-- select one row using MANE Select, canonical transcript, `LoF=HC`, then VAT
-  source order as the priority;
-- write `variant_key`, gene fields, `LoF`, consequence, and gnomAD/GVS allele
-  frequencies.
-
-## Run the complete AoU workflow
-
-After Step 0 has produced every configured chromosome annotation:
+### 3. Prepare secure inputs
 
 ```bash
-./scripts/run_aou_workflow.sh
-```
-
-The script performs the following stages:
-
-```text
-0. Localize AoU PGEN, phenotype, and ancestry inputs; normalize VAT annotations
-1. Preprocess ancestry-specific A/B secure inputs
-2. Generate persistent ancestry-specific shared PRG keys
-3. Run secure Burden and SKAT
-4. Run the Python or R::SKAT reference
-5. Join and compare secure/reference results
-6. Generate scatter and Manhattan plots
-7. Summarize timing, communication, and accuracy metrics
-```
-
-Step 0 inside `run_aou_workflow.sh` is distinct from the VAT extraction above:
-it downloads the PGEN triplets and other AoU inputs, then consumes
-`$HOME/fed_prep_out/chr{chromosome}_annotation.tsv` to create normalized local
-annotations and gene panels.
-
-The workflow's preprocessing command includes `--clear`; rerunning the complete
-script replaces the configured `run_dir` before creating new secure inputs.
-
-To select another configuration or the R::SKAT reference engine:
-
-```bash
-CONFIG_PATH=config/aou REFERENCE_ENGINE=r ./scripts/run_aou_workflow.sh
-```
-
-### Detached execution and monitoring
-
-Use a date-and-time log path and print it before detaching:
-
-```bash
-log_path="run-aou-$(date +'%m%d-%H%M').log"
-nohup env PYTHONUNBUFFERED=1 ./scripts/run_aou_workflow.sh \
-  > "$log_path" 2>&1 < /dev/null &
-echo $! > "${log_path%.log}.pid"
-echo "log: $log_path"
-```
-
-Check the log with:
-
-```bash
-tail -f "$log_path"
-```
-
-## Run AoU stages individually
-
-All commands below run from the repository root.
-
-### 1. Localize and normalize AoU inputs
-
-```bash
-source scripts/setup/env.sh
-
-python3 python/datasets/aou/prepare_aou.py \
-  --config config/aou
-```
-
-`prepare_aou.py` downloads missing PGEN/PVAR/PSAM, phenotype, and ancestry
-files for the chromosomes listed in `config/aou/configGlobal.toml`. Existing localized files are
-reused. It normalizes the Step 0 VAT output, computes minor allele frequency
-from `gnomad_af`, and writes inputs under `data/aou/generated/`.
-
-### 2. Preprocess secure inputs
-
-```bash
-go run -mod=vendor secure-rvas.go prepare \
-  --config config/aou \
-  --clear
-```
-
-Omit `--clear` when the configured `run_dir` must not be replaced.
-
-### Prepare MVP and AoU separately
-
-Use Party 1 for MVP (A) and Party 2 for AoU (B).
-First, split samples and variants into site inputs, preserving PGEN and table formats:
-
-```bash
-python3 -m python.datasets.aou.prepare_aou --config config/aou --config-mvp config/mvp
-```
-
-The source stays under `data/aou/generated`; site inputs use the paths in each
-config (currently `data/mvp/generated` and `data/aou/split`). Skip this command
-when using independent MVP/AoU inputs, and configure their paths directly.
-Both cases then use the same binary preparation commands:
-
-```bash
-# MVP: use an MVP configuration directory pointing at local inputs.
 go run -mod=vendor secure-rvas.go prepare --config config/mvp --party 1
 
-# Copy MVP's public variant lists and set public_var_list in config/aou/configPrepare.toml.
+# On separate machines, copy MVP's lists to AoU and update public_var_list first.
 go run -mod=vendor secure-rvas.go prepare --config config/aou --party 2
 ```
 
-The workflow defaults to splitting: `./scripts/run_aou_workflow.sh`.
-Use `INPUT_MODE=sites ./scripts/run_aou_workflow.sh` for independent inputs or
-an existing split. Completed splits record settings in `split.json` and are reused;
-changed settings/files or incomplete outputs require regenerating both sites.
-The source annotation must contain the configured mask columns; `annotation=pLoF`
-requires an `annotation` column containing `pLoF`.
+Expected output: `<run_dir>/prepared/<ancestry>/chr<chromosome>/A/` for MVP and
+the corresponding `B/` for AoU, with phenotype, covariate, and genotype blocks.
+`genes.txt`, `block_sizes.txt`, `pos.txt`, and `public_variants.tsv` are at the
+chromosome root, beside `A/` or `B/`.
+Actual blocks live under `<run_dir>/cache/prepared/<ancestry>/chr<chromosome>/<hash>/`;
+the `prepared/` chromosome paths are symlinks to those caches. Matching completed
+caches are reused. Failed builds are discarded and rebuilt on the next run.
+Prepared caches and secure, reference, comparison, and metrics outputs stay under
+`run_dir`; input-generation paths are configured separately.
+AoU follows that list's gene/column order, zero-fills absent public variants,
+and places locally selected variants outside the list in `B/private/`.
 
-For B, set the input list path in `configPrepare.toml`:
+AoU's `configPrepare.toml` defaults to:
 
 ```toml
-public_var_list = "/path/mvp-public/chr{chromosome}/public_variants.tsv"
+public_var_list = "output/mvp/prepared/EUR/chr{chromosome}/public_variants.tsv"
 ```
 
-`--public-var-list PATH` overrides this setting. Party 2 requires a list;
-other prepare modes require no list setting. Each site needs only the global,
-prepare, and its own local party configuration. Party 0 needs only the global
-and Party 0 local configuration. Generate matching keys once with all three
-configuration directories:
+This default assumes MVP's `run_dir` is `output/mvp`.
+For separate machines or custom MVP paths, copy the lists to AoU (for example,
+`<run_dir>/inputs/public/chrN/public_variants.tsv`) and update this setting.
 
-```bash
-go run -mod=vendor secure-rvas.go keygen --config-party0 config/cp0 --config-party1 config/mvp --config-party2 config/aou
-```
-
-Start these commands concurrently on their corresponding sites:
-
-```bash
-go run -mod=vendor secure-rvas.go party --config config/cp0 --party 0
-go run -mod=vendor secure-rvas.go party --config config/mvp --party 1
-go run -mod=vendor secure-rvas.go party --config config/aou --party 2
-```
-
-The single-directory examples below describe the original split/local layout. They require all three Local files and a prepare
-configuration without `public_var_list`; use the separate-site commands above
-with the current `config/aou`.
-The single-directory `keygen --config` and `run --config` commands continue to
-support local configurations containing all three parties.
-
-`config/mvp` is the Party 1 template. Update its input paths and column names
-for MVP data. `config/aou` is Party 2, and `config/cp0` is Party 0.
-Both sites must use inputs on the same genome build with biallelic variant IDs
-in `chromosome:position:REF:ALT` form and corresponding gene IDs. Genome-build
-alignment is handled during data preparation. REF/ALT and coordinates are
-checked against PVAR during extraction.
-
-With `--party 1`, all selected variants become A's public columns and only `A/`
-is generated. The ordered list is saved at
-`<run_dir>/prepared/<ancestry>/chr<chromosome>/public_variants.tsv`, beside
-`block_sizes.txt`. No combined list is created at the run root. It includes empty genes so both
-sites retain identical gene/block order.
-
-With `--party 2`, the list fixes gene order and public column order. Public
-variants present in the local PGEN are read regardless of local annotation/MAF
-selection; absent public variants are zero-filled. Locally selected variants
-outside the public list become `B/private`, within the genes listed by MVP.
-Only `B/` is generated. A present variant that cannot be extracted as biallelic
-causes an error rather than silently becoming an absent variant. Missing calls
-retain the existing preprocessing behavior (zero dosage).
-
-For either site, `samples_per_cohort = 0` uses all eligible local samples;
-a positive value caps that site's sample count. `shared_rate` and random variant
-roles are unused. Party 2 takes gene selection from the public list, and both
-sites must configure the same chromosomes. Prepared-cache keys include the
-party and public-list content. Use separate run directories for the two sites
-and keep the received list outside generated directories when using `--clear`.
-`--public-var-list` accepts a `{chromosome}` path template or one combined TSV.
-The public list has no sample-specific fields, so one ancestry's lists can be shared.
-Lists inside `prepared/` are removed with that directory by `--clear`.
-Omitting `--party` retains the original A/B split mode.
-
-### 3. Generate shared PRG keys
+### 4. Generate shared PRG keys
 
 ```bash
 go run -mod=vendor secure-rvas.go keygen \
-  --config config/aou
+  --config-party0 config/cp0 \
+  --config-party1 config/mvp \
+  --config-party2 config/aou
 ```
 
-`keygen` writes each party's key subset under its configured
-`shared_keys_path/<ancestry>/`. It is independent of preprocessing.
+Expected output: each party's key subset under its configured
+`shared_keys_path/<ancestry>/` (default: `<run_dir>/secure/keys/<ancestry>/`).
+For separate machines, provision each site's own subset at its configured path.
 
-### 4. Run secure Burden and SKAT
+### 5. Run secure Burden and SKAT
 
-```bash
-go run -mod=vendor secure-rvas.go run \
-  --config config/aou
-```
-
-The parent only starts the same `party --party 0/1/2` commands that can be run
-directly on separate machines. Input loading and all network/MHE/MPC setup happen
-inside each party process. `<run_dir>/secure/_SUCCESS` is created only after
-every party finishes successfully.
-
-For a distributed run, skip the parent command and start the following on the
-three machines at the same time:
+Start these concurrently in three terminals, or on the corresponding machines:
 
 ```bash
-go run -mod=vendor secure-rvas.go party --config config/aou --party 0
-go run -mod=vendor secure-rvas.go party --config config/aou --party 1
+# Helper
+go run -mod=vendor secure-rvas.go party --config config/cp0 --party 0
+
+# MVP
+go run -mod=vendor secure-rvas.go party --config config/mvp --party 1
+
+# AoU
 go run -mod=vendor secure-rvas.go party --config config/aou --party 2
 ```
 
-An `EOF` or `connection reset by peer` generally means another party or MPC
-lane exited first. Inspect the earliest error in the complete log rather than
-treating the later network panic as the root cause. On a memory-constrained VM,
-retry chromosome 22 with `mpc_num_threads = 2`; use `1` to isolate a
-multi-lane-only failure.
+Expected output: secure result TSVs under MVP's `<run_dir>/secure/<ancestry>/`,
+including `chr<chromosome>.tsv` and `all_secure_results.tsv`.
+Each party writes timing/communication CSVs under its own
+`<run_dir>/metrics/<ancestry>/`.
 
-### 5. Run the reference
+### 6. Run the reference, compare, and plot
+
+For validation in an environment with both sites' prepared inputs available:
 
 ```bash
-source scripts/setup/env.sh
-
 python3 python/analysis/run_reference.py \
-  --config config/aou \
-  --engine python
+  --config config/mvp --config-b config/aou --engine python
+python3 python/analysis/compare_secure_to_reference.py --config config/mvp
+python3 python/analysis/plot_secure_vs_reference.py --config config/mvp
+python3 python/analysis/summarize_metrics.py \
+  --config config/mvp --config-b config/aou
 ```
 
-Use `--engine r` for external R::SKAT. `REFERENCE_WORKERS` controls reference
-task parallelism and `REFERENCE_BLAS_THREADS` controls BLAS threads per task.
-
-### 6. Compare results
-
-```bash
-python3 python/analysis/compare_secure_to_reference.py \
-  --config config/aou
-```
-
-The comparison joins chromosome, gene, and phenotype identities and retains raw
-p-values and absolute errors. Secure Wilson-Hilferty SKAT is compared primarily
-with reference SKAT-Liu and R::SKAT's Davies result across every row. The Davies
-result follows R::SKAT 2.2.5: rank-one and invalid Davies results use the
-modified-Liu fallback. Summaries report both all-row and non-failed R-squared;
-empty genes have p-value 1 and are not counted as failures. Non-failed results
-exclude only rows where R::SKAT reports `Is_Converged=0`.
-
-### 7. Generate plots and summarize metrics
-
-```bash
-python3 python/analysis/plot_secure_vs_reference.py \
-  --config config/aou
-
-./scripts/summarize_metrics.sh config/aou
-```
-
-
-## Output layout
-
-The main derived outputs are written below `run_dir`:
+Expected output under MVP's `run_dir` (default: `output/mvp/`):
 
 ```text
-<run_dir>/
-├── prepared/<ancestry>/chr<chromosome>/
-├── secure/<ancestry>/
-│   ├── chr<chromosome>.tsv
-│   └── all_secure_results.tsv
-├── reference/<ancestry>/
-├── comparison/<ancestry>/
-│   └── plots/
-└── metrics/<ancestry>/
+reference/<ancestry>/all_r_results.csv
+comparison/<ancestry>/all_comparison.csv
+comparison/<ancestry>/plots/
 ```
 
-Timing and communication metrics are separated by ancestry and party. Stage
-timings can overlap under parallel execution and should not be added to
-reconstruct wall-clock time.
+The final command prints combined MVP/AoU timing, communication, and p-value
+accuracy summaries. Use `--engine r` for the R::SKAT reference.
 
-## Repository layout
+## Complete workflow
 
-```text
-crypto/                         Lattigo v6 MHE backend
-mpc/                            Network and MPC backend
-rvas/protocol/                  Secure Burden/SKAT protocol
-rvas/workflow/                  secure-rvas orchestration
-python/preprocessing/           A/B preprocessing
-python/analysis/                Reference, comparison, and plotting
-python/datasets/aou/            AoU localization and VAT tools
-python/datasets/onekg/          Local public-data preparation
-config/aou/                     AoU prepare/global/local configurations
-config/1kg/                     Local 1000 Genomes configurations
-scripts/                        Workflow, metrics, and setup scripts
-data/                           Generated inputs and prepared caches (not tracked)
-output/                         Run results (not tracked)
+After setup, configuration, and annotation/input preparation, run all steps on
+one machine:
+
+```bash
+# AoU-derived A/B split test (default)
+./scripts/run_aou_workflow.sh
+
+# Independent inputs, or reuse an existing split without localization/splitting
+INPUT_MODE=sites ./scripts/run_aou_workflow.sh
 ```
+
+`CONFIG_A`, `CONFIG_B`, and `CONFIG_0` override the three config directories;
+`REFERENCE_ENGINE=r` selects R::SKAT. Party logs are written to
+`output/aou-logs/partyN.log`; `LOG_DIR` overrides this directory.
+
+## Additional information
+
+- Both sites need the same genome build, biallelic variant IDs in
+  `chromosome:position:REF:ALT` form, and corresponding gene IDs.
+- Annotations must contain the configured mask columns. The current
+  `annotation=pLoF` mask requires an `annotation` column containing `pLoF`;
+  `vat_simplify.py` emits `LoF`, so supply the required annotation or explicitly
+  configure a matching mask such as `LoF=HC` in both sites.
+- `samples_per_cohort=0` uses all eligible local samples. In split mode, sample
+  selection and variant-filter settings must match between sites.
+- Party 2 requires MVP's public list. `--public-var-list PATH` overrides its
+  config setting. Keep received lists outside directories removed by `--clear`;
+  `prepare --clear` removes prepared links and derived results while retaining
+  cached blocks, source/site inputs, and logs.
+- When updating an existing checkout, move `run_dir` from Global/Local to
+  `configPrepare.toml` and remove `prepared_cache_dir`. Use `configLocal.toml`;
+  legacy `configLocal.PartyN.toml` remains a fallback. Existing external caches
+  are not moved or deleted automatically; a new run directory builds fresh
+  caches on its own disk. Keep existing input paths if reusing already prepared
+  PGEN and table inputs.
+- The plaintext reference uses both sites' inputs. It is a validation step in
+  an authorized environment, separate from the distributed secure run.
+- Secure SKAT uses Wilson–Hilferty; reference outputs include Liu and Davies
+  p-values. Timing stages may overlap and should not be summed as wall time.
+- An `EOF` or connection reset often follows another party's earlier error;
+  inspect all party logs. Reduce `mpc_num_threads` for memory-constrained runs.
+- The public-data test is documented in
+  [`python/datasets/onekg/README.md`](python/datasets/onekg/README.md).
+
+To create the AoU VAT annotation for the default chromosome-22 test (Bash,
+AoU Workbench with `GOOGLE_PROJECT` set):
+
+```bash
+annotation_dir="$HOME/fed_prep_out"
+mkdir -p "$annotation_dir"
+python3 python/datasets/aou/vat_simplify.py \
+  --chromosome 22 \
+  --pvar <(gsutil -u "$GOOGLE_PROJECT" cat \
+    gs://vwb-aou-datasets-controlled/v9/wgs/short_read/snpindel/exome/pgen/exome.chr22.pvar) \
+  --output "$annotation_dir/chr22_annotation.tsv"
+```
+
+Repeat for each configured chromosome. VAT scanning can take a long time;
+`prepare_aou` consumes local annotation paths and reuses existing localized files.
+Set `vat_annotation` in `config/aou/configPrepare.toml` to change the VAT input
+path; `--annotation` overrides it. This is separate from `annotation`, which
+points to the normalized input used by secure preparation.

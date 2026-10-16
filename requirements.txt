@@ -1,0 +1,4 @@
+numpy
+pgenlib==0.94.1
+matplotlib
+pandas

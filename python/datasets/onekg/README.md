@@ -76,4 +76,8 @@ Override `CONFIG_A`, `CONFIG_B`, `CONFIG_0`, `LOG_DIR`, or `REFERENCE_ENGINE`
 (default `python`) through environment variables. With custom directories,
 update B's `public_var_list` to point at A's output.
 
+Set each party's `run_dir` in its `configPrepare.toml`; every stage reads this
+setting. Prepared caches live under `<run_dir>/cache/prepared/`, and `prepared/`
+contains links to those caches. No separate cache directory setting is needed.
+
 Setup, configuration, individual stages, and output details are the same as the AoU workflow. See the repository [`README.md`](../../../README.md).

@@ -1,4 +1,5 @@
-prepared_cache_dir = "data/mvp/prepared"
+run_dir = "output/mvp"
+
 genotype = "data/mvp/generated/genotype/chr{chromosome}"
 gene_panel = "data/mvp/generated/gene_panel/chr{chromosome}.tsv"
 annotation = "data/mvp/generated/annotation/chr{chromosome}.tsv"

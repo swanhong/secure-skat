@@ -100,6 +100,8 @@ def read_annotations(
             file,
             delimiter="\t",
         )
+        if "MAF" not in reader.fieldnames:
+            reader.fieldnames = ["MAF" if column == "maf" else column for column in reader.fieldnames]
         annotation_columns = tuple(
             reader.fieldnames[3:]
         )
@@ -121,15 +123,18 @@ def read_annotations(
 
 def read_phenotype_table(
     table_path: Path,
-    delimiter: str,
+    delimiter: str | None,
     id_column: str,
     value_columns: tuple[str, ...],
 ) -> dict[str, dict[str, float]]:
     with table_path.open(newline="") as file:
         reader = csv.DictReader(
             file,
-            delimiter=delimiter,
+            delimiter=delimiter or "\t",
         )
+        if delimiter is None and not set((id_column, *value_columns)).issubset(reader.fieldnames or ()):
+            file.seek(0)
+            reader = csv.DictReader(file, delimiter=",")
         if not reader.fieldnames:
             raise ValueError(f"no header in {table_path}")
 
@@ -257,7 +262,7 @@ def load_sample_inputs(
     return SampleInputs(
         phenotypes=read_phenotype_table(
             phenotype_path,
-            delimiter=",",
+            delimiter=None,
             id_column=phenotype_id_column,
             value_columns=phenotype_columns,
         ),

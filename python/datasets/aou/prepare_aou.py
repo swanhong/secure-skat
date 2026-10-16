@@ -583,7 +583,7 @@ def main() -> None:
     parser.add_argument("--ancestry", default=DEFAULT_ANCESTRY)
     parser.add_argument(
         "--annotation",
-        default="~/fed_prep_out/chr{chromosome}_annotation.tsv",
+        help="VAT extraction input (overrides configPrepare.toml vat_annotation)",
     )
     parser.add_argument("--maf-column", default="gnomad_af")
     parser.add_argument("--billing-project")
@@ -593,9 +593,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    with (args.config / "configGlobal.toml").open("rb") as config_file:
-        config = tomllib.load(config_file)
+    config = {}
+    for name in ("configGlobal.toml", "configPrepare.toml"):
+        with (args.config / name).open("rb") as config_file:
+            config.update(tomllib.load(config_file))
     args.chromosome = config["chromosomes"]
+    if args.annotation is None:
+        args.annotation = config.get("vat_annotation", "~/fed_prep_out/chr{chromosome}_annotation.tsv")
 
     if len(set(args.chromosome)) != len(args.chromosome):
         parser.error("chromosomes must not contain duplicates")

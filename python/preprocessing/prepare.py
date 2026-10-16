@@ -222,8 +222,6 @@ def prepare_cached_blocks(
     request: PrepareRequest, chromosome: int, ancestry: str, build: Callable[..., Path],
 ) -> Path:
     cache_root = request.prepared_cache_dir.resolve()
-    if cache_root.is_relative_to(request.run_dir.resolve()):
-        raise ValueError("prepared_cache_dir must be outside run_dir")
     output = request.run_dir / "prepared" / ancestry / f"chr{chromosome}"
     if output.exists() and not output.is_symlink():
         raise ValueError(f"{output} is not a link; use a new run_dir or prepare --clear")

@@ -10,6 +10,7 @@ def load_party_config(directory: Path, party_id: int = 1) -> dict:
     for name in (
         "configGlobal.toml",
         local_name,
+        "configPrepare.toml",
     ):
         with (directory / name).open("rb") as config_file:
             config.update(tomllib.load(config_file))

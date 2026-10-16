@@ -9,6 +9,8 @@ if [[ "$(uname -s)" != "Linux" || "$(uname -m)" != "x86_64" ]]; then
   exit 1
 fi
 
+python3 -c 'import sys; sys.exit("Python 3.11+ is required." if sys.version_info < (3, 11) else 0)'
+
 if [[ -x "$PLINK2" ]]; then
   echo "PLINK 2 already exists at $PLINK2"
 else
@@ -25,7 +27,7 @@ else
   install -m 0755 "$work_dir/unpacked/plink2" "$PLINK2"
 fi
 
-python3 -m pip install pgenlib==0.94.1
+python3 -m pip install -r requirements.txt
 
 mkdir -p "$R_LIBS_USER"
 Rscript - <<'RS'
