@@ -158,12 +158,20 @@ func runChromosome(
 }
 
 func runParty(config *Config, partyID int) error {
+	var networks []*mpc.Network
+	defer func() {
+		for _, network := range networks {
+			network.CloseAll()
+		}
+	}()
+
 	for _, ancestry := range config.Ancestries {
 		if err := runAncestry(
 			config,
 			partyID,
 			filepath.Join(config.SharedKeysPath, ancestry),
 			ancestry,
+			&networks,
 		); err != nil {
 			return fmt.Errorf("run ancestry %s: %w", ancestry, err)
 		}
@@ -176,6 +184,7 @@ func runAncestry(
 	partyID int,
 	sharedKeysPath string,
 	ancestry string,
+	sharedNetworks *[]*mpc.Network,
 ) error {
 	metrics := newMetricRecorder(
 		fmt.Sprintf("party%d", partyID),
@@ -194,11 +203,25 @@ func runAncestry(
 		)
 	}
 
+	if *sharedNetworks == nil {
+		done = metrics.start("network_init", 0, nil)
+		*sharedNetworks = mpc.InitCommunication(
+			config.BindingIP,
+			config.Servers,
+			partyID,
+			partyCount,
+			config.MpcNumThreads,
+			sharedKeysPath,
+		)
+		done()
+	}
+
 	secureSession, err := openSession(
 		config,
 		partyID,
 		input,
 		sharedKeysPath,
+		*sharedNetworks,
 		metrics,
 	)
 	if err != nil {
@@ -208,7 +231,6 @@ func runAncestry(
 			err,
 		)
 	}
-	defer secureSession.close()
 
 	networks := mpc.ParallelNetworks(secureSession.networks)
 	done = metrics.start("null_model", 0, networks)

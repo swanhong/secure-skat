@@ -77,6 +77,7 @@ func openSession(
 	partyID int,
 	input *PartyInput,
 	sharedKeysPath string,
+	networks []*mpc.Network,
 	metrics *metricRecorder,
 ) (*session, error) {
 	if sharedKeysPath == "" {
@@ -91,23 +92,14 @@ func openSession(
 	if err != nil {
 		return nil, err
 	}
-	done := metrics.start("network_init", 0, nil)
-	networks := mpc.InitCommunication(
-		config.BindingIP,
-		config.Servers,
-		partyID,
-		partyCount,
-		config.MpcNumThreads,
-		sharedKeysPath,
-	)
-	done()
+	mpc.InitializeParallelPRG(sharedKeysPath, networks, partyID, partyCount)
 
 	parallelNetworks := mpc.ParallelNetworks(networks)
 	for _, network := range networks {
 		network.EnableLogging()
 	}
 
-	done = metrics.start(
+	done := metrics.start(
 		"sample_count_exchange",
 		0,
 		parallelNetworks,
@@ -135,9 +127,6 @@ func openSession(
 			heParameters.MaxSlots(),
 		)
 		if err != nil {
-			for _, network := range networks {
-				network.CloseAll()
-			}
 			return nil, err
 		}
 		input.Chromosomes[index].CryptoParams = cryptoParams
@@ -194,12 +183,6 @@ func openSession(
 		metrics:    metrics,
 		dataParams: dataParams,
 	}, nil
-}
-
-func (session *session) close() {
-	for _, network := range session.networks {
-		network.CloseAll()
-	}
 }
 
 func requiredGaloisElements(
