@@ -21,7 +21,6 @@ mpc_num_threads = 2
 data_bits = 70
 fractional_bits = 40
 probes = 50
-seed = 42
 
 binding_ipaddr = "127.0.0.1"
 

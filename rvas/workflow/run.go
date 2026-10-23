@@ -1,7 +1,11 @@
 package workflow
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 
@@ -232,6 +236,13 @@ func runAncestry(
 		)
 	}
 
+	traceKey, err := os.ReadFile(filepath.Join(sharedKeysPath, "shared_key_global.bin"))
+	if err != nil {
+		return err
+	}
+	if len(traceKey) != 32 {
+		return fmt.Errorf("trace key must contain 32 bytes")
+	}
 	networks := mpc.ParallelNetworks(secureSession.networks)
 	done = metrics.start("null_model", 0, networks)
 	beta, xtxInv, rss := protocol.SetupNull(
@@ -260,12 +271,13 @@ func runAncestry(
 			chromosome,
 			networks,
 		)
+		traceSeed := deriveTraceSeed(traceKey, ancestry, chromosome)
 		result, err := runChromosome(
 			secureSession,
 			model,
 			input,
 			chromosomeIndex,
-			config.Seed,
+			traceSeed,
 		)
 		done()
 		if err != nil {
@@ -304,4 +316,10 @@ func runAncestry(
 	}
 	metrics.printTimeTree()
 	return nil
+}
+
+func deriveTraceSeed(key []byte, ancestry string, chromosome int) int64 {
+	mac := hmac.New(sha256.New, key)
+	fmt.Fprintf(mac, "secure-rvas/trace/v1\x00%s\x00%d", ancestry, chromosome)
+	return int64(binary.BigEndian.Uint64(mac.Sum(nil)[:8]) & ((1 << 63) - 1))
 }

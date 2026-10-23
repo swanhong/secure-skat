@@ -1,6 +1,6 @@
-run_dir = "output/test1016/1kg-B"
+run_dir = "output/test1023/1kg-B"
 
-public_var_list = "output/test1016/1kg-A/public_variants.tsv"
+public_var_list = "output/test1023/1kg-A/public_variants.tsv"
 genotype = "data/1kg/generated/genotype/chr{chromosome}"
 gene_panel = "data/1kg/generated/gene_panel/chr{chromosome}.tsv"
 annotation = "data/1kg/generated/annotation/chr{chromosome}.tsv"
@@ -16,8 +16,6 @@ ancestry_column = "ancestry_pred_other"
 masks = ["LoF=HC"]
 max_maf = 0.01
 samples_per_cohort = 100
-sample_seed = 42
-role_seed = 42
 shared_rate = 0.7
 plink2_bin = "plink2"
 

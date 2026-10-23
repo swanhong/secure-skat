@@ -42,8 +42,6 @@ type Config struct {
 	MaxMAF            *float64 `toml:"max_maf"`
 
 	SamplesPerCohort int64   `toml:"samples_per_cohort"`
-	SampleSeed       int64   `toml:"sample_seed"`
-	RoleSeed         int64   `toml:"role_seed"`
 	SharedRate       float64 `toml:"shared_rate"`
 
 	CKKS           string `toml:"ckks"`
@@ -51,7 +49,6 @@ type Config struct {
 	DataBits       int    `toml:"data_bits"`
 	FractionalBits int    `toml:"fractional_bits"`
 	Probes         int    `toml:"probes"`
-	Seed           int64  `toml:"seed"`
 
 	Plink2Bin     string        `toml:"plink2_bin"`
 	GeneSelection GeneSelection `toml:"gene_selection"`
@@ -72,7 +69,6 @@ type Config struct {
 type GeneSelection struct {
 	Mode          string `toml:"mode"`
 	PerChromosome int    `toml:"per_chromosome"`
-	Seed          int64  `toml:"seed"`
 	Path          string `toml:"path"`
 }
 

@@ -7,7 +7,6 @@ from .model import GeneRef, GeneVariants, PrepInputs
 def select_random_gene_groups(
         gene_groups: Sequence[GeneVariants],
         gene_count: int,
-        seed: int,
 ) -> tuple[GeneVariants, ...]:
     if gene_count < 1:
         raise ValueError("random count must be positive")
@@ -23,7 +22,7 @@ def select_random_gene_groups(
 
     selected_ids = {
         group.gene.gene_id
-        for group in random.Random(seed).sample(
+        for group in random.Random().sample(
             candidates,
             gene_count,
         )

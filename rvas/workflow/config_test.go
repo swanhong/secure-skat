@@ -46,3 +46,20 @@ func TestPrepareRunDir(t *testing.T) {
 		write(name, files[name])
 	}
 }
+
+func TestTraceSeedDerivation(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	base := deriveTraceSeed(key, "EUR", 1)
+	if deriveTraceSeed(key, "EUR", 1) != base {
+		t.Fatal("derivation not deterministic")
+	}
+	for _, other := range []int64{
+		deriveTraceSeed(key, "AFR", 1),
+		deriveTraceSeed(key, "EUR", 2),
+		deriveTraceSeed([]byte("different key"), "EUR", 1),
+	} {
+		if other == base {
+			t.Fatal("derivation did not separate contexts")
+		}
+	}
+}

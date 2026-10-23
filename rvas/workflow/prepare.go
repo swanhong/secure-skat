@@ -13,7 +13,6 @@ import (
 type prepareGeneSelection struct {
 	Mode          string `json:"mode"`
 	PerChromosome int    `json:"per_chromosome"`
-	Seed          int64  `json:"seed"`
 	Path          string `json:"path"`
 }
 
@@ -46,8 +45,6 @@ type prepareRequest struct {
 	MaxMAF            *float64          `json:"max_maf"`
 
 	SamplesPerCohort int64   `json:"samples_per_cohort"`
-	SampleSeed       int64   `json:"sample_seed"`
-	RoleSeed         int64   `json:"role_seed"`
 	SharedRate       float64 `json:"shared_rate"`
 
 	GeneSelection prepareGeneSelection `json:"gene_selection"`
@@ -84,13 +81,10 @@ func prepareRequestFromConfig(config *Config) prepareRequest {
 		Mask:              mask,
 		MaxMAF:            config.MaxMAF,
 		SamplesPerCohort:  config.SamplesPerCohort,
-		SampleSeed:        config.SampleSeed,
-		RoleSeed:          config.RoleSeed,
 		SharedRate:        config.SharedRate,
 		GeneSelection: prepareGeneSelection{
 			Mode:          config.GeneSelection.Mode,
 			PerChromosome: config.GeneSelection.PerChromosome,
-			Seed:          config.GeneSelection.Seed,
 			Path:          config.GeneSelection.Path,
 		},
 	}

@@ -333,7 +333,7 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
     configs = []
     for directory in (args.config_mvp, args.config):
         config = {"shared_rate": 0.6, "is_cov_single_column": True,
-                  "sample_seed": 0, "role_seed": 0, "samples_per_cohort": 0}
+                  "samples_per_cohort": 0}
         for name in ("configGlobal.toml", "configPrepare.toml"):
             with (directory / name).open("rb") as stream:
                 config.update(tomllib.load(stream))
@@ -345,7 +345,7 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
 
     # step2: Check that both sites use matching sample selection and variant filters.
     for field in ("chromosomes", "ancestries", "phenotype_columns", "num_cov",
-                  "samples_per_cohort", "sample_seed", "masks", "max_maf"):
+                  "samples_per_cohort", "masks", "max_maf"):
         if mvp.get(field) != aou.get(field):
             raise ValueError(f"A/B splitting requires matching {field} in both configs")
 
@@ -406,7 +406,6 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
     # step5: Prepare gene selection and annotation masks from the MVP config.
     selection = mvp["gene_selection"]
     request = GeneSelectionRequest(selection["mode"], selection.get("per_chromosome", 0),
-                                   selection.get("seed", 0),
                                    Path(selection["path"]) if selection.get("path") else None)
     file_genes = read_gene_panel(request.path) if request.mode == "file" else ()
     mask = mvp["mask"]
@@ -426,7 +425,7 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
             for ancestry in mvp["ancestries"]:
                 rows = select_rows(reference_ids, samples.phenotypes, samples.covariates,
                                    samples.ancestries, ancestry, tuple(mvp["phenotype_columns"]),
-                                   mvp["samples_per_cohort"] or "all", mvp["sample_seed"])
+                                   mvp["samples_per_cohort"] or "all")
                 for index in (0, 1):
                     rows_by_site[index][ancestry] = rows[index]
 
@@ -464,7 +463,7 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
             unique = tuple(variant for variant in group.variants if variant.key not in seen)
             seen.update(variant.key for variant in unique)
             unique_groups.append(GeneVariants(group.gene, unique))
-        roles = {variant.key: role for plan in assign_roles(unique_groups, mvp["role_seed"], mvp["shared_rate"])
+        roles = {variant.key: role for plan in assign_roles(unique_groups, mvp["shared_rate"])
                  for variant, role in plan.variant_roles}
         if not groups or (request.mode == "random" and any(
                 all(roles[v.key] == "private" for v in group.variants) for group in groups)):

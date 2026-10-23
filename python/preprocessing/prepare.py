@@ -37,7 +37,6 @@ from .selection import (
 class GeneSelectionRequest:
     mode: Literal["random", "file", "all"]
     per_chromosome: int
-    seed: int
     path: Path | None
 
 
@@ -68,8 +67,6 @@ class PrepareRequest:
     max_maf: float | None
 
     samples_per_cohort: int
-    sample_seed: int
-    role_seed: int
     shared_rate: float
 
     gene_selection: GeneSelectionRequest
@@ -93,7 +90,7 @@ def chromosome_path(
 def split_input_config(config: Mapping) -> dict:
     """Normalize the input settings shared by TOML configs and PrepareRequest."""
     fields = ("chromosomes", "ancestries", "phenotype_columns", "num_cov", "max_maf",
-              "samples_per_cohort", "sample_seed", "role_seed", "shared_rate",
+              "samples_per_cohort", "shared_rate",
               "phenotype_id_column", "covariate_id_column", "covariate_column",
               "covariate_columns", "is_cov_single_column", "ancestry_id_column", "ancestry_column")
     result = {name: config.get(name, [] if name == "covariate_columns" else "") for name in fields}
@@ -102,7 +99,7 @@ def split_input_config(config: Mapping) -> dict:
                       for key, value in config["mask"].items()}
     selection = config["gene_selection"]
     result["gene_selection"] = {"mode": selection["mode"], "per_chromosome": selection.get("per_chromosome", 0),
-                                "seed": selection.get("seed", 0), "path": str(selection.get("path") or "")}
+                                "path": str(selection.get("path") or "")}
     for name in ("genotype", "gene_panel", "annotation", "phenotype", "covariate", "ancestry"):
         result[name] = str(Path(config[name]).resolve())
     return json.loads(json.dumps(result))
@@ -152,7 +149,6 @@ def select_gene_groups(
         return select_random_gene_groups(
             gene_groups=all_groups,
             gene_count=request.per_chromosome,
-            seed=request.seed,
         )
 
     if request.mode == "file":
@@ -220,12 +216,17 @@ def prepared_cache_config(request: PrepareRequest, chromosome: int, ancestry: st
 
 def prepare_cached_blocks(
     request: PrepareRequest, chromosome: int, ancestry: str, build: Callable[..., Path],
+    selection: dict,
 ) -> Path:
     cache_root = request.prepared_cache_dir.resolve()
     output = request.run_dir / "prepared" / ancestry / f"chr{chromosome}"
     if output.exists() and not output.is_symlink():
         raise ValueError(f"{output} is not a link; use a new run_dir or prepare --clear")
-    config = json.dumps(prepared_cache_config(request, chromosome, ancestry), sort_keys=True, indent=2) + "\n"
+    cache_config = prepared_cache_config(request, chromosome, ancestry)
+    cache_config["selection_sha256"] = hashlib.sha256(
+        json.dumps(selection, sort_keys=True).encode()
+    ).hexdigest()
+    config = json.dumps(cache_config, sort_keys=True, indent=2) + "\n"
     parent = cache_root / ancestry
     parent.mkdir(parents=True, exist_ok=True)
     cached = parent / f"chr{chromosome}"
@@ -341,7 +342,6 @@ def prepare_chromosomes(
                     ancestry=ancestry,
                     phenotype_columns=request.phenotype_columns,
                     samples_per_cohort=samples_per_cohort,
-                    sample_seed=request.sample_seed,
                     party=request.party,
                 )
         elif inputs.psam_ids != reference_psam_ids:
@@ -382,7 +382,6 @@ def prepare_chromosomes(
                 gene_variants=chromosome_groups,
                 rows_a=rows_a,
                 rows_b=rows_b,
-                role_seed=request.role_seed,
                 shared_rate=request.shared_rate,
                 extractor=extractor,
             )
@@ -394,7 +393,12 @@ def prepare_chromosomes(
                     public_groups=chromosome_public, available_variants=inputs.variants,
                 )
             if request.prepared_cache_dir is not None:
-                prepare_cached_blocks(request, chromosome, ancestry, build)
+                prepare_cached_blocks(request, chromosome, ancestry, build, selection={
+                    "samples_a": rows_a.sample_ids,
+                    "samples_b": rows_b.sample_ids,
+                    "genes": [(group.gene.gene_id, [variant.key for variant in group.variants])
+                              for group in chromosome_groups],
+                })
             else:
                 build(out_dir=request.run_dir / "prepared" / ancestry / f"chr{chromosome}")
 
@@ -448,13 +452,10 @@ def read_prepare_request(
         mask=payload["mask"],
         max_maf=payload["max_maf"],
         samples_per_cohort=payload["samples_per_cohort"],
-        sample_seed=payload["sample_seed"],
-        role_seed=payload["role_seed"],
         shared_rate=payload["shared_rate"],
         gene_selection=GeneSelectionRequest(
             mode=gene_selection["mode"],
             per_chromosome=gene_selection["per_chromosome"],
-            seed=gene_selection["seed"],
             path=(
                 Path(gene_selection_path)
                 if gene_selection_path

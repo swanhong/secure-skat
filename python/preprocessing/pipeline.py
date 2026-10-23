@@ -179,10 +179,9 @@ def build_blocks(
 
 def assign_roles(
         gene_variants: Sequence[GeneVariants],
-        role_seed: int=42,
         shared_rate: float=0.6,
 ) -> tuple[GenePlan, ...]:
-    rng = random.Random(role_seed)
+    rng = random.Random()
     plans = []
 
     for gene_group in gene_variants:
@@ -325,14 +324,12 @@ def select_rows(
     ancestry: str,
     phenotype_columns: Sequence[str],
     samples_per_cohort: int | Literal["all"],
-    sample_seed: int=42,
     party: int=0,
 ) -> tuple[PhenoCovRows, PhenoCovRows]:
     print("Selecting rows for cohorts")
     print("  ancestry:", ancestry)
     print("  phenotype columns:", ", ".join(phenotype_columns))
     print("  samples per cohort:", samples_per_cohort)
-    print("  sample seed:", sample_seed)
     # filter samples
     #   - have both have both phenotypes and covariates,
     #   - all values are finite (not nan, inf, -inf, ...)
@@ -373,7 +370,7 @@ def select_rows(
             )
         )
 
-    random.Random(sample_seed).shuffle(eligible)
+    random.Random().shuffle(eligible)
 
     if party:
         count = len(eligible) if samples_per_cohort == "all" else samples_per_cohort
@@ -424,7 +421,6 @@ def prepare_blocks(
         gene_variants: Sequence[GeneVariants],
         rows_a: PhenoCovRows,
         rows_b: PhenoCovRows,
-        role_seed: int,
         out_dir: Path,
         shared_rate: float=0.6,
         extractor: GenotypeExtractor = pgen_extract,
@@ -435,7 +431,6 @@ def prepare_blocks(
 
     plans = assign_roles(
         gene_variants=gene_variants,
-        role_seed=role_seed,
         shared_rate=shared_rate,
     )
 

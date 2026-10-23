@@ -1,6 +1,9 @@
 package protocol
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"fmt"
 	"math/rand"
 
 	mpc_core "github.com/hhcho/mpc-core"
@@ -50,8 +53,9 @@ func TraceProbe(
 		return nil, nil, scale
 	}
 
-	newProbe := func(probSeed int64) *mat.Dense {
-		rng := rand.New(rand.NewSource(probSeed))
+	newProbe := func(stream string) *mat.Dense {
+		digest := sha256.Sum256([]byte(fmt.Sprintf("secure-rvas/trace/%s/%d", stream, seed)))
+		rng := rand.New(rand.NewSource(int64(binary.BigEndian.Uint64(digest[:8]))))
 		values := make([]float64, variantCount*probeCount)
 		for index := range values {
 			values[index] = -1
@@ -63,7 +67,7 @@ func TraceProbe(
 		return mat.NewDense(variantCount, probeCount, values)
 	}
 
-	return newProbe(seed), newProbe(seed + 1), scale
+	return newProbe("public"), newProbe("correction"), scale
 
 }
 

@@ -1,4 +1,4 @@
-run_dir = "output/test1016/1kg-A"
+run_dir = "output/test1023/1kg-A"
 
 genotype = "data/1kg/generated/genotype/chr{chromosome}"
 gene_panel = "data/1kg/generated/gene_panel/chr{chromosome}.tsv"
@@ -15,12 +15,9 @@ ancestry_column = "ancestry_pred_other"
 masks = ["LoF=HC"]
 max_maf = 0.001
 samples_per_cohort = 100
-sample_seed = 42
-role_seed = 42
 shared_rate = 0.7
 plink2_bin = "plink2"
 
 [gene_selection]
 mode = "random"
 per_chromosome = 3
-seed = 42
