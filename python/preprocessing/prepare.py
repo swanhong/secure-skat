@@ -62,7 +62,6 @@ class PrepareRequest:
     ancestry_column: str
     phenotype_columns: tuple[str, ...]
     ancestries: tuple[str, ...]
-    num_cov: int
     mask: Mapping[str, str | Collection[str]]
     max_maf: float | None
 
@@ -89,7 +88,7 @@ def chromosome_path(
 
 def split_input_config(config: Mapping) -> dict:
     """Normalize the input settings shared by TOML configs and PrepareRequest."""
-    fields = ("chromosomes", "ancestries", "phenotype_columns", "num_cov", "max_maf",
+    fields = ("chromosomes", "ancestries", "phenotype_columns", "max_maf",
               "samples_per_cohort", "shared_rate",
               "phenotype_id_column", "covariate_id_column", "covariate_column",
               "covariate_columns", "is_cov_single_column", "ancestry_id_column", "ancestry_column")
@@ -286,7 +285,6 @@ def prepare_chromosomes(
         ancestry_groups=request.ancestries,
         ancestry_id_column=request.ancestry_id_column,
         ancestry_column=request.ancestry_column,
-        num_cov=request.num_cov,
     )
 
     if request.samples_per_cohort == 0:
@@ -448,7 +446,6 @@ def read_prepare_request(
             ancestry.strip().upper()
             for ancestry in payload["ancestries"]
         ),
-        num_cov=payload["num_cov"],
         mask=payload["mask"],
         max_maf=payload["max_maf"],
         samples_per_cohort=payload["samples_per_cohort"],

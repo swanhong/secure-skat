@@ -37,7 +37,6 @@ type Config struct {
 	AncestryColumn    string   `toml:"ancestry_column"`
 	PhenotypeColumns  []string `toml:"phenotype_columns"`
 	Ancestries        []string `toml:"ancestries"`
-	NumCov            int      `toml:"num_cov"`
 	Masks             []string `toml:"masks"`
 	MaxMAF            *float64 `toml:"max_maf"`
 
@@ -135,7 +134,17 @@ func validateGlobalConfig(config *Config) error {
 	if len(config.Chromosomes) == 0 || len(config.Ancestries) == 0 || len(config.PhenotypeColumns) == 0 {
 		return fmt.Errorf("chromosomes, ancestries, and phenotype_columns are required")
 	}
-	if config.NumCov < 1 || config.MpcNumThreads < 1 || config.DataBits < 1 ||
+	if len(config.CovariateColumns) == 0 {
+		return fmt.Errorf("covariate_columns is required")
+	}
+	seen := make(map[string]bool, len(config.CovariateColumns))
+	for _, column := range config.CovariateColumns {
+		if strings.TrimSpace(column) == "" || seen[column] {
+			return fmt.Errorf("covariate_columns must contain distinct nonblank names")
+		}
+		seen[column] = true
+	}
+	if config.MpcNumThreads < 1 || config.DataBits < 1 ||
 		config.FractionalBits < 1 || config.FractionalBits > config.DataBits || config.Probes < 1 {
 		return fmt.Errorf("invalid protocol dimensions")
 	}
@@ -154,9 +163,6 @@ func validatePrepareConfig(config *Config) error {
 	}
 	if config.IsCovSingleColumn && strings.TrimSpace(config.CovariateColumn) == "" {
 		return fmt.Errorf("covariate_column is required")
-	}
-	if !config.IsCovSingleColumn && len(config.CovariateColumns) != config.NumCov {
-		return fmt.Errorf("covariate_columns must contain num_cov columns")
 	}
 	return requireStrings(
 		"run_dir", config.RunDir,

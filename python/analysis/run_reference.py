@@ -146,7 +146,7 @@ def run_reference(config_path: Path, engine: str = "r", config_b: Path | None = 
     run_dir_b = run_dir_a
     if config_b is not None:
         b = load_party_config(config_b, party_id=2)
-        for name in ("chromosomes", "ancestries", "phenotype_columns", "num_cov"):
+        for name in ("chromosomes", "ancestries", "phenotype_columns", "covariate_columns"):
             if config[name] != b[name]:
                 raise ValueError(f"A and B {name} must match")
         run_dir_b = Path(b["run_dir"])

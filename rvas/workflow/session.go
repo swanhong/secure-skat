@@ -118,7 +118,7 @@ func openSession(
 		}
 		dataParams := protocol.DataParams{
 			Genes:          chromosome.Genes,
-			C:              config.NumCov + 1,
+			C:              len(config.CovariateColumns) + 1,
 			PhenotypeCount: len(config.PhenotypeColumns),
 		}
 		cryptoParams, err := protocol.BuildCryptoParams(
@@ -146,7 +146,7 @@ func openSession(
 			NA:             nA,
 			NB:             nB,
 			N:              nA + nB,
-			C:              config.NumCov + 1,
+			C:              len(config.CovariateColumns) + 1,
 			PhenotypeCount: len(config.PhenotypeColumns),
 		}
 	}

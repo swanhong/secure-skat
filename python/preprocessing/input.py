@@ -1,5 +1,6 @@
 import csv
 import math
+import re
 from pathlib import Path
 
 from .model import (
@@ -163,13 +164,23 @@ def read_phenotype_table(
         }
 
 
+def packed_covariate_indices(covariate_columns: tuple[str, ...]) -> tuple[int, ...]:
+    """The packed PCA vector stores PC1 at index 0, PC2 at index 1, etc."""
+    if not covariate_columns or len(set(covariate_columns)) != len(covariate_columns):
+        raise ValueError("covariate_columns must be nonempty and contain no duplicates")
+    if any(re.fullmatch(r"PC[1-9][0-9]*", name) is None for name in covariate_columns):
+        raise ValueError("packed covariate_columns must use PC1, PC2, ... names")
+    return tuple(int(name[2:]) - 1 for name in covariate_columns)
+
+
 def read_covariate_table(
     table_path: Path,
     delimiter: str,
     id_column: str,
     covariate_column: str,
-    num_cov: int,
+    covariate_columns: tuple[str, ...],
 ) -> dict[str, tuple[float, ...]]:
+    indices = packed_covariate_indices(covariate_columns)
     with table_path.open(newline="") as file:
         reader = csv.DictReader(file, delimiter=delimiter)
         if not reader.fieldnames:
@@ -188,13 +199,14 @@ def read_covariate_table(
 
             contents = encoded[1:-1]
             fields = contents.split(",") if contents else []
-            if len(fields) < num_cov:
+            missing = [name for name, index in zip(covariate_columns, indices) if index >= len(fields)]
+            if missing:
                 raise ValueError(
                     f"{covariate_column} for {row[id_column]} has "
-                    f"{len(fields)} values, need {num_cov}"
+                    f"{len(fields)} values, missing {', '.join(missing)}"
                 )
 
-            values = tuple(float(value.strip()) for value in fields[:num_cov])
+            values = tuple(float(fields[index].strip()) for index in indices)
             if not all(math.isfinite(value) for value in values):
                 raise ValueError(
                     f"non-finite {covariate_column} value for {row[id_column]}"
@@ -237,8 +249,9 @@ def load_sample_inputs(
     ancestry_groups: tuple[str, ...],
     ancestry_id_column: str,
     ancestry_column: str,
-    num_cov: int,
 ) -> SampleInputs:
+    if not covariate_columns or len(set(covariate_columns)) != len(covariate_columns):
+        raise ValueError("covariate_columns must be nonempty and contain no duplicates")
     print("Loading sample inputs")
     print(f"  phenotype: {phenotype_path}")
     print(f"  covariate: {covariate_path}")
@@ -248,7 +261,7 @@ def load_sample_inputs(
         path = Path(str(covariate_path).replace("{anc}", ancestry.lower()))
         if is_cov_single_column:
             table = read_covariate_table(
-                path, "\t", covariate_id_column, covariate_column, num_cov,
+                path, "\t", covariate_id_column, covariate_column, covariate_columns,
             )
         else:
             rows = read_phenotype_table(

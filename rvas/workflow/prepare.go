@@ -40,7 +40,6 @@ type prepareRequest struct {
 	AncestryColumn    string            `json:"ancestry_column"`
 	PhenotypeColumns  []string          `json:"phenotype_columns"`
 	Ancestries        []string          `json:"ancestries"`
-	NumCov            int               `json:"num_cov"`
 	Mask              map[string]string `json:"mask"`
 	MaxMAF            *float64          `json:"max_maf"`
 
@@ -77,7 +76,6 @@ func prepareRequestFromConfig(config *Config) prepareRequest {
 		AncestryColumn:    config.AncestryColumn,
 		PhenotypeColumns:  config.PhenotypeColumns,
 		Ancestries:        config.Ancestries,
-		NumCov:            config.NumCov,
 		Mask:              mask,
 		MaxMAF:            config.MaxMAF,
 		SamplesPerCohort:  config.SamplesPerCohort,

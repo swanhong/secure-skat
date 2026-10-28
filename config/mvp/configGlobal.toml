@@ -13,7 +13,6 @@ chromosomes = [21, 22]
 phenotype_columns = ["LDLC_final_mgdl_6sd_masked", "HDLC_mgdl_6sd_masked"]
 # ancestries = ["EUR", "AFR", "AMR"]
 ancestries = ["EUR", "AFR"]
-num_cov = 10
 
 ckks = "PN14QP436S45"
 # mpc_num_threads = 8

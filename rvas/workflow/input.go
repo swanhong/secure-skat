@@ -38,12 +38,21 @@ func readTextMatrix(path string, columns int) (*mat.Dense, error) {
 		return nil, err
 	}
 
-	fields := strings.Fields(string(data))
-	values := make([]float64, len(fields))
-	for index, field := range fields {
-		values[index], err = strconv.ParseFloat(field, 64)
-		if err != nil {
-			return nil, err
+	var values []float64
+	for lineIndex, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) != columns {
+			return nil, fmt.Errorf("%s:%d: expected %d columns, got %d", path, lineIndex+1, columns, len(fields))
+		}
+		for _, field := range fields {
+			value, err := strconv.ParseFloat(field, 64)
+			if err != nil {
+				return nil, err
+			}
+			values = append(values, value)
 		}
 	}
 	return mat.NewDense(len(values)/columns, columns, values), nil
@@ -263,7 +272,7 @@ func loadPartyInput(
 	input.X, input.Y, err = readRows(
 		expandInputPath(config.CovariateFile, ancestry, firstChromosome),
 		expandInputPath(config.PhenotypeFile, ancestry, firstChromosome),
-		config.NumCov,
+		len(config.CovariateColumns),
 		len(config.PhenotypeColumns),
 	)
 	if err != nil {

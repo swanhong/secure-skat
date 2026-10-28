@@ -10,7 +10,9 @@ import subprocess
 import tomllib
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from python.preprocessing.input import load_inputs, load_sample_inputs, read_gene_panel
+from python.preprocessing.input import (
+    load_inputs, load_sample_inputs, packed_covariate_indices, read_gene_panel,
+)
 from python.preprocessing.model import GeneVariants
 from python.preprocessing.output import write_selected_genes
 from python.preprocessing.pipeline import assign_roles, select_rows
@@ -323,6 +325,13 @@ def write_table(path: Path, header, rows, delimiter="\t") -> None:
         writer.writerows(rows)
 
 
+def encode_packed_covariates(values: tuple[float, ...], indices: tuple[int, ...]) -> str:
+    packed = [None] * (max(indices) + 1)
+    for index, value in zip(indices, values):
+        packed[index] = value
+    return json.dumps(packed)
+
+
 def site_path(config: dict, field: str, chromosome=0, ancestry="") -> Path:
     return Path(config[field].replace("{chromosome}", str(chromosome))
                 .replace("{anc}", ancestry.lower()))
@@ -344,7 +353,7 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
     mvp, aou = configs
 
     # step2: Check that both sites use matching sample selection and variant filters.
-    for field in ("chromosomes", "ancestries", "phenotype_columns", "num_cov",
+    for field in ("chromosomes", "ancestries", "phenotype_columns", "covariate_columns",
                   "samples_per_cohort", "masks", "max_maf"):
         if mvp.get(field) != aou.get(field):
             raise ValueError(f"A/B splitting requires matching {field} in both configs")
@@ -400,7 +409,7 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
         is_cov_single_column=aou["is_cov_single_column"],
         ancestry_groups=tuple(aou["ancestries"]),
         ancestry_id_column=aou["ancestry_id_column"],
-        ancestry_column=aou["ancestry_column"], num_cov=aou["num_cov"],
+        ancestry_column=aou["ancestry_column"],
     )
 
     # step5: Prepare gene selection and annotation masks from the MVP config.
@@ -441,10 +450,13 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
                 write_table(site_path(config, "ancestry"),
                             (config["ancestry_id_column"], config["ancestry_column"]),
                             ((group.sample_ids[i], ancestry) for ancestry, group, i in members))
+                packed_indices = (packed_covariate_indices(tuple(config["covariate_columns"]))
+                                  if config["is_cov_single_column"] else ())
                 covariate_rows = {}
                 for ancestry, group, i in members:
                     path = site_path(config, "covariate", ancestry=ancestry)
-                    values = ((json.dumps(group.covariates[i]),) if config["is_cov_single_column"]
+                    values = ((encode_packed_covariates(group.covariates[i], packed_indices),)
+                              if config["is_cov_single_column"]
                               else group.covariates[i])
                     covariate_rows.setdefault(path, []).append((group.sample_ids[i], *values))
                 columns = ((config["covariate_column"],) if config["is_cov_single_column"]
