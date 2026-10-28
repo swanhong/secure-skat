@@ -1,8 +1,24 @@
 
 import random
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 
 from .model import GeneRef, GeneVariants, PrepInputs
+
+
+def split_sample_ids(
+    sample_ids: Sequence[str], ancestries: Mapping[str, str],
+    num_parties: int, party: int,
+) -> tuple[str, ...]:
+    """Partition a common source once, independently of analysis/sample filters."""
+    if num_parties != 2 or party not in (1, 2):
+        raise ValueError("debug sample splitting requires 2 partitions and party 1 or 2")
+    if len(set(sample_ids)) != len(sample_ids):
+        raise ValueError("duplicate source sample IDs")
+    # Alternating across ancestry boundaries also balances odd-sized groups.
+    ordered = sorted(sample_ids, key=lambda sample: (ancestries.get(sample, ""), sample))
+    selected = set(ordered[party - 1::num_parties])
+    return tuple(sample for sample in sample_ids if sample in selected)
+
 
 def select_random_gene_groups(
         gene_groups: Sequence[GeneVariants],

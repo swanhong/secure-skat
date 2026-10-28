@@ -31,6 +31,7 @@ from .site import prepare_site_blocks, read_public_var_list, write_public_var_li
 from .selection import (
     select_file_genes,
     select_random_gene_groups,
+    split_sample_ids,
 )
 
 @dataclass(frozen=True)
@@ -69,6 +70,7 @@ class PrepareRequest:
     shared_rate: float
 
     gene_selection: GeneSelectionRequest
+    debug_split_num_parties: int = 0
     prepared_cache_dir: Path | None = None
     party: int = 0
     public_var_list: Path | None = None
@@ -183,6 +185,8 @@ def prepared_cache_config(request: PrepareRequest, chromosome: int, ancestry: st
         return {"path": str(path), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
 
     config = asdict(request)
+    if config["debug_split_num_parties"] == 0:
+        del config["debug_split_num_parties"]
     for name in ("run_dir", "prepared_cache_dir", "chromosomes", "ancestries", "plink2_bin"):
         del config[name]
     prefix = chromosome_path(request.genotype, chromosome)
@@ -253,7 +257,13 @@ def prepare_chromosomes(
     request: PrepareRequest,
     extractor: GenotypeExtractor | None = None,
 ) -> tuple[GeneRef, ...]:
-    validate_split_inputs(request.phenotype, asdict(request))
+    if request.debug_split_num_parties not in (0, 2):
+        raise ValueError("debug_split_num_parties must be 0 or 2")
+    if request.debug_split_num_parties and request.party not in (1, 2):
+        raise ValueError("debug_split_num_parties requires --party 1 or 2")
+    split_manifest = validate_split_inputs(request.phenotype, asdict(request))
+    if request.debug_split_num_parties and split_manifest is not None:
+        raise ValueError("debug_split_num_parties requires common source inputs, not already split inputs")
     if not request.chromosomes:
         raise ValueError("at least one chromosome is required")
 
@@ -330,12 +340,20 @@ def prepare_chromosomes(
         if index == 0:
             reference_chromosome = chromosome
             reference_psam_ids = inputs.psam_ids
+            sample_ids = reference_psam_ids
+            if request.debug_split_num_parties:
+                sample_ids = split_sample_ids(
+                    reference_psam_ids, sample_inputs.ancestries,
+                    request.debug_split_num_parties, request.party,
+                )
+                print(f"Debug sample split: party {request.party}/{request.debug_split_num_parties}, "
+                      f"{len(sample_ids)}/{len(reference_psam_ids)} source samples", flush=True)
 
             for ancestry in request.ancestries:
                 rows_by_ancestry[ancestry] = select_rows(
-                    psam_ids=reference_psam_ids,
+                    psam_ids=sample_ids,
                     phenotypes=sample_inputs.phenotypes,
-                    covariates=sample_inputs.covariates,
+                    covariates=sample_inputs.covariates[ancestry],
                     ancestries=sample_inputs.ancestries,
                     ancestry=ancestry,
                     phenotype_columns=request.phenotype_columns,
@@ -449,6 +467,7 @@ def read_prepare_request(
         mask=payload["mask"],
         max_maf=payload["max_maf"],
         samples_per_cohort=payload["samples_per_cohort"],
+        debug_split_num_parties=payload.get("debug_split_num_parties", 0),
         shared_rate=payload["shared_rate"],
         gene_selection=GeneSelectionRequest(
             mode=gene_selection["mode"],

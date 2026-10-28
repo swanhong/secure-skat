@@ -271,7 +271,7 @@ def load_sample_inputs(
                 sample_id: tuple(values[column] for column in covariate_columns)
                 for sample_id, values in rows.items()
             }
-        covariates.update(table)
+        covariates[ancestry] = table
     return SampleInputs(
         phenotypes=read_phenotype_table(
             phenotype_path,
@@ -279,7 +279,8 @@ def load_sample_inputs(
             id_column=phenotype_id_column,
             value_columns=phenotype_columns,
         ),
-        covariates=covariates,
+        covariates={ancestry: covariates[ancestry if "{anc}" in str(covariate_path) else ""]
+                    for ancestry in ancestry_groups},
         ancestries=read_ancestry_table(
             ancestry_path,
             delimiter="\t",

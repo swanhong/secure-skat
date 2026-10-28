@@ -226,6 +226,7 @@ def print_r_squared_by_pheno_and_chr(
 def compare_ancestry(
     run_dir: Path,
     ancestry: str,
+    print_logs: bool = True,
 ) -> None:
     secure_rows = read_rows(
         run_dir / "secure" / ancestry / "all_secure_results.tsv",
@@ -291,13 +292,14 @@ def compare_ancestry(
         writer.writeheader()
         writer.writerows(comparison_rows)
 
-    print("Wrote secure/plain comparison to", output_path)
-    print(f"\n=== {ancestry} ===")
-    print_r_squared_by_pheno_and_chr(comparison_rows)
+    if print_logs:
+        print("Wrote secure/plain comparison to", output_path)
+        print(f"\n=== {ancestry} ===")
+        print_r_squared_by_pheno_and_chr(comparison_rows)
 
 
-def compare_secure_to_reference(config_path: Path) -> None:
-    config = load_party_config(config_path)
+def compare_secure_to_reference(config_path: Path, party_id: int = 1) -> None:
+    config = load_party_config(config_path, party_id)
 
     run_dir = Path(config["run_dir"])
     comparison_root = run_dir / "comparison"
@@ -307,7 +309,7 @@ def compare_secure_to_reference(config_path: Path) -> None:
     success_path.unlink(missing_ok=True)
 
     for ancestry in config["ancestries"]:
-        compare_ancestry(run_dir, ancestry)
+        compare_ancestry(run_dir, ancestry, config.get("print_logs", party_id == 1))
 
     success_path.touch()
 
@@ -319,9 +321,10 @@ def main() -> None:
         default="config/1kg",
         help="configuration directory",
     )
+    parser.add_argument("--party-id", type=int, choices=(1, 2), default=1)
     args = parser.parse_args()
 
-    compare_secure_to_reference(Path(args.config))
+    compare_secure_to_reference(Path(args.config), args.party_id)
 
 
 if __name__ == "__main__":

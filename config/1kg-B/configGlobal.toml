@@ -1,6 +1,6 @@
 chromosomes = [21, 22]
 phenotype_columns = ["phenotype1", "phenotype2"]
-ancestries = ["EUR", "AFR"]
+ancestries = ["EUR", "ALL"]
 
 ckks = "PN14QP436S45"
 mpc_num_threads = 2

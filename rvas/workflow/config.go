@@ -75,6 +75,8 @@ type Config struct {
 	SamplesPerCohort int64   `toml:"samples_per_cohort"`
 	SharedRate       float64 `toml:"shared_rate"`
 
+	DebugSplitNumParties int `toml:"debug_split_num_parties"`
+
 	CKKS           string `toml:"ckks"`
 	MpcNumThreads  int    `toml:"mpc_num_threads"`
 	DataBits       int    `toml:"data_bits"`
@@ -95,6 +97,7 @@ type Config struct {
 	CovariateFile            string `toml:"covariate_file"`
 	GenesFile                string `toml:"genes_file"`
 	VariantCountsFile        string `toml:"variant_counts_file"`
+	PrintLogs                *bool  `toml:"print_logs"`
 }
 
 type GeneSelection struct {
@@ -189,6 +192,9 @@ func validateGlobalConfig(config *Config) error {
 func validatePrepareConfig(config *Config) error {
 	if err := validateGlobalConfig(config); err != nil {
 		return err
+	}
+	if config.DebugSplitNumParties != 0 && config.DebugSplitNumParties != 2 {
+		return fmt.Errorf("debug_split_num_parties must be 0 or 2")
 	}
 	if config.SharedRate < 0 || config.SharedRate > 1 {
 		return fmt.Errorf("shared_rate must be between 0 and 1")

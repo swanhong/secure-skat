@@ -28,7 +28,7 @@ echo "[4/8] Run secure Burden/SKAT; logs: $log_dir"
 mkdir -p "$log_dir"
 go run -mod=vendor secure-rvas.go party --config "$config_0" --party 0 > "$log_dir/party0.log" 2>&1 &
 pid_0=$!
-go run -mod=vendor secure-rvas.go party --config "$config_a" --party 1 > "$log_dir/party1.log" 2>&1 &
+go run -mod=vendor secure-rvas.go party --config "$config_a" --party 1 2>&1 | tee "$log_dir/party1.log" &
 pid_a=$!
 go run -mod=vendor secure-rvas.go party --config "$config_b" --party 2 > "$log_dir/party2.log" 2>&1 &
 pid_b=$!

@@ -190,10 +190,14 @@ func runAncestry(
 	ancestry string,
 	sharedNetworks *[]*mpc.Network,
 ) error {
+	printLogs := partyID == cohortAPartyID
+	if config.PrintLogs != nil {
+		printLogs = *config.PrintLogs
+	}
 	metrics := newMetricRecorder(
 		fmt.Sprintf("party%d", partyID),
 		ancestry,
-		partyID == cohortAPartyID,
+		printLogs,
 	)
 
 	done := metrics.start("input_loading", 0, nil)

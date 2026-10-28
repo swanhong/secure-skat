@@ -69,6 +69,9 @@ func runPrepareCommand(args []string) error {
 	if err != nil {
 		return err
 	}
+	if config.DebugSplitNumParties == 2 && *party == 0 {
+		return fmt.Errorf("prepare: debug_split_num_parties requires --party 1 or 2")
+	}
 
 	listPath := config.PublicVarList
 	flags.Visit(func(option *flag.Flag) {

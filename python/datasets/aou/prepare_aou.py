@@ -25,6 +25,7 @@ from python.preprocessing.pipeline import assign_roles, select_rows
 from python.preprocessing.prepare import (
     GeneSelectionRequest, select_gene_groups, split_input_config, validate_split_inputs,
 )
+from python.preprocessing.selection import split_sample_ids
 
 
 
@@ -356,6 +357,8 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
         config["ancestries"] = [value.strip().upper() for value in config["ancestries"]]
         config["mask"] = dict(tuple(part.strip() for part in item.split("=", 1))
                               for item in config["masks"])
+        if "ALL" in config["ancestries"] and len(config["ancestries"]) > 1 and "{anc}" not in config["covariate"]:
+            raise ValueError("splitting ALL with other ancestries requires {anc} in the covariate output path")
         configs.append(config)
     mvp, aou = configs
 
@@ -438,25 +441,27 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
             if len(set(reference_ids)) != len(reference_ids):
                 raise ValueError("duplicate source sample IDs")
             rows_by_site = [{}, {}]
-            for ancestry in mvp["ancestries"]:
-                rows = select_rows(reference_ids, samples.phenotypes, samples.covariates,
-                                   samples.ancestries, ancestry, tuple(mvp["phenotype_columns"]),
-                                   mvp["samples_per_cohort"] or "all")
-                for index in (0, 1):
+            for index in (0, 1):
+                sample_ids = split_sample_ids(reference_ids, samples.ancestries, 2, index + 1)
+                for ancestry in mvp["ancestries"]:
+                    rows = select_rows(sample_ids, samples.phenotypes, samples.covariates[ancestry],
+                                       samples.ancestries, ancestry, tuple(mvp["phenotype_columns"]),
+                                       mvp["samples_per_cohort"] or "all", party=index + 1)
                     rows_by_site[index][ancestry] = rows[index]
 
             # step8: Write selected sample tables using each site's paths and column names.
             for config, rows in zip(configs, rows_by_site):
                 members = [(ancestry, group, i) for ancestry, group in rows.items()
                            for i in range(len(group.sample_ids))]
-                ids = {group.sample_ids[i] for _, group, i in members}
+                ids = dict.fromkeys(group.sample_ids[i] for _, group, i in members)
                 site_ids.append(tuple(sample for sample in reference_ids if sample in ids))
                 write_table(site_path(config, "phenotype"),
                             (config["phenotype_id_column"], *config["phenotype_columns"]),
-                            ((group.sample_ids[i], *group.phenotypes[i]) for _, group, i in members), ",")
+                            ((sample, *(samples.phenotypes[sample][column] for column in config["phenotype_columns"]))
+                             for sample in ids), ",")
                 write_table(site_path(config, "ancestry"),
                             (config["ancestry_id_column"], config["ancestry_column"]),
-                            ((group.sample_ids[i], ancestry) for ancestry, group, i in members))
+                            ((sample, samples.ancestries.get(sample, "")) for sample in ids))
                 packed_indices = (packed_covariate_indices(tuple(config["covariate_columns"]))
                                   if config["is_cov_single_column"] else ())
                 covariate_rows = {}
@@ -563,9 +568,15 @@ def prepare_aou(args: argparse.Namespace) -> None:
         output_dir / "ancestry_preds.tsv",
         project,
     )
+    covariate_dir = output_dir / "covariate"
+    old_all = covariate_dir / "ALL_pca.eigenvec"
+    all_covariates = covariate_dir / "all_pca.eigenvec"
+    if old_all.exists() and (not all_covariates.exists() or old_all.samefile(all_covariates)):
+        old_all.rename(all_covariates)
+    copy_input(f"{DEFAULT_COVARIATE_ROOT}/ALL_pca.eigenvec", all_covariates, project)
     copy_gcs_files(
-        tuple(f"{DEFAULT_COVARIATE_ROOT}/{ancestry}_pca.eigenvec" for ancestry in ("ALL", "afr", "amr", "eur")),
-        output_dir / "covariate",
+        tuple(f"{DEFAULT_COVARIATE_ROOT}/{ancestry}_pca.eigenvec" for ancestry in ("afr", "amr", "eur")),
+        covariate_dir,
         project,
     )
 

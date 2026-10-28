@@ -46,6 +46,8 @@ type prepareRequest struct {
 	SamplesPerCohort int64   `json:"samples_per_cohort"`
 	SharedRate       float64 `json:"shared_rate"`
 
+	DebugSplitNumParties int `json:"debug_split_num_parties"`
+
 	GeneSelection prepareGeneSelection `json:"gene_selection"`
 }
 
@@ -85,6 +87,8 @@ func prepareRequestFromConfig(config *Config) prepareRequest {
 			PerChromosome: config.GeneSelection.PerChromosome,
 			Path:          config.GeneSelection.Path,
 		},
+
+		DebugSplitNumParties: config.DebugSplitNumParties,
 	}
 }
 

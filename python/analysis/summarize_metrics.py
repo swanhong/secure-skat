@@ -144,6 +144,30 @@ def read_metrics(metric_paths: list[Path]) -> pd.DataFrame:
 
     return pd.concat(frames, ignore_index=True)
 
+def make_dataset_table(config: dict) -> pd.DataFrame:
+    rows = []
+    # Runtime loads phenotype/covariate matrices from the first chromosome.
+    for ancestry in config["ancestries"]:
+        dimensions = {}
+        for field in ("phenotype_file", "covariate_file"):
+            path = Path(config[field].format(
+                run_dir=config["run_dir"], ancestry=ancestry,
+                chromosome=config["chromosomes"][0],
+            ))
+            count, width = pd.NA, pd.NA
+            if path.is_file():
+                with path.open() as stream:
+                    first = next((line.split() for line in stream if line.strip()), [])
+                    width = len(first)
+                    if field == "phenotype_file":
+                        count = int(bool(first)) + sum(bool(line.strip()) for line in stream)
+            dimensions[field] = (count, width)
+        samples, phenotypes = dimensions["phenotype_file"]
+        rows.append([ancestry, samples, dimensions["covariate_file"][1],
+                     phenotypes, len(config["chromosomes"])])
+    return pd.DataFrame(rows, columns=["Ancestry", "Samples", "Covariates", "Phenotypes", "Chromosomes"])
+
+
 def make_time_table(metrics: pd.DataFrame) -> pd.DataFrame:
     stage_names = [stage for _, stage in STAGES]
     columns = [
@@ -238,7 +262,7 @@ def make_time_table(metrics: pd.DataFrame) -> pd.DataFrame:
 
     if len(ancestry_totals) > 1:
         rows.append(total_time_row(
-            "ALL",
+            "GRAND_TOTAL",
             durations.sum(),
             float(setup_durations.sum()),
             float(null_durations.sum()),
@@ -293,7 +317,7 @@ def make_comm_table(metrics: pd.DataFrame) -> pd.DataFrame:
         rows.append(comm_row(ancestry, "TOTAL", ancestry_values.sum()))
 
     if len(ancestries) > 1:
-        rows.append(comm_row("ALL", "TOTAL", communication.sum()))
+        rows.append(comm_row("GRAND_TOTAL", "TOTAL", communication.sum()))
 
     return pd.DataFrame(rows, columns=columns)
 
@@ -477,6 +501,9 @@ def main() -> None:
     try:
         if args.config_b is not None and args.party_id != 1:
             raise ValueError("--config-b requires --party-id 1")
+        config = load_party_config(args.config, args.party_id)
+        if not config.get("print_logs", args.party_id == 1):
+            return
         sites = [(args.config, args.party_id)]
         if args.config_b is not None:
             sites.append((args.config_b, 2))
@@ -492,7 +519,8 @@ def main() -> None:
             if not metric_paths:
                 raise ValueError(f"no metrics_party{party_id}.csv files found under {metrics_dir}")
             metrics = read_metrics(metric_paths)
-            summaries.append((config_path, party_id, run_dir, make_time_table(metrics), make_comm_table(metrics)))
+            summaries.append((config_path, party_id, run_dir, make_dataset_table(config),
+                              make_time_table(metrics), make_comm_table(metrics)))
 
         config = load_party_config(args.config, args.party_id)
         run_dir = summaries[0][2]
@@ -515,9 +543,11 @@ def main() -> None:
         raise SystemExit(str(error)) from error
 
     print("Secure RVAS metrics summary")
-    for config_path, party_id, run_dir, time_table, comm_table in summaries:
+    for config_path, party_id, run_dir, dataset_table, time_table, comm_table in summaries:
         print(f"\nConfig: {config_path}")
         print(f"Run directory: {run_dir}")
+        print(f"\nDataset summary (party{party_id}; covariates exclude intercept)")
+        print_table(dataset_table, {"Ancestry"})
         print(f"\nTiming summary (party{party_id})")
         print_table(time_table, {"Ancestry"})
         print(f"\nCommunication summary (party{party_id})")

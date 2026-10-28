@@ -340,7 +340,7 @@ def select_rows(
         if (
             sample_id not in phenotypes
             or sample_id not in covariates
-            or ancestries.get(sample_id) != ancestry
+            or (ancestry != "ALL" and ancestries.get(sample_id) != ancestry)
         ):
             continue
 
