@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 
 	mpc_core "github.com/hhcho/mpc-core"
 	"github.com/hhcho/sfgwas/mpc"
@@ -319,7 +321,54 @@ func runAncestry(
 		return fmt.Errorf("write party %d metrics: %w", partyID, metricsErr)
 	}
 	metrics.printTimeTree()
+	if printLogs && partyID != auxiliaryPartyID {
+		printResultSummary(results, ancestry, partyID)
+	}
 	return nil
+}
+
+func printResultSummary(results []chromosomeResult, ancestry string, partyID int) {
+	for index, name := range []string{"Burden", "SKAT WH"} {
+		var finite []float64
+		count, nonfinite, outside, zeros, ones := 0, 0, 0, 0, 0
+		for _, result := range results {
+			values := result.BurdenP
+			if index == 1 {
+				values = result.SKATWHP
+			}
+			for _, value := range values {
+				count++
+				if math.IsNaN(value) || math.IsInf(value, 0) {
+					nonfinite++
+					continue
+				}
+				finite = append(finite, value)
+				if value < 0 || value > 1 {
+					outside++
+				}
+				if value == 0 {
+					zeros++
+				}
+				if value == 1 {
+					ones++
+				}
+			}
+		}
+		rangeText, q1, median, q3 := "NA", "NA", "NA", "NA"
+		if len(finite) > 0 {
+			sort.Float64s(finite)
+			quantile := func(p float64) string {
+				position := p * float64(len(finite)-1)
+				lower, upper := int(position), int(math.Ceil(position))
+				weight := position - float64(lower)
+				return fmt.Sprintf("%.12g", finite[lower]*(1-weight)+finite[upper]*weight)
+			}
+			rangeText = fmt.Sprintf("[%.12g, %.12g]", finite[0], finite[len(finite)-1])
+			q1, median, q3 = quantile(0.25), quantile(0.5), quantile(0.75)
+		}
+		fmt.Printf("[party%d %s] %s p-values: range=%s, Q1=%s, median=%s, Q3=%s, count=%d, nonfinite=%d, outside[0,1]=%d, zeros=%d, ones=%d\n",
+			partyID, ancestry, name, rangeText, q1, median, q3, count, nonfinite, outside, zeros, ones)
+	}
 }
 
 func deriveTraceSeed(key []byte, ancestry string, chromosome int) int64 {
