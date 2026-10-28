@@ -7,9 +7,15 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from python.analysis.config import normalize_chromosomes
 from python.preprocessing.input import (
     load_inputs, load_sample_inputs, packed_covariate_indices, read_gene_panel,
 )
@@ -346,6 +352,7 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
         for name in ("configGlobal.toml", "configPrepare.toml"):
             with (directory / name).open("rb") as stream:
                 config.update(tomllib.load(stream))
+        config["chromosomes"] = normalize_chromosomes(config["chromosomes"])
         config["ancestries"] = [value.strip().upper() for value in config["ancestries"]]
         config["mask"] = dict(tuple(part.strip() for part in item.split("=", 1))
                               for item in config["masks"])
@@ -608,14 +615,9 @@ def main() -> None:
     for name in ("configGlobal.toml", "configPrepare.toml"):
         with (args.config / name).open("rb") as config_file:
             config.update(tomllib.load(config_file))
-    args.chromosome = config["chromosomes"]
+    args.chromosome = normalize_chromosomes(config["chromosomes"])
     if args.annotation is None:
         args.annotation = config.get("vat_annotation", "~/fed_prep_out/chr{chromosome}_annotation.tsv")
-
-    if len(set(args.chromosome)) != len(args.chromosome):
-        parser.error("chromosomes must not contain duplicates")
-    if any(chromosome < 1 or chromosome > 22 for chromosome in args.chromosome):
-        parser.error("chromosomes must be between 1 and 22")
 
     args.output_dir = args.output_dir.expanduser()
     args.plink2_bin = str(Path(args.plink2_bin).expanduser())

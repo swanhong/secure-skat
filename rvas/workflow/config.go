@@ -16,10 +16,42 @@ const (
 	prepareConfigFilename = "configPrepare.toml"
 )
 
+type chromosomeList []int
+
+func (chromosomes *chromosomeList) UnmarshalTOML(value interface{}) error {
+	values, ok := value.([]interface{})
+	if !ok || len(values) == 0 {
+		return fmt.Errorf("chromosomes must be a nonempty integer array or [\"all\"]")
+	}
+	if len(values) == 1 && values[0] == "all" {
+		all := make(chromosomeList, 22)
+		for i := range all {
+			all[i] = i + 1
+		}
+		*chromosomes = all
+		return nil
+	}
+	selected := make(chromosomeList, len(values))
+	var seen [23]bool
+	for i, value := range values {
+		chromosome, ok := value.(int64)
+		if !ok || chromosome < 1 || chromosome > 22 {
+			return fmt.Errorf("chromosomes must contain integers from 1 to 22 or exactly [\"all\"]")
+		}
+		if seen[chromosome] {
+			return fmt.Errorf("duplicate chromosome: %d", chromosome)
+		}
+		seen[chromosome] = true
+		selected[i] = int(chromosome)
+	}
+	*chromosomes = selected
+	return nil
+}
+
 type Config struct {
-	RunDir        string `toml:"run_dir"`
-	PublicVarList string `toml:"public_var_list"`
-	Chromosomes   []int  `toml:"chromosomes"`
+	RunDir        string         `toml:"run_dir"`
+	PublicVarList string         `toml:"public_var_list"`
+	Chromosomes   chromosomeList `toml:"chromosomes"`
 
 	Genotype   string `toml:"genotype"`
 	GenePanel  string `toml:"gene_panel"`

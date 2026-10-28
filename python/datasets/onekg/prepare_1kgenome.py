@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
 import tomllib
-import utils
+
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from python.analysis.config import normalize_chromosomes
+from python.datasets.onekg import utils
 
 
 VCF_TEMPLATE = (
@@ -27,44 +33,6 @@ GTF_URL = (
 )
 
 
-def parse_chromosomes(values: list[str]) -> list[int]:
-    if len(values) == 1 and values[0].lower() == "all":
-        return list(range(1, 23))
-
-    chromosomes = []
-    seen = set()
-    for value in values:
-        for item in value.split(","):
-            item = item.strip()
-            if not item:
-                raise ValueError("empty chromosome value")
-
-            if "-" in item:
-                fields = item.split("-")
-                if len(fields) != 2:
-                    raise ValueError(f"invalid chromosome range: {item}")
-                start, end = (int(field) for field in fields)
-                if start > end:
-                    raise ValueError(f"chromosome range is descending: {item}")
-                selected = range(start, end + 1)
-            else:
-                selected = (int(item),)
-
-            for chromosome in selected:
-                if chromosome not in range(1, 23):
-                    raise ValueError(
-                        f"chromosome must be between 1 and 22: {chromosome}"
-                    )
-                if chromosome in seen:
-                    raise ValueError(f"duplicate chromosome: {chromosome}")
-                seen.add(chromosome)
-                chromosomes.append(chromosome)
-
-    if not chromosomes:
-        raise ValueError("at least one chromosome is required")
-    return chromosomes
-
-
 def read_psam_ids(path: Path) -> tuple[str, ...]:
     with path.open() as file:
         columns = next(file).lstrip("#").split()
@@ -73,7 +41,7 @@ def read_psam_ids(path: Path) -> tuple[str, ...]:
 
 
 def prepare_1kgenome(root: Path, args) -> None:
-    chromosomes = parse_chromosomes(args.chromosome)
+    chromosomes = args.chromosome
     generated = root / "generated"
     raw = generated / "raw"
     panel = utils.download_if_missing(PANEL_URL, raw / PANEL_NAME)
@@ -147,10 +115,7 @@ def main() -> None:
 
     with (args.config / "configGlobal.toml").open("rb") as config_file:
         config = tomllib.load(config_file)
-    args.chromosome = [
-        str(chromosome)
-        for chromosome in config["chromosomes"]
-    ]
+    args.chromosome = normalize_chromosomes(config["chromosomes"])
 
     if args.num_pheno < 1:
         raise ValueError("num-pheno must be at least 1")
