@@ -1,6 +1,7 @@
 package mpc
 
 import (
+	"math/big"
 	"runtime"
 	"sync"
 
@@ -11,11 +12,27 @@ func parMultMat(a, b mpc_core.RMat) mpc_core.RMat {
 	rtype := a.Type()
 	r1, c1 := a.Dims()
 	_, c2 := b.Dims()
-	out := mpc_core.InitRMat(rtype.Zero(), r1, c2)
-	row := func(i int) {
-		for j := 0; j < c2; j++ {
-			for k := 0; k < c1; k++ {
-				out[i][j] = out[i][j].Add(a[i][k].Mul(b[k][j]))
+	var out mpc_core.RMat
+	var row func(int)
+	if _, ok := rtype.(mpc_core.LElem256); ok {
+		out = make(mpc_core.RMat, r1)
+		for i := range out {
+			out[i] = make(mpc_core.RVec, c2)
+		}
+		// Use the compact fixed-limb cache for large public shapes. Small
+		// products retain the pointer-only big.Int path and its low setup cost.
+		if int64(r1)*int64(c2)*int64(c1) >= 1<<18 && mpc_core.LElem256Mod.Val.BitLen() <= 256 {
+			row = lelem256FixedMatRows(a, b, out)
+		} else {
+			row = lelem256MatRows(a, b, out)
+		}
+	} else {
+		out = mpc_core.InitRMat(rtype.Zero(), r1, c2)
+		row = func(i int) {
+			for j := 0; j < c2; j++ {
+				for k := 0; k < c1; k++ {
+					out[i][j] = out[i][j].Add(a[i][k].Mul(b[k][j]))
+				}
 			}
 		}
 	}
@@ -43,6 +60,39 @@ func parMultMat(a, b mpc_core.RMat) mpc_core.RMat {
 	}
 	wg.Wait()
 	return out
+}
+
+// Integer accumulation followed by one reduction equals the field's modular
+// Mul/Add dot product. Scratch belongs to each row call, inputs remain read-only,
+// and every public inner position is processed, including zero-valued entries.
+func lelem256MatRows(a, b, out mpc_core.RMat) func(int) {
+	r1, inner := a.Dims()
+	_, columns := b.Dims()
+	left := make([][]*big.Int, r1)
+	for i := range left {
+		left[i] = make([]*big.Int, inner)
+		for k := range left[i] {
+			left[i][k] = a[i][k].(mpc_core.LElem256).Val
+		}
+	}
+	right := make([][]*big.Int, columns)
+	for j := range right {
+		right[j] = make([]*big.Int, inner)
+		for k := range right[j] {
+			right[j][k] = b[k][j].(mpc_core.LElem256).Val
+		}
+	}
+	return func(i int) {
+		var product, accumulator big.Int
+		for j, column := range right {
+			accumulator.SetInt64(0)
+			for k, value := range left[i] {
+				product.Mul(value, column[k])
+				accumulator.Add(&accumulator, &product)
+			}
+			out[i][j] = mpc_core.LElem256{Val: new(big.Int).Mod(&accumulator, mpc_core.LElem256Mod.Val)}
+		}
+	}
 }
 
 func (mpcObj *MPC) BeaverPartition(a mpc_core.RElem) (mpc_core.RElem, mpc_core.RElem) {

@@ -93,6 +93,52 @@ func (mpcObj *MPC) SSMultMat(a, b mpc_core.RMat) mpc_core.RMat {
 	return mpcObj.BeaverReconstructMat(ab)
 }
 
+// SSMultMats returns a[i]·b[i] for every pair with the masked openings of all left and all right
+// operands done together (one per side) and one reconstruction; the pairs may differ in shape.
+// Result rows are capacity-limited views of one shared array.
+func (mpcObj *MPC) SSMultMats(a, b []mpc_core.RMat) []mpc_core.RMat {
+	flatten := func(matrices []mpc_core.RMat) mpc_core.RMat {
+		var flat mpc_core.RVec
+		for _, matrix := range matrices {
+			for _, row := range matrix {
+				flat = append(flat, row...)
+			}
+		}
+		return mpc_core.RMat{flat}
+	}
+	reshape := func(flat mpc_core.RVec, start, rows, cols int) mpc_core.RMat {
+		matrix := make(mpc_core.RMat, rows)
+		for r := range matrix {
+			matrix[r] = flat[start+r*cols : start+(r+1)*cols : start+(r+1)*cols]
+		}
+		return matrix
+	}
+
+	ar, am := mpcObj.BeaverPartitionMat(flatten(a))
+	br, bm := mpcObj.BeaverPartitionMat(flatten(b))
+	products := make([]mpc_core.RMat, len(a))
+	startA, startB := 0, 0
+	for i := range a {
+		rowsA, colsA := a[i].Dims()
+		rowsB, colsB := b[i].Dims()
+		products[i] = mpcObj.BeaverMultMat(
+			reshape(ar[0], startA, rowsA, colsA), reshape(am[0], startA, rowsA, colsA),
+			reshape(br[0], startB, rowsB, colsB), reshape(bm[0], startB, rowsB, colsB),
+		)
+		startA += rowsA * colsA
+		startB += rowsB * colsB
+	}
+
+	flat := mpcObj.BeaverReconstructMat(flatten(products))[0]
+	start := 0
+	for i := range products {
+		rows, cols := products[i].Dims()
+		products[i] = reshape(flat, start, rows, cols)
+		start += rows * cols
+	}
+	return products
+}
+
 func (mpcObj *MPC) SSMultElemVecScalar(a mpc_core.RVec, b mpc_core.RElem) mpc_core.RVec {
 	ar, am := mpcObj.BeaverPartitionVec(a)
 	br, bm := mpcObj.BeaverPartition(b)
