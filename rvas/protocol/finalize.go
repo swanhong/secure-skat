@@ -12,7 +12,7 @@ func Finalize(
 	mpcObjects []*mpc.MPC,
 	dataParams DataParams,
 	gpQ, gpL, gvQ, gvL mpc_core.RMat,
-	rss, geneV, geneInvS1, geneS2, geneS3 mpc_core.RVec,
+	rssOverN, geneV, geneInvS1, geneS2, geneS3 mpc_core.RVec,
 	observe func(stage string) func(),
 ) (
 	b, z mpc_core.RVec,
@@ -22,7 +22,8 @@ func Finalize(
 		Q and V are divided by N; L is divided by sqrt(N).
 		invS1, S2, and S3 are 1/S1, S2/S1², and S3/S1³ for K/N.
 
-		alpha[t] = (N - C) / (2 * rss[t])
+		rssOverN[t] = RSS[t] / N
+		alpha[t] = (1 - C/N) / (2 * rssOverN[t])
 
 		Qs[g,t] = alpha[t] * (gpQ[g,t] + gvQ[g,t]) / S1[g]
 		Qb[g,t] = alpha[t] * (gpL[g,t] + gvL[g,t])^2
@@ -72,18 +73,18 @@ func Finalize(
 		workers.Wait()
 	}
 
-	// 1. Compute alpha[t] = (N - C) / (2 * rss[t]).
+	// 1. Compute alpha[t] = (1 - C/N) / (2 * rssOverN[t]).
 	done := observe("alpha_score_assembly")
 	alphaNumerator := mpc_core.InitRVec(rtype.Zero(), phenotypeCount)
 	if mpcObj.GetPid() == mpcObj.GetHubPid() {
 		alphaNumerator.AddScalar(
 			rtype.FromFloat64(
-				0.5*float64(dataParams.N-dataParams.C),
+				0.5*float64(dataParams.N-dataParams.C)/float64(dataParams.N),
 				fracBits,
 			),
 		)
 	}
-	alpha := mpcObj.Divide(alphaNumerator, rss, false)
+	alpha := mpcObj.Divide(alphaNumerator, rssOverN, false)
 
 	// 2. Assemble gene-phenotype values in g*q+t order.
 	alphaByGene := mpc_core.InitRVec(rtype.Zero(), outputLength)

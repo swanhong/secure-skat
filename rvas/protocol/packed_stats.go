@@ -29,7 +29,7 @@ func ComputePackedStatistics(
 	x *mat.Dense,
 	y0 *mat.Dense,
 	beta mpc_core.RMat,
-	xtxInv mpc_core.RMat,
+	omega mpc_core.RMat,
 	weight []mpc_core.RVec,
 	signedWeight []mpc_core.RVec,
 	seed int64,
@@ -42,6 +42,7 @@ func ComputePackedStatistics(
 ) {
 	/*
 		Compute all packed phenotype and kernel statistics.
+		omega = (X^T X / N)^-1 is supplied by SetupNull.
 
 		For every gene g and phenotype t:
 		    gpQ[g,t], gvQ[g,t] = public/private Q divided by N
@@ -69,10 +70,6 @@ func ComputePackedStatistics(
 	geneInvS1 = mpc_core.InitRVec(rtype.Zero(), geneCount)
 	geneS2 = mpc_core.InitRVec(rtype.Zero(), geneCount)
 	geneS3 = mpc_core.InitRVec(rtype.Zero(), geneCount)
-
-	// Omega' = N * (X^T X)^-1 keeps the normalized kernel projection balanced.
-	omega := xtxInv.Copy()
-	omega.MulScalar(rtype.FromInt(dataParams.N))
 
 	// 1. Pack each shared beta column once for reuse by every gene batch.
 	betaByPhenotype := make([]mpc_core.RVec, phenotypeCount)

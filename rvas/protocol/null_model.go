@@ -6,6 +6,8 @@ import (
 	"gonum.org/v1/gonum/mat"
 )
 
+// SetupNull fits the pooled null model using moments divided by the total N.
+// It returns beta, omega = (X^T X / N)^-1, and rssOverN = RSS / N.
 func SetupNull(
 	mpcObj *mpc.MPC,
 	dataParams DataParams,
@@ -14,8 +16,8 @@ func SetupNull(
 	observe func(stage string) func(),
 ) (
 	beta mpc_core.RMat,
-	xtxInv mpc_core.RMat,
-	rss mpc_core.RVec,
+	omega mpc_core.RMat,
+	rssOverN mpc_core.RVec,
 ) {
 	covariateCount := dataParams.C
 	phenotypeCount := dataParams.PhenotypeCount
@@ -26,16 +28,19 @@ func SetupNull(
 
 	done := observe("null_local_equations")
 	if mpcObj.GetPid() != auxiliaryPartyID {
+		invN := 1 / float64(dataParams.N)
 		localXtx = new(mat.Dense)
 		localXtx.Mul(x.T(), x)
+		localXtx.Scale(invN, localXtx)
 
 		localXty = new(mat.Dense)
 		localXty.Mul(x.T(), y0)
+		localXty.Scale(invN, localXty)
 
 		localYty = mat.NewDense(1, phenotypeCount, nil)
 		for pheno := 0; pheno < phenotypeCount; pheno++ {
 			column := y0.ColView(pheno)
-			localYty.Set(0, pheno, mat.Dot(column, column))
+			localYty.Set(0, pheno, invN*mat.Dot(column, column))
 		}
 	}
 	done()
@@ -58,7 +63,7 @@ func SetupNull(
 			identity[diag][diag] = one.Copy()
 		}
 	}
-	xtxInv = SolveSPD(mpcObj, lower, diagInv, identity)
+	omega = SolveSPD(mpcObj, lower, diagInv, identity)
 	done()
 
 	done = observe("null_rss")
@@ -74,7 +79,7 @@ func SetupNull(
 	betaXtxBeta := mpcObj.SSMultElemMat(beta, xtxBeta)
 	betaXtxBeta = mpcObj.TruncMat(betaXtxBeta, dataBits, fracBits)
 
-	rss = mpc_core.InitRVec(rtype.Zero(), phenotypeCount)
+	rssOverN = mpc_core.InitRVec(rtype.Zero(), phenotypeCount)
 	for pheno := 0; pheno < phenotypeCount; pheno++ {
 		value := yty[pheno].Copy()
 		for cov := 0; cov < covariateCount; cov++ {
@@ -82,8 +87,8 @@ func SetupNull(
 			value = value.Sub(xtyBeta[cov][pheno])
 			value = value.Add(betaXtxBeta[cov][pheno])
 		}
-		rss[pheno] = value
+		rssOverN[pheno] = value
 	}
 	done()
-	return beta, xtxInv, rss
+	return beta, omega, rssOverN
 }

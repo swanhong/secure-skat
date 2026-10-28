@@ -23,9 +23,9 @@ type chromosomeResult struct {
 }
 
 type nullModel struct {
-	beta   mpc_core.RMat
-	xtxInv mpc_core.RMat
-	rss    mpc_core.RVec
+	beta     mpc_core.RMat
+	omega    mpc_core.RMat
+	rssOverN mpc_core.RVec
 }
 
 func runChromosome(
@@ -105,7 +105,7 @@ func runChromosome(
 			input.X,
 			input.Y,
 			model.beta,
-			model.xtxInv,
+			model.omega,
 			weight,
 			signedWeight,
 			seed,
@@ -129,7 +129,7 @@ func runChromosome(
 		gpL,
 		gvQ,
 		gvL,
-		model.rss,
+		model.rssOverN,
 		geneV,
 		geneInvS1,
 		geneS2,
@@ -245,7 +245,7 @@ func runAncestry(
 	}
 	networks := mpc.ParallelNetworks(secureSession.networks)
 	done = metrics.start("null_model", 0, networks)
-	beta, xtxInv, rss := protocol.SetupNull(
+	beta, omega, rssOverN := protocol.SetupNull(
 		secureSession.mpcObjects[0],
 		secureSession.dataParams[0],
 		input.X,
@@ -254,9 +254,9 @@ func runAncestry(
 	)
 	done()
 	model := nullModel{
-		beta:   beta,
-		xtxInv: xtxInv,
-		rss:    rss,
+		beta:     beta,
+		omega:    omega,
+		rssOverN: rssOverN,
 	}
 
 	results := make(
