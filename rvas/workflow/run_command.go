@@ -125,7 +125,27 @@ func runPartyCommand(args []string) error {
 		return fmt.Errorf("validate config: %w", err)
 	}
 	runtime.GOMAXPROCS(config.LocalNumThreads)
-	return runParty(config, *partyID)
+	metricsPath := filepath.Join(config.RunDir, "metrics", fmt.Sprintf("process_party%d.csv", *partyID))
+	if err := os.Remove(metricsPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove previous party %d process metrics: %w", *partyID, err)
+	}
+
+	startedAt := time.Now()
+	if err := runParty(config, *partyID); err != nil {
+		return err
+	}
+	peakRSS, err := currentProcessPeakRSSBytes()
+	if err != nil {
+		return fmt.Errorf("party %d peak RSS: %w", *partyID, err)
+	}
+	if err := writeProcessMetricsCSV(metricsPath, []processMetric{{
+		process:      fmt.Sprintf("party%d", *partyID),
+		duration:     time.Since(startedAt),
+		peakRSSBytes: peakRSS,
+	}}); err != nil {
+		return fmt.Errorf("write party %d process metrics: %w", *partyID, err)
+	}
+	return nil
 }
 
 func runPartyProcesses(executable, configDirectory string) ([]processMetric, error) {

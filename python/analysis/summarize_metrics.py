@@ -144,6 +144,21 @@ def read_metrics(metric_paths: list[Path]) -> pd.DataFrame:
 
     return pd.concat(frames, ignore_index=True)
 
+
+def read_peak_rss(path: Path, party_id: int) -> str:
+    if not path.is_file():
+        return "NA (no process metrics)"
+
+    metrics = pd.read_csv(path)
+    if (
+        not {"process", "peak_rss_bytes"}.issubset(metrics.columns)
+        or len(metrics) != 1
+        or metrics.iloc[0]["process"] != f"party{party_id}"
+    ):
+        raise ValueError(f"{path} must contain one peak RSS row for party{party_id}")
+    return f"{int(metrics.iloc[0]['peak_rss_bytes']) / (1024 ** 3):.3f} GiB"
+
+
 def make_dataset_table(config: dict) -> pd.DataFrame:
     rows = []
     # Runtime loads phenotype/covariate matrices from the first chromosome.
@@ -519,8 +534,9 @@ def main() -> None:
             if not metric_paths:
                 raise ValueError(f"no metrics_party{party_id}.csv files found under {metrics_dir}")
             metrics = read_metrics(metric_paths)
+            peak_rss = read_peak_rss(metrics_dir / f"process_party{party_id}.csv", party_id)
             summaries.append((config_path, party_id, run_dir, make_dataset_table(config),
-                              make_time_table(metrics), make_comm_table(metrics)))
+                              make_time_table(metrics), make_comm_table(metrics), peak_rss))
 
         config = load_party_config(args.config, args.party_id)
         run_dir = summaries[0][2]
@@ -543,9 +559,10 @@ def main() -> None:
         raise SystemExit(str(error)) from error
 
     print("Secure RVAS metrics summary")
-    for config_path, party_id, run_dir, dataset_table, time_table, comm_table in summaries:
+    for config_path, party_id, run_dir, dataset_table, time_table, comm_table, peak_rss in summaries:
         print(f"\nConfig: {config_path}")
         print(f"Run directory: {run_dir}")
+        print(f"Peak RSS (party{party_id}; entire process): {peak_rss}")
         print(f"\nDataset summary (party{party_id}; covariates exclude intercept)")
         print_table(dataset_table, {"Ancestry"})
         print(f"\nTiming summary (party{party_id})")
