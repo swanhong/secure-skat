@@ -1,18 +1,23 @@
-run_dir = "output/aou"
+run_dir = "output/aou-test-1111"
 vat_annotation = "~/fed_prep_out/chr{chromosome}_annotation.tsv"
 
 public_var_list = "output/mvp/public_variants.tsv"
-genotype = "data/aou/generated/genotype/exome.chr{chromosome}"
+genotype   = "data/aou/generated/genotype/exome.chr{chromosome}"
 gene_panel = "data/aou/generated/gene_panel/chr{chromosome}.tsv"
 annotation = "data/aou/generated/annotation/chr{chromosome}.tsv"
-phenotype = "data/aou/generated/phenotype.csv"
-covariate = "data/aou/generated/covariate/{anc}_pca.eigenvec"
+phenotype  = "data/aou/generated/phenotype.csv"
+covariate = "data/aou/generated/covariate/smoke16/v9_{anc}_all_covars.tsv"
 ancestry = "data/aou/generated/ancestry_preds.tsv"
 
 phenotype_id_column = "person_id"
-covariate_id_column = "#IID"
+covariate_id_column = "IID"
 is_cov_single_column = false
-covariate_columns = ["PC1", "PC2", "PC3", "PC4", "PC5", "PC6", "PC7", "PC8", "PC9", "PC10"]
+covariate_columns = [
+    "PC1", "PC2", "PC3", "PC4", "PC5",
+    "PC6", "PC7", "PC8", "PC9", "PC10",
+    "GENDER_REGULAR", "OTHER_GENDER",
+    "age_at_profile", "age_sq", "affiliation",
+]
 ancestry_id_column = "research_id"
 ancestry_column = "ancestry_pred_other"
 local_max_maf = 0.02
