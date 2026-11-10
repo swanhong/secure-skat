@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from config import load_party_config
+from config import analysis_groups, load_party_config
 
 from compare_secure_to_reference import R2_COMPARISONS, comparison_r_squared
 
@@ -540,16 +540,9 @@ def main() -> None:
 
         config = load_party_config(args.config, args.party_id)
         run_dir = summaries[0][2]
-        ancestries = [
-            str(ancestry).strip().upper()
-            for ancestry in config.get("ancestries", [])
-        ]
         comparison_specs = [
-            (
-                f"{ancestry}="
-                f"{run_dir}/comparison/{ancestry}/all_comparison.csv"
-            )
-            for ancestry in ancestries
+            f"{label}={run_dir}/comparison/{label}/all_comparison.csv"
+            for _, _, label in analysis_groups(config)
         ]
 
         accuracy = read_accuracy(comparison_specs)

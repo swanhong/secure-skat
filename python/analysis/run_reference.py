@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from time import monotonic
 
-from config import load_party_config
+from config import analysis_groups, load_party_config
 
 
 REFERENCE_COLUMNS = [
@@ -62,19 +62,22 @@ def run_chromosome_reference(
     engine_name: str,
     launcher: str,
     script: Path,
-    ancestry: str,
+    group: tuple[str, float | None, str],
     chromosome: int,
     phenotype_names: list[str],
     environment: dict[str, str],
 ) -> list[dict[str, str]]:
+    ancestry, threshold, label = group
     print(
-        f"Running {engine_name} reference for {ancestry} "
+        f"Running {engine_name} reference for {label} "
         f"chromosome {chromosome}",
         flush=True,
     )
 
     relative = Path("prepared") / ancestry / f"chr{chromosome}"
     command = [launcher, str(script), str(run_dir_a / relative), str(run_dir_b / relative)]
+    if threshold is not None:
+        command += ["--global-max-maf", repr(threshold)]
     completed = subprocess.run(
         command,
         check=True,
@@ -115,7 +118,7 @@ def run_chromosome_reference(
             }
         )
 
-    reference_dir = reference_root / ancestry
+    reference_dir = reference_root / label
     reference_dir.mkdir(parents=True, exist_ok=True)
     write_csv(
         reference_dir / f"chr{chromosome}.csv",
@@ -146,7 +149,7 @@ def run_reference(config_path: Path, engine: str = "r", config_b: Path | None = 
     run_dir_b = run_dir_a
     if config_b is not None:
         b = load_party_config(config_b, party_id=2)
-        for name in ("chromosomes", "ancestries", "phenotype_columns", "covariate_columns"):
+        for name in ("chromosomes", "ancestries", "phenotype_columns", "covariate_columns", "global_max_maf"):
             if config[name] != b[name]:
                 raise ValueError(f"A and B {name} must match")
         run_dir_b = Path(b["run_dir"])
@@ -161,9 +164,12 @@ def run_reference(config_path: Path, engine: str = "r", config_b: Path | None = 
 
     engine_name, launcher, script_name = ENGINES[engine]
     script = Path(__file__).resolve().parent / script_name
+    groups = analysis_groups(config)
+    if engine != "python" and config.get("global_max_maf"):
+        raise ValueError("global_max_maf is implemented only in the python reference engine")
     tasks = [
-        (ancestry, chromosome)
-        for ancestry in config["ancestries"]
+        (group, chromosome)
+        for group in groups
         for chromosome in config["chromosomes"]
     ]
 
@@ -193,12 +199,12 @@ def run_reference(config_path: Path, engine: str = "r", config_b: Path | None = 
                 engine_name,
                 launcher,
                 script,
-                ancestry,
+                group,
                 chromosome,
                 config["phenotype_columns"],
                 environment,
-            ): (ancestry, chromosome)
-            for ancestry, chromosome in tasks
+            ): (group, chromosome)
+            for group, chromosome in tasks
         }
         task_rows = {}
         for completed_count, future in enumerate(
@@ -218,21 +224,17 @@ def run_reference(config_path: Path, engine: str = "r", config_b: Path | None = 
                 flush=True,
             )
 
-    rows_by_ancestry = {
-        ancestry: [] for ancestry in config["ancestries"]
-    }
-    for ancestry, chromosome in tasks:
-        rows_by_ancestry[ancestry].extend(
-            task_rows[(ancestry, chromosome)]
-        )
+    rows_by_group = {group: [] for group in groups}
+    for group, chromosome in tasks:
+        rows_by_group[group].extend(task_rows[(group, chromosome)])
 
     for root in reference_roots:
-        for ancestry, ancestry_rows in rows_by_ancestry.items():
-            directory = root / ancestry
+        for group, ancestry_rows in rows_by_group.items():
+            directory = root / group[2]
             directory.mkdir(parents=True, exist_ok=True)
             if root != reference_root:
                 for chromosome in config["chromosomes"]:
-                    write_csv(directory / f"chr{chromosome}.csv", task_rows[(ancestry, chromosome)])
+                    write_csv(directory / f"chr{chromosome}.csv", task_rows[(group, chromosome)])
             output_path = directory / "all_r_results.csv"
             write_csv(output_path, ancestry_rows)
             print(f"Wrote {engine_name} reference results to", output_path)

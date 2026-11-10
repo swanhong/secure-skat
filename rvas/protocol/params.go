@@ -12,6 +12,7 @@ type DataParams struct {
 	NA             int
 	NB             int
 	N              int
+	CohortN        int // MVP+AoU ALL-cohort size for the global MAF filter
 	C              int
 	PhenotypeCount int
 }

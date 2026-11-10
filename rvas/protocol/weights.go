@@ -1,6 +1,8 @@
 package protocol
 
 import (
+	"math"
+
 	mpc_core "github.com/hhcho/mpc-core"
 	securecrypto "github.com/hhcho/sfgwas/crypto"
 	"github.com/hhcho/sfgwas/mpc"
@@ -25,11 +27,52 @@ func mux(
 	return result
 }
 
+// globalMAFKeep returns integer 0/1 shares: 1 iff the variant's MAF in the joint
+// MVP+AoU ALL cohort is at most threshold (< 0.5). Nothing is revealed.
+func globalMAFKeep(
+	mpcObj *mpc.MPC,
+	dataParams DataParams,
+	cohortCounts *mat.Dense,
+	total int,
+	threshold float64,
+) mpc_core.RVec {
+	count := ShareSum(mpcObj, cohortCounts, 1, total)[0]
+	rtype := mpcObj.GetRType()
+	fracBits := mpcObj.GetFracBits()
+	alleles := float64(2 * dataParams.CohortN)
+
+	// Counts are integers, so half-integer bounds avoid ties: count <= floor(t*2N) or count >= ceil((1-t)*2N).
+	altMinor := mpcObj.LessThanPublic(
+		count,
+		rtype.FromFloat64(math.Floor(threshold*alleles)+0.5, fracBits),
+		mpcObj.GetBooleanShareFlag(),
+	)
+	altMajor := mpcObj.NotLessThanPublic(
+		count,
+		rtype.FromFloat64(math.Ceil((1-threshold)*alleles)-0.5, fracBits),
+		mpcObj.GetBooleanShareFlag(),
+	)
+	altMinor.Add(altMajor)
+	return altMinor
+}
+
+// GlobalMAFKeepPlain is the plaintext rule of globalMAFKeep, for B-private variants
+// whose joint count is AoU's count alone.
+func GlobalMAFKeepPlain(count float64, cohortN int, threshold float64) bool {
+	alleles := float64(2 * cohortN)
+	return count <= math.Floor(threshold*alleles) || count >= math.Ceil((1-threshold)*alleles)
+}
+
+// ComputeWeights returns Beta(1,25) weights from the analysis-sample MAF. With a
+// global threshold in (0, 0.5), weights of variants whose joint cohort MAF exceeds it
+// are multiplied by an integer 0 share, so they are exactly zero (no truncation).
 func ComputeWeights(
 	mpcObj *mpc.MPC,
 	heParams *securecrypto.CryptoParams,
 	dataParams DataParams,
 	localDosage *mat.Dense,
+	cohortCounts *mat.Dense,
+	globalMaxMAF float64,
 ) (weight, signedWeight []mpc_core.RVec) {
 	total := 0
 	for _, gene := range dataParams.Genes {
@@ -99,6 +142,12 @@ func ComputeWeights(
 	negativeWeight.Sub(flatWeight)
 
 	flatSignedWeight := mux(mpcObj, altMajor, negativeWeight, flatWeight)
+
+	if globalMaxMAF > 0 && globalMaxMAF < 0.5 {
+		keep := globalMAFKeep(mpcObj, dataParams, cohortCounts, total, globalMaxMAF)
+		flatWeight = mpcObj.SSMultElemVec(keep, flatWeight)
+		flatSignedWeight = mpcObj.SSMultElemVec(keep, flatSignedWeight)
+	}
 
 	offset := 0
 	for geneIndex, gene := range dataParams.Genes {

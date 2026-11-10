@@ -5,7 +5,7 @@ import csv
 import math
 from pathlib import Path
 
-from config import load_party_config
+from config import analysis_groups, load_party_config
 
 
 KEY_COLUMNS = [
@@ -317,8 +317,8 @@ def compare_secure_to_reference(
         comparison_root.mkdir(parents=True, exist_ok=True)
         success_path = comparison_root / "_SUCCESS"
         success_path.unlink(missing_ok=True)
-        for ancestry in config["ancestries"]:
-            compare_ancestry(run_dir, ancestry, config.get("print_logs", party == 1))
+        for _, _, label in analysis_groups(config):
+            compare_ancestry(run_dir, label, config.get("print_logs", party == 1))
         success_path.touch()
 
 

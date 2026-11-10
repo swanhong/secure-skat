@@ -23,13 +23,76 @@ type ChromosomeInput struct {
 	PrivateGenotypeDirectory string
 	Genes                    []protocol.Gene
 	CryptoParams             protocol.CryptoParams
+	// Site-cohort ALT counts per block column, read only when global_max_maf is set.
+	CohortCounts        [][]float64
+	PrivateCohortCounts [][]float64
 }
 
 type PartyInput struct {
 	X           *mat.Dense
 	Y           *mat.Dense
 	SampleCount int
+	CohortSize  int
 	Chromosomes []ChromosomeInput
+}
+
+// readCountLines reads one line of space-separated counts per gene.
+func readCountLines(path string, geneCount int) ([][]float64, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	if len(lines) != geneCount {
+		return nil, fmt.Errorf("%s has %d lines, expected %d genes", path, len(lines), geneCount)
+	}
+	counts := make([][]float64, geneCount)
+	for index, line := range lines {
+		for _, field := range strings.Fields(line) {
+			value, err := strconv.ParseFloat(field, 64)
+			if err != nil {
+				return nil, fmt.Errorf("%s:%d: %w", path, index+1, err)
+			}
+			counts[index] = append(counts[index], value)
+		}
+	}
+	return counts, nil
+}
+
+// readCohortCounts reads the files prepare writes next to the genotype directory.
+func readCohortCounts(input *PartyInput, partyID int) error {
+	for index := range input.Chromosomes {
+		chromosome := &input.Chromosomes[index]
+		siteDirectory := filepath.Dir(chromosome.GenotypeDirectory)
+		if index == 0 {
+			data, err := os.ReadFile(filepath.Join(siteDirectory, "cohort_size.txt"))
+			if err != nil {
+				return err
+			}
+			if input.CohortSize, err = strconv.Atoi(strings.TrimSpace(string(data))); err != nil {
+				return err
+			}
+		}
+		counts, err := readCountLines(filepath.Join(siteDirectory, "allele_counts.txt"), len(chromosome.Genes))
+		if err != nil {
+			return err
+		}
+		for geneIndex, gene := range chromosome.Genes {
+			if len(counts[geneIndex]) != gene.VariantCount {
+				return fmt.Errorf("chromosome %d gene %s: %d allele counts for %d variants",
+					chromosome.Chromosome, gene.GeneID, len(counts[geneIndex]), gene.VariantCount)
+			}
+		}
+		chromosome.CohortCounts = counts
+		if partyID == cohortBPartyID {
+			chromosome.PrivateCohortCounts, err = readCountLines(
+				filepath.Join(siteDirectory, "private_allele_counts.txt"), len(chromosome.Genes))
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func readTextMatrix(path string, columns int) (*mat.Dense, error) {
@@ -305,6 +368,11 @@ func loadPartyInput(
 		}
 	}
 
+	if len(config.GlobalMaxMAF) > 0 {
+		if err := readCohortCounts(input, partyID); err != nil {
+			return nil, fmt.Errorf("read cohort allele counts (rerun prepare): %w", err)
+		}
+	}
 	return input, nil
 }
 

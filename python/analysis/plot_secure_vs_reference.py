@@ -13,7 +13,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from compare_secure_to_reference import read_rows, r_squared
-from config import load_party_config
+from config import analysis_groups, load_party_config
 
 
 SCATTER_COMPARISONS = [
@@ -406,8 +406,8 @@ def plot_secure_vs_reference(
         gene_symbols = read_gene_symbols(directory, config["chromosomes"])
         success_path = run_dir / "comparison" / "_PLOTS_SUCCESS"
         success_path.unlink(missing_ok=True)
-        for ancestry in config["ancestries"]:
-            plot_ancestry(run_dir, ancestry, gene_symbols)
+        for _, _, label in analysis_groups(config):
+            plot_ancestry(run_dir, label, gene_symbols)
         success_path.touch()
 
 

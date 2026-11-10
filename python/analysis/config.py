@@ -14,6 +14,16 @@ def normalize_chromosomes(values: list[int | str]) -> list[int]:
     return values.copy()
 
 
+def analysis_groups(config: dict) -> list[tuple[str, float | None, str]]:
+    """(ancestry, global_max_maf, output subdirectory) per analysis, matching Go's analysisLabel."""
+    thresholds = config.get("global_max_maf") or [None]
+    return [
+        (ancestry, threshold, ancestry if threshold is None else f"{ancestry}/maf{threshold!r}")
+        for ancestry in config["ancestries"]
+        for threshold in thresholds
+    ]
+
+
 def load_party_config(directory: Path, party_id: int = 1) -> dict:
     config = {}
     local_name = "configLocal.toml"

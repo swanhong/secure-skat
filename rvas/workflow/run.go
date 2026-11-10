@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 
 	mpc_core "github.com/hhcho/mpc-core"
 	"github.com/hhcho/sfgwas/mpc"
@@ -36,6 +37,7 @@ func runChromosome(
 	input *PartyInput,
 	chromosomeIndex int,
 	seed int64,
+	globalMaxMAF float64,
 ) (chromosomeResult, error) {
 	chromosome := input.Chromosomes[chromosomeIndex]
 	dataParams := secureSession.dataParams[chromosomeIndex]
@@ -67,6 +69,16 @@ func runChromosome(
 		}
 	}
 
+	filtered := globalMaxMAF > 0 && globalMaxMAF < 0.5
+	var cohortCounts *mat.Dense
+	if filtered && localDosage != nil {
+		var flat []float64
+		for _, counts := range chromosome.CohortCounts {
+			flat = append(flat, counts...)
+		}
+		cohortCounts = mat.NewDense(1, len(flat), flat)
+	}
+
 	done := secureSession.metrics.start(
 		"compute_weights",
 		chromosome.Chromosome,
@@ -77,19 +89,44 @@ func runChromosome(
 		secureSession.heContext,
 		dataParams,
 		localDosage,
+		cohortCounts,
+		globalMaxMAF,
 	)
 	done()
 
 	loadGenotypes := func(
 		batch protocol.GeneBatch,
 	) ([]*mat.Dense, []*mat.Dense, error) {
-		return readGeneBatch(
+		public, private, err := readGeneBatch(
 			chromosome.GenotypeDirectory,
 			chromosome.PrivateGenotypeDirectory,
 			chromosome.Genes,
 			batch,
 			input.SampleCount,
 		)
+		if err != nil || !filtered || private == nil {
+			return public, private, err
+		}
+		// B-private variants are filtered locally: a zero column equals a zero weight,
+		// and the column count (hence what B reveals) is unchanged.
+		for _, geneIndex := range batch.GeneIndices {
+			genotypes := private[geneIndex]
+			if genotypes == nil {
+				continue
+			}
+			rows, columns := genotypes.Dims()
+			counts := chromosome.PrivateCohortCounts[geneIndex]
+			if len(counts) != columns {
+				return nil, nil, fmt.Errorf("gene %s: %d private allele counts for %d private variants",
+					chromosome.Genes[geneIndex].GeneID, len(counts), columns)
+			}
+			for column, count := range counts {
+				if !protocol.GlobalMAFKeepPlain(count, dataParams.CohortN, globalMaxMAF) {
+					genotypes.SetCol(column, make([]float64, rows))
+				}
+			}
+		}
+		return public, private, nil
 	}
 
 	done = secureSession.metrics.start(
@@ -265,46 +302,60 @@ func runAncestry(
 		rssOverN: rssOverN,
 	}
 
-	results := make(
-		[]chromosomeResult,
-		0,
-		len(input.Chromosomes),
-	)
-	for chromosomeIndex := range input.Chromosomes {
-		chromosome := input.Chromosomes[chromosomeIndex].Chromosome
-		done := metrics.start(
-			"chromosome_total",
-			chromosome,
-			networks,
-		)
-		traceSeed := deriveTraceSeed(traceKey, ancestry, chromosome)
-		result, err := runChromosome(
-			secureSession,
-			model,
-			input,
-			chromosomeIndex,
-			traceSeed,
-		)
-		done()
-		if err != nil {
-			return fmt.Errorf("run chromosome %d: %w", chromosome, err)
-		}
-		if partyID == cohortAPartyID || partyID == cohortBPartyID {
-			results = append(results, result)
-		}
-		runtime.GC()
+	// One session and null model per ancestry; each global MAF threshold reruns the
+	// chromosomes with its own weights. Metrics accumulate over thresholds.
+	thresholds := config.GlobalMaxMAF
+	if len(thresholds) == 0 {
+		thresholds = []float64{0}
 	}
-
+	summaries := make(map[string][]chromosomeResult, len(thresholds))
 	var resultErr error
-	if partyID == cohortAPartyID || partyID == cohortBPartyID {
-		done := metrics.start("write_results", 0, nil)
-		resultErr = writeSecureResults(
-			config.RunDir,
-			ancestry,
-			results,
-			config.PhenotypeColumns,
+	for _, threshold := range thresholds {
+		label := analysisLabel(ancestry, threshold)
+		results := make(
+			[]chromosomeResult,
+			0,
+			len(input.Chromosomes),
 		)
-		done()
+		for chromosomeIndex := range input.Chromosomes {
+			chromosome := input.Chromosomes[chromosomeIndex].Chromosome
+			done := metrics.start(
+				"chromosome_total",
+				chromosome,
+				networks,
+			)
+			traceSeed := deriveTraceSeed(traceKey, ancestry, chromosome)
+			result, err := runChromosome(
+				secureSession,
+				model,
+				input,
+				chromosomeIndex,
+				traceSeed,
+				threshold,
+			)
+			done()
+			if err != nil {
+				return fmt.Errorf("%s: run chromosome %d: %w", label, chromosome, err)
+			}
+			if partyID == cohortAPartyID || partyID == cohortBPartyID {
+				results = append(results, result)
+			}
+			runtime.GC()
+		}
+
+		if partyID == cohortAPartyID || partyID == cohortBPartyID {
+			done := metrics.start("write_results", 0, nil)
+			if err := writeSecureResults(
+				config.RunDir,
+				label,
+				results,
+				config.PhenotypeColumns,
+			); err != nil && resultErr == nil {
+				resultErr = err
+			}
+			done()
+		}
+		summaries[label] = results
 	}
 
 	metricsPath := filepath.Join(
@@ -322,9 +373,20 @@ func runAncestry(
 	}
 	metrics.printTimeTree()
 	if printLogs && partyID != auxiliaryPartyID {
-		printResultSummary(results, ancestry, partyID)
+		for _, threshold := range thresholds {
+			label := analysisLabel(ancestry, threshold)
+			printResultSummary(summaries[label], label, partyID)
+		}
 	}
 	return nil
+}
+
+// analysisLabel is the output subdirectory: the ancestry, plus maf<threshold> when filtered.
+func analysisLabel(ancestry string, globalMaxMAF float64) string {
+	if globalMaxMAF == 0 {
+		return ancestry
+	}
+	return filepath.Join(ancestry, "maf"+strconv.FormatFloat(globalMaxMAF, 'g', -1, 64))
 }
 
 func printResultSummary(results []chromosomeResult, ancestry string, partyID int) {

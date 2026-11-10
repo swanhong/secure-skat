@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +15,28 @@ class PlainInput:
     sample_count_b: int
     covariates: np.ndarray
     phenotypes: np.ndarray
+    # Per gene, which public/private columns pass the global MAF filter (None = no filter).
+    keep_public: list[np.ndarray] | None = None
+    keep_private: list[np.ndarray] | None = None
+
+
+def read_count_lines(path: Path) -> list[np.ndarray]:
+    return [np.array(line.split(), dtype=float) for line in path.read_text().split("\n")[:-1]]
+
+
+def global_maf_keep(input_data: PlainInput, threshold: float) -> PlainInput:
+    """Same rule as Go globalMAFKeep on the joint MVP+AoU ALL-cohort counts."""
+    a, b = input_data.directory_a / "A", input_data.directory_b / "B"
+    cohort_n = int((a / "cohort_size.txt").read_text()) + int((b / "cohort_size.txt").read_text())
+    low, high = math.floor(threshold * 2 * cohort_n), math.ceil((1 - threshold) * 2 * cohort_n)
+    def keep(counts):
+        return (counts <= low) | (counts >= high)
+    public = [keep(x + y) for x, y in zip(read_count_lines(a / "allele_counts.txt"),
+                                        read_count_lines(b / "allele_counts.txt"))]
+    private = [keep(x) for x in read_count_lines(b / "private_allele_counts.txt")]
+    if len(public) != len(input_data.genes) or len(private) != len(input_data.genes):
+        raise ValueError("allele count files do not match genes.txt")
+    return replace(input_data, keep_public=public, keep_private=private)
 
 
 def read_text_matrix(path: Path) -> np.ndarray:
@@ -73,6 +96,10 @@ def read_gene_genotype(input_data: PlainInput, gene_index: int) -> np.ndarray:
         input_data.sample_count_b,
         -1,
     )
+    if input_data.keep_public is not None:
+        public_a = public_a[:, input_data.keep_public[gene_index]]
+        public_b = public_b[:, input_data.keep_public[gene_index]]
+        private_b = private_b[:, input_data.keep_private[gene_index]]
     private_a = np.zeros(
         (input_data.sample_count_a, private_b.shape[1]),
         dtype=np.float64,

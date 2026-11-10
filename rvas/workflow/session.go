@@ -29,14 +29,20 @@ func exchangePublicParameters(
 	network *mpc.Network,
 	partyID int,
 	localSampleCount int,
+	localCohortSize int,
 	chromosomes []ChromosomeInput,
-) (nA, nB int) {
+) (nA, nB, cohortN int) {
 	switch partyID {
 	case auxiliaryPartyID:
 		nA = network.ReceiveInt(cohortAPartyID)
 		nB = network.ReceiveInt(cohortBPartyID)
 		network.SendInt(nB, cohortAPartyID)
 		network.SendInt(nA, cohortBPartyID)
+		cohortA := network.ReceiveInt(cohortAPartyID)
+		cohortB := network.ReceiveInt(cohortBPartyID)
+		network.SendInt(cohortB, cohortAPartyID)
+		network.SendInt(cohortA, cohortBPartyID)
+		cohortN = cohortA + cohortB
 
 		for index := range chromosomes {
 			geneCount := network.ReceiveInt(cohortAPartyID)
@@ -54,6 +60,8 @@ func exchangePublicParameters(
 		nA = localSampleCount
 		network.SendInt(nA, auxiliaryPartyID)
 		nB = network.ReceiveInt(auxiliaryPartyID)
+		network.SendInt(localCohortSize, auxiliaryPartyID)
+		cohortN = localCohortSize + network.ReceiveInt(auxiliaryPartyID)
 
 		for _, chromosome := range chromosomes {
 			variantCounts := make([]uint64, len(chromosome.Genes))
@@ -67,9 +75,11 @@ func exchangePublicParameters(
 		nB = localSampleCount
 		network.SendInt(nB, auxiliaryPartyID)
 		nA = network.ReceiveInt(auxiliaryPartyID)
+		network.SendInt(localCohortSize, auxiliaryPartyID)
+		cohortN = localCohortSize + network.ReceiveInt(auxiliaryPartyID)
 	}
 
-	return nA, nB
+	return nA, nB, cohortN
 }
 
 func openSession(
@@ -104,10 +114,11 @@ func openSession(
 		0,
 		parallelNetworks,
 	)
-	nA, nB := exchangePublicParameters(
+	nA, nB, cohortN := exchangePublicParameters(
 		networks[0],
 		partyID,
 		input.SampleCount,
+		input.CohortSize,
 		input.Chromosomes,
 	)
 	done()
@@ -146,6 +157,7 @@ func openSession(
 			NA:             nA,
 			NB:             nB,
 			N:              nA + nB,
+			CohortN:        cohortN,
 			C:              len(config.CovariateColumns) + 1,
 			PhenotypeCount: len(config.PhenotypeColumns),
 		}

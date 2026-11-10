@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from davies_qfc import Davies
-from load_preprocessed import PlainInput, read_gene_genotype, read_plain_input
+from load_preprocessed import PlainInput, global_maf_keep, read_gene_genotype, read_plain_input
 from skat_statistics import (
     compute_gene_statistics,
     fit_null_models,
@@ -87,10 +87,19 @@ def analyze(input_data: PlainInput) -> list[dict[str, str | int | float]]:
 
 
 def main() -> None:
-    if len(sys.argv) not in (2, 3):
-        raise SystemExit("usage: compute_reference.py <preprocessed-dir> [preprocessed-dir-b]")
+    args = sys.argv[1:]
+    threshold = None
+    if "--global-max-maf" in args:
+        index = args.index("--global-max-maf")
+        threshold = float(args[index + 1])
+        del args[index:index + 2]
+    if len(args) not in (1, 2):
+        raise SystemExit("usage: compute_reference.py <preprocessed-dir> [preprocessed-dir-b] [--global-max-maf T]")
 
-    rows = analyze(read_plain_input(Path(sys.argv[1]), Path(sys.argv[2]) if len(sys.argv) == 3 else None))
+    input_data = read_plain_input(Path(args[0]), Path(args[1]) if len(args) == 2 else None)
+    if threshold is not None and threshold < 0.5:
+        input_data = global_maf_keep(input_data, threshold)
+    rows = analyze(input_data)
     writer = csv.DictWriter(
         sys.stdout,
         fieldnames=OUTPUT_COLUMNS,
