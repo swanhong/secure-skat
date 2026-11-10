@@ -1,5 +1,6 @@
 from pathlib import Path
 import tomllib
+import math
 
 
 def normalize_chromosomes(values: list[int | str]) -> list[int]:
@@ -14,11 +15,15 @@ def normalize_chromosomes(values: list[int | str]) -> list[int]:
     return values.copy()
 
 
-def analysis_groups(config: dict) -> list[tuple[str, float | None, str]]:
+def analysis_groups(config: dict) -> list[tuple[str, float, str]]:
     """(ancestry, global_max_maf, output subdirectory) per analysis, matching Go's analysisLabel."""
-    thresholds = config.get("global_max_maf") or [None]
+    thresholds = config.get("global_max_maf")
+    if not isinstance(thresholds, list) or not thresholds:
+        raise ValueError("global_max_maf must contain at least one threshold")
+    if any(not math.isfinite(t) or not 0 < t <= 0.5 for t in thresholds) or len(set(thresholds)) != len(thresholds):
+        raise ValueError("global_max_maf must contain distinct values in (0, 0.5]")
     return [
-        (ancestry, threshold, ancestry if threshold is None else f"{ancestry}/maf{threshold!r}")
+        (ancestry, threshold, f"{ancestry}/maf{threshold!r}")
         for ancestry in config["ancestries"]
         for threshold in thresholds
     ]
@@ -38,4 +43,5 @@ def load_party_config(directory: Path, party_id: int = 1) -> dict:
             config.update(tomllib.load(config_file))
     config["chromosomes"] = normalize_chromosomes(config["chromosomes"])
     config["ancestries"] = [ancestry.strip().upper() for ancestry in config["ancestries"]]
+    analysis_groups(config)
     return config

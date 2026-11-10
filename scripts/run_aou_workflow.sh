@@ -5,13 +5,18 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/setup/env.sh
 
-config_a="${CONFIG_A:-config/mvp}"
-config_b="${CONFIG_B:-config/aou}"
-config_0="${CONFIG_0:-config/cp0}"
+input_mode="${INPUT_MODE:-split}"
+config_suffix=""
+if [[ "$input_mode" == "split" ]]; then
+  config_suffix="-test"
+fi
+config_a="${CONFIG_A:-config/mvp$config_suffix}"
+config_b="${CONFIG_B:-config/aou$config_suffix}"
+config_0="${CONFIG_0:-config/cp0$config_suffix}"
 reference_engine="${REFERENCE_ENGINE:-python}"
-log_dir="${LOG_DIR:-output/aou-logs}"
+log_dir="${LOG_DIR:-output/aou$config_suffix-logs}"
 
-case "${INPUT_MODE:-split}" in
+case "$input_mode" in
   split)
     echo "[0/8] Split AoU source into MVP/A and AoU/B inputs"
     python3 -m python.datasets.aou.prepare_aou --config "$config_b" --config-mvp "$config_a"

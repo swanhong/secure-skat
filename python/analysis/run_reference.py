@@ -62,7 +62,7 @@ def run_chromosome_reference(
     engine_name: str,
     launcher: str,
     script: Path,
-    group: tuple[str, float | None, str],
+    group: tuple[str, float, str],
     chromosome: int,
     phenotype_names: list[str],
     environment: dict[str, str],
@@ -76,8 +76,7 @@ def run_chromosome_reference(
 
     relative = Path("prepared") / ancestry / f"chr{chromosome}"
     command = [launcher, str(script), str(run_dir_a / relative), str(run_dir_b / relative)]
-    if threshold is not None:
-        command += ["--global-max-maf", repr(threshold)]
+    command += ["--global-max-maf", repr(threshold)]
     completed = subprocess.run(
         command,
         check=True,
@@ -142,7 +141,7 @@ def worker_settings(engine: str, task_count: int) -> tuple[int, int]:
     return workers, blas_threads
 
 
-def run_reference(config_path: Path, engine: str = "r", config_b: Path | None = None) -> None:
+def run_reference(config_path: Path, engine: str = "python", config_b: Path | None = None) -> None:
     config = load_party_config(config_path)
 
     run_dir_a = Path(config["run_dir"])
@@ -165,7 +164,7 @@ def run_reference(config_path: Path, engine: str = "r", config_b: Path | None = 
     engine_name, launcher, script_name = ENGINES[engine]
     script = Path(__file__).resolve().parent / script_name
     groups = analysis_groups(config)
-    if engine != "python" and config.get("global_max_maf"):
+    if engine != "python":
         raise ValueError("global_max_maf is implemented only in the python reference engine")
     tasks = [
         (group, chromosome)
@@ -253,8 +252,8 @@ def main() -> None:
     parser.add_argument(
         "--engine",
         choices=ENGINES,
-        default="r",
-        help="reference engine (default: r)",
+        default="python",
+        help="reference engine (default: python)",
     )
     parser.add_argument("--config-b", help="B configuration directory; defaults to the same inputs as --config")
     args = parser.parse_args()

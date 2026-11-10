@@ -23,7 +23,7 @@ type ChromosomeInput struct {
 	PrivateGenotypeDirectory string
 	Genes                    []protocol.Gene
 	CryptoParams             protocol.CryptoParams
-	// Site-cohort ALT counts per block column, read only when global_max_maf is set.
+	// Site-cohort ALT counts per block column.
 	CohortCounts        [][]float64
 	PrivateCohortCounts [][]float64
 }
@@ -368,10 +368,8 @@ func loadPartyInput(
 		}
 	}
 
-	if len(config.GlobalMaxMAF) > 0 {
-		if err := readCohortCounts(input, partyID); err != nil {
-			return nil, fmt.Errorf("read cohort allele counts (rerun prepare): %w", err)
-		}
+	if err := readCohortCounts(input, partyID); err != nil {
+		return nil, fmt.Errorf("read cohort allele counts (rerun prepare): %w", err)
 	}
 	return input, nil
 }

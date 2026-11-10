@@ -279,6 +279,8 @@ def prepare_chromosomes(
     split_manifest = validate_split_inputs(request.phenotype, asdict(request))
     if request.debug_split_num_parties and split_manifest is not None:
         raise ValueError("debug_split_num_parties requires common source inputs, not already split inputs")
+    gene_selection = (GeneSelectionRequest("all", 0, None) if split_manifest is not None
+                      else request.gene_selection)
     if not request.chromosomes:
         raise ValueError("at least one chromosome is required")
 
@@ -324,13 +326,13 @@ def prepare_chromosomes(
         samples_per_cohort = request.samples_per_cohort
 
     file_genes: tuple[GeneRef, ...] = ()
-    if request.gene_selection.mode == "file" and request.party != 2:
-        if request.gene_selection.path is None:
+    if gene_selection.mode == "file" and request.party != 2:
+        if gene_selection.path is None:
             raise ValueError(
                 "gene selection path is required in file mode"
             )
         file_genes = read_gene_panel(
-            request.gene_selection.path
+            gene_selection.path
         )
 
     selected_genes = []
@@ -394,6 +396,11 @@ def prepare_chromosomes(
                 f"ordered PSAM IDs differ for chromosome "
                 f"{reference_chromosome} and chromosome {chromosome}"
             )
+        # A non-PASS row counts as absent everywhere, including Party 2's public-list
+        # variants, the same as a row removed by QC.
+        inputs = replace(inputs, variants=tuple(
+            variant for variant in inputs.variants if variant.filter_value in {"PASS", "."}
+        ))
         if request.debug_split_num_parties:
             # Both sites read one source; hide B-only variants from A and A-only variants from B.
             hidden = "private" if request.party == 1 else "public_only"
@@ -423,7 +430,7 @@ def prepare_chromosomes(
             chromosome_groups = select_candidates(allowed_keys=allowed_keys)
         else:
             chromosome_groups = select_gene_groups(
-                request=request.gene_selection,
+                request=gene_selection,
                 inputs=inputs,
                 chromosome=chromosome,
                 allowed_keys=allowed_keys,
@@ -481,7 +488,7 @@ def prepare_chromosomes(
         print(f"Wrote {len(local_cut_keys)} locally cut variants to", path)
 
     selected_genes = tuple(selected_genes)
-    if request.gene_selection.mode != "all":
+    if gene_selection.mode != "all":
         write_selected_genes(
             path=selected_genes_path,
             genes=selected_genes,

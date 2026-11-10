@@ -337,10 +337,11 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
                 config.update(tomllib.load(stream))
         config["chromosomes"] = normalize_chromosomes(config["chromosomes"])
         config["ancestries"] = [value.strip().upper() for value in config["ancestries"]]
-        if "ALL" in config["ancestries"] and len(config["ancestries"]) > 1 and "{anc}" not in config["covariate"]:
+        if config["ancestries"] != ["ALL"] and "{anc}" not in config["covariate"]:
             raise ValueError("splitting ALL with other ancestries requires {anc} in the covariate output path")
         configs.append(config)
     mvp, aou = configs
+    cohort_ancestries = tuple(dict.fromkeys((*mvp["ancestries"], "ALL")))
 
     # step2: Check that both sites use matching sample selection and variant filters.
     for field in ("chromosomes", "ancestries", "phenotype_columns", "covariate_columns",
@@ -360,7 +361,7 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
                 raise ValueError(f"split {field} must be below {root}")
 
     source_files = [source / "phenotype.csv", source / "ancestry_preds.tsv"]
-    source_files += [source / f"covariate/{ancestry.lower()}_pca.eigenvec" for ancestry in mvp["ancestries"]]
+    source_files += [source / f"covariate/{ancestry.lower()}_pca.eigenvec" for ancestry in cohort_ancestries]
     for chromosome, prefix in pgen_prefixes.items():
         source_files += [Path(f"{prefix}.{extension}") for extension in ("pgen", "pvar", "psam")]
         source_files += [source / f"{folder}/chr{chromosome}.tsv" for folder in ("annotation", "gene_panel")]
@@ -388,7 +389,7 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
         covariate_column=aou.get("covariate_column", ""),
         covariate_columns=tuple(aou.get("covariate_columns", ())),
         is_cov_single_column=aou["is_cov_single_column"],
-        ancestry_groups=tuple(aou["ancestries"]),
+        ancestry_groups=cohort_ancestries,
         ancestry_id_column=aou["ancestry_id_column"],
         ancestry_column=aou["ancestry_column"],
     )
@@ -413,10 +414,16 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
             rows_by_site = [{}, {}]
             for index in (0, 1):
                 sample_ids = split_sample_ids(reference_ids, samples.ancestries, 2, index + 1)
-                for ancestry in mvp["ancestries"]:
-                    rows = select_rows(sample_ids, samples.phenotypes, samples.covariates[ancestry],
+                for ancestry in cohort_ancestries:
+                    ids = sample_ids
+                    limit = mvp["samples_per_cohort"] or "all"
+                    if ancestry == "ALL" and "ALL" not in mvp["ancestries"]:
+                        selected = {sample for group in rows_by_site[index].values() for sample in group.sample_ids}
+                        ids = tuple(sample for sample in sample_ids if sample in selected)
+                        limit = "all"
+                    rows = select_rows(ids, samples.phenotypes, samples.covariates[ancestry],
                                        samples.ancestries, ancestry, tuple(mvp["phenotype_columns"]),
-                                       mvp["samples_per_cohort"] or "all", party=index + 1)
+                                       limit, party=index + 1)
                     rows_by_site[index][ancestry] = rows[index]
 
             # step8: Write selected sample tables using each site's paths and column names.

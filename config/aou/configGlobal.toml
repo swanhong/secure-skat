@@ -1,19 +1,15 @@
-# chromosomes = ["all"]
-chromosomes = [21, 22]
-# phenotype_columns = [
-#   "LDLC_final_mgdl_6sd_masked",
-#   "HDLC_mgdl_6sd_masked",
-#   "TotChol_corrected_mvp_explicit_duration_mgdl_6sd_masked",
-#   "ln_Trig_6sd_masked",
-#   "nonHDL_corrected_mvp_explicit_duration_mgdl_6sd_masked",
-# ]
-phenotype_columns = ["LDLC_final_mgdl_6sd_masked", "HDLC_mgdl_6sd_masked"]
-# ancestries = ["EUR", "AFR", "AMR"]
-ancestries = ["EUR", "AFR"]
+chromosomes = ["all"]
+phenotype_columns = [
+  "LDLC_final_mgdl_6sd_masked",
+  "HDLC_mgdl_6sd_masked",
+  "TotChol_corrected_mvp_explicit_duration_mgdl_6sd_masked",
+  "ln_Trig_6sd_masked",
+  "nonHDL_corrected_mvp_explicit_duration_mgdl_6sd_masked",
+]
+ancestries = ["AFR", "EUR", "AMR", "ALL"]
 global_max_maf = [0.01, 0.001]
 
 ckks = "PN14QP436S45"
-# mpc_num_threads = 8
 mpc_num_threads = 2
 data_bits = 70
 fractional_bits = 40
@@ -23,12 +19,10 @@ binding_ipaddr = "127.0.0.1"
 
 [servers.party0]
 ipaddr = "127.0.0.1"
-# ports = {}
 ports = {party1 = "18000", party2 = "18002"}
 
 [servers.party1]
 ipaddr = "127.0.0.1"
-# ports = {}
 ports = {party2 = "18004"}
 
 [servers.party2]

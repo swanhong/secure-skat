@@ -143,7 +143,7 @@ func ComputeWeights(
 
 	flatSignedWeight := mux(mpcObj, altMajor, negativeWeight, flatWeight)
 
-	if globalMaxMAF > 0 && globalMaxMAF < 0.5 {
+	if globalMaxMAF < 0.5 {
 		keep := globalMAFKeep(mpcObj, dataParams, cohortCounts, total, globalMaxMAF)
 		flatWeight = mpcObj.SSMultElemVec(keep, flatWeight)
 		flatSignedWeight = mpcObj.SSMultElemVec(keep, flatSignedWeight)

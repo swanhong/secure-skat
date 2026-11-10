@@ -27,6 +27,9 @@ Load `scripts/setup/env.sh` in each new terminal.
 
 Use a new `run_dir` when changing preparation settings.
 
+Full analysis uses `config/{mvp,aou,cp0}`: chr1–22, five phenotypes, AFR/EUR/AMR/ALL, and all eligible samples and genes.
+Local tests use `config/{mvp-test,aou-test,cp0-test}`: chr21–22, two phenotypes, EUR/AFR, up to 100 samples per ancestry per site, and 50 genes per chromosome.
+
 ## 3. Prepare MVP, then AoU
 
 ```bash
@@ -70,7 +73,7 @@ go run -mod=vendor secure-rvas.go party --config config/aou --party 2
 ```
 
 Results: `<run_dir>/secure/<ancestry>/maf<threshold>/all_secure_results.tsv`.
-Without `global_max_maf`, the `maf<threshold>/` directory is omitted.
+`global_max_maf` is required; use `[0.5]` to retain all prepared variants.
 
 ## 6. Compare with plaintext (optional)
 
@@ -89,4 +92,10 @@ For both sites on one machine, run steps 3–6 together:
 
 ```bash
 INPUT_MODE=sites ./scripts/run_aou_workflow.sh
+```
+
+For a small test using AoU data split into two sites:
+
+```bash
+./scripts/run_aou_workflow.sh
 ```

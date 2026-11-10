@@ -69,7 +69,7 @@ func runChromosome(
 		}
 	}
 
-	filtered := globalMaxMAF > 0 && globalMaxMAF < 0.5
+	filtered := globalMaxMAF < 0.5
 	var cohortCounts *mat.Dense
 	if filtered && localDosage != nil {
 		var flat []float64
@@ -305,9 +305,6 @@ func runAncestry(
 	// One session and null model per ancestry; each global MAF threshold reruns the
 	// chromosomes with its own weights. Metrics accumulate over thresholds.
 	thresholds := config.GlobalMaxMAF
-	if len(thresholds) == 0 {
-		thresholds = []float64{0}
-	}
 	summaries := make(map[string][]chromosomeResult, len(thresholds))
 	var resultErr error
 	for _, threshold := range thresholds {
@@ -383,9 +380,6 @@ func runAncestry(
 
 // analysisLabel is the output subdirectory: the ancestry, plus maf<threshold> when filtered.
 func analysisLabel(ancestry string, globalMaxMAF float64) string {
-	if globalMaxMAF == 0 {
-		return ancestry
-	}
 	return filepath.Join(ancestry, "maf"+strconv.FormatFloat(globalMaxMAF, 'g', -1, 64))
 }
 

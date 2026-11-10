@@ -1,0 +1,24 @@
+chromosomes = [21, 22]
+phenotype_columns = ["LDLC_final_mgdl_6sd_masked", "HDLC_mgdl_6sd_masked"]
+ancestries = ["EUR", "AFR"]
+global_max_maf = [0.01, 0.001]
+
+ckks = "PN14QP436S45"
+mpc_num_threads = 2
+data_bits = 70
+fractional_bits = 40
+probes = 50
+
+binding_ipaddr = "127.0.0.1"
+
+[servers.party0]
+ipaddr = "127.0.0.1"
+ports = {party1 = "18000", party2 = "18002"}
+
+[servers.party1]
+ipaddr = "127.0.0.1"
+ports = {party2 = "18004"}
+
+[servers.party2]
+ipaddr = "127.0.0.1"
+ports = {}

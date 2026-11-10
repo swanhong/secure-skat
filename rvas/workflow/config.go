@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -179,8 +180,11 @@ func validateGlobalConfig(config *Config) error {
 	if len(config.CovariateColumns) == 0 {
 		return fmt.Errorf("covariate_columns is required")
 	}
+	if len(config.GlobalMaxMAF) == 0 {
+		return fmt.Errorf("global_max_maf must contain at least one threshold")
+	}
 	for index, threshold := range config.GlobalMaxMAF {
-		if threshold <= 0 || threshold > 0.5 || slices.Contains(config.GlobalMaxMAF[:index], threshold) {
+		if math.IsNaN(threshold) || threshold <= 0 || threshold > 0.5 || slices.Contains(config.GlobalMaxMAF[:index], threshold) {
 			return fmt.Errorf("global_max_maf must contain distinct values in (0, 0.5]")
 		}
 	}

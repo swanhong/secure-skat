@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -102,6 +103,7 @@ func TestShippedCovariateConfigs(t *testing.T) {
 	}{
 		{"1kg-A", 1}, {"1kg-B", 2}, {"1kg-cp0", 0},
 		{"mvp", 1}, {"aou", 2}, {"cp0", 0},
+		{"mvp-test", 1}, {"aou-test", 2}, {"cp0-test", 0},
 	} {
 		t.Run(test.directory, func(t *testing.T) {
 			directory := filepath.Join("..", "..", "config", test.directory)
@@ -162,8 +164,11 @@ func TestPreparedCovariateDimensions(t *testing.T) {
 		PhenotypeFile:     write("pheno.txt", "1\n2\n"),
 		GenesFile:         write("genes.txt", "gene1\n"),
 		VariantCountsFile: write("block_sizes.txt", "1\n"),
-		GenotypeDirectory: directory,
+		GenotypeDirectory: filepath.Join(directory, "geno"),
+		GlobalMaxMAF:      []float64{0.01},
 	}
+	write("cohort_size.txt", "2\n")
+	write("allele_counts.txt", "1\n")
 	input, err := loadPartyInput(config, cohortAPartyID, "EUR")
 	if err != nil {
 		t.Fatal(err)
@@ -185,5 +190,26 @@ func TestPreparedCovariateDimensions(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), config.CovariateFile+":2:") ||
 		!strings.Contains(err.Error(), "expected 2 columns, got 3") {
 		t.Fatalf("expected row-width error for stale prepared data, got %v", err)
+	}
+}
+
+func TestGlobalMAFRequired(t *testing.T) {
+	config, err := LoadPartyConfig(filepath.Join("..", "..", "config", "cp0"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, thresholds := range [][]float64{nil, {}, {0}, {1}, {math.NaN()}, {0.01, 0.01}} {
+		candidate := *config
+		candidate.GlobalMaxMAF = thresholds
+		if err := validateGlobalConfig(&candidate); err == nil {
+			t.Fatalf("accepted invalid thresholds: %v", thresholds)
+		}
+	}
+	for _, thresholds := range [][]float64{{0.01, 0.001}, {0.5}} {
+		candidate := *config
+		candidate.GlobalMaxMAF = thresholds
+		if err := validateGlobalConfig(&candidate); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

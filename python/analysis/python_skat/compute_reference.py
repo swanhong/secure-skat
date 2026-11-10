@@ -88,16 +88,18 @@ def analyze(input_data: PlainInput) -> list[dict[str, str | int | float]]:
 
 def main() -> None:
     args = sys.argv[1:]
-    threshold = None
-    if "--global-max-maf" in args:
-        index = args.index("--global-max-maf")
-        threshold = float(args[index + 1])
-        del args[index:index + 2]
+    if "--global-max-maf" not in args:
+        raise SystemExit("--global-max-maf is required")
+    index = args.index("--global-max-maf")
+    threshold = float(args[index + 1])
+    del args[index:index + 2]
     if len(args) not in (1, 2):
-        raise SystemExit("usage: compute_reference.py <preprocessed-dir> [preprocessed-dir-b] [--global-max-maf T]")
+        raise SystemExit("usage: compute_reference.py <preprocessed-dir> [preprocessed-dir-b] --global-max-maf T")
 
     input_data = read_plain_input(Path(args[0]), Path(args[1]) if len(args) == 2 else None)
-    if threshold is not None and threshold < 0.5:
+    if not 0 < threshold <= 0.5:
+        raise SystemExit("--global-max-maf must be in (0, 0.5]")
+    if threshold < 0.5:
         input_data = global_maf_keep(input_data, threshold)
     rows = analyze(input_data)
     writer = csv.DictWriter(

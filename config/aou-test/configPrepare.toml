@@ -1,0 +1,24 @@
+run_dir = "output/aou-test"
+vat_annotation = "~/fed_prep_out/chr{chromosome}_annotation.tsv"
+
+public_var_list = "output/mvp-test/public_variants.tsv"
+genotype = "data/aou-test/split/genotype/exome.chr{chromosome}"
+gene_panel = "data/aou-test/split/gene_panel/chr{chromosome}.tsv"
+annotation = "data/aou-test/split/annotation/chr{chromosome}.tsv"
+phenotype = "data/aou-test/split/phenotype.csv"
+covariate = "data/aou-test/split/covariate/{anc}_pca.eigenvec"
+ancestry = "data/aou-test/split/ancestry_preds.tsv"
+
+phenotype_id_column = "person_id"
+covariate_id_column = "#IID"
+is_cov_single_column = false
+covariate_columns = ["PC1", "PC2", "PC3", "PC4", "PC5", "PC6", "PC7", "PC8", "PC9", "PC10"]
+ancestry_id_column = "research_id"
+ancestry_column = "ancestry_pred_other"
+local_max_maf = 0.02
+samples_per_cohort = 100
+shared_rate = 0.6
+plink2_bin = "/home/dataproc/plink2"
+
+[gene_selection]
+mode = "all"
