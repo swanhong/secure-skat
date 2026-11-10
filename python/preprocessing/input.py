@@ -93,10 +93,9 @@ def read_gene_panel(
 def read_annotations(annotation_path: Path) -> tuple[AnnotationRef, ...]:
     with annotation_path.open(newline="") as file:
         reader = csv.DictReader(file, delimiter="\t")
-        if tuple(reader.fieldnames or ()) != ("variant_key", "gene_id", "gene_symbol"):
+        if not {"variant_key", "gene_id", "gene_symbol"}.issubset(reader.fieldnames or ()):
             raise ValueError(
-                f"{annotation_path}: expected prefiltered variant_key, gene_id, gene_symbol columns; "
-                "regenerate annotations before prepare"
+                f"{annotation_path}: annotation requires variant_key, gene_id, gene_symbol columns"
             )
         return tuple(
             AnnotationRef(row["variant_key"], row["gene_id"], row["gene_symbol"])

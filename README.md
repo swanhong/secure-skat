@@ -19,7 +19,7 @@ Load `scripts/setup/env.sh` in each new terminal.
 ## 2. Configure
 
 - In `config/{mvp,aou}/configPrepare.toml`, set `run_dir` and genotype, gene panel, annotation, phenotype, covariate, and ancestry paths. Use `samples_per_cohort = 0` for all eligible samples.
-- Supply annotation TSVs with exactly `variant_key`, `gene_id`, and `gene_symbol`, filtered to **MANE Select + HC LoF**. Exclude variants without MANE Select. For AoU, use `python/datasets/aou/vat_simplify.py`.
+- Supply annotation TSVs containing `variant_key`, `gene_id`, and `gene_symbol`, filtered to **MANE Select + HC LoF**. Column order is flexible; extra columns are ignored and do not filter rows. Exclude variants without MANE Select. For AoU, use `python/datasets/aou/vat_simplify.py`.
 - Set `local_max_maf` per site (e.g. MVP `0.05`, AoU `0.02`). Supply ALL covariates even when running only ancestry-specific analyses.
 - Set the helper's `run_dir` in `config/cp0/configPrepare.toml`.
 - Match `configGlobal.toml` across all three parties: chromosomes, phenotypes, ancestries, protocol parameters, and network addresses. Use matching genome builds and gene IDs.

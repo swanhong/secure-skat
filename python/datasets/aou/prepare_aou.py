@@ -178,10 +178,9 @@ def annotation_keys(
 ) -> set[tuple[int, str, str]]:
     with annotation_path.open(newline="") as file:
         reader = csv.DictReader(file, delimiter="\t")
-        if tuple(reader.fieldnames or ()) != REQUIRED_ANNOTATION_COLUMNS:
+        if not set(REQUIRED_ANNOTATION_COLUMNS).issubset(reader.fieldnames or ()):
             raise ValueError(
-                f"{annotation_path}: expected the three-column MANE HC annotation schema "
-                f"{REQUIRED_ANNOTATION_COLUMNS}; regenerate with vat_simplify.py"
+                f"{annotation_path}: annotation requires columns {REQUIRED_ANNOTATION_COLUMNS}"
             )
         return {
             variant_alleles(row["variant_key"])
@@ -228,11 +227,10 @@ def normalize_annotation(
     wanted = annotation_keys(source)
     if annotation_output.exists() and gene_panel_output.exists():
         with annotation_output.open(newline="") as stream:
-            columns = tuple(next(csv.reader(stream, delimiter="\t")))
-        if columns != REQUIRED_ANNOTATION_COLUMNS:
+            columns = next(csv.reader(stream, delimiter="\t"), [])
+        if not set(REQUIRED_ANNOTATION_COLUMNS).issubset(columns):
             raise ValueError(
-                f"{annotation_output} uses the old annotation schema; "
-                "regenerate normalized and split inputs in a new output directory"
+                f"{annotation_output}: annotation requires columns {REQUIRED_ANNOTATION_COLUMNS}"
             )
         with gene_panel_output.open(newline="") as file:
             reader = csv.DictReader(file, delimiter="\t")
