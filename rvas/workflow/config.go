@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -60,17 +61,18 @@ type Config struct {
 	Covariate  string `toml:"covariate"`
 	Ancestry   string `toml:"ancestry"`
 
-	PhenotypeIDColumn string   `toml:"phenotype_id_column"`
-	CovariateIDColumn string   `toml:"covariate_id_column"`
-	CovariateColumn   string   `toml:"covariate_column"`
-	CovariateColumns  []string `toml:"covariate_columns"`
-	IsCovSingleColumn bool     `toml:"is_cov_single_column"`
-	AncestryIDColumn  string   `toml:"ancestry_id_column"`
-	AncestryColumn    string   `toml:"ancestry_column"`
-	PhenotypeColumns  []string `toml:"phenotype_columns"`
-	Ancestries        []string `toml:"ancestries"`
-	Masks             []string `toml:"masks"`
-	MaxMAF            *float64 `toml:"max_maf"`
+	PhenotypeIDColumn string    `toml:"phenotype_id_column"`
+	CovariateIDColumn string    `toml:"covariate_id_column"`
+	CovariateColumn   string    `toml:"covariate_column"`
+	CovariateColumns  []string  `toml:"covariate_columns"`
+	IsCovSingleColumn bool      `toml:"is_cov_single_column"`
+	AncestryIDColumn  string    `toml:"ancestry_id_column"`
+	AncestryColumn    string    `toml:"ancestry_column"`
+	PhenotypeColumns  []string  `toml:"phenotype_columns"`
+	Ancestries        []string  `toml:"ancestries"`
+	GlobalMaxMAF      []float64 `toml:"global_max_maf"`
+	Masks             []string  `toml:"masks"`
+	LocalMaxMAF       *float64  `toml:"local_max_maf"`
 
 	SamplesPerCohort int64   `toml:"samples_per_cohort"`
 	SharedRate       float64 `toml:"shared_rate"`
@@ -116,6 +118,9 @@ func loadConfig(directory string, filenames ...string) (*Config, error) {
 		}
 		if filename != prepareConfigFilename && metadata.IsDefined("run_dir") {
 			return nil, fmt.Errorf("%s: run_dir belongs in %s", path, prepareConfigFilename)
+		}
+		if metadata.IsDefined("max_maf") {
+			return nil, fmt.Errorf("%s: max_maf was replaced by local_max_maf (cut by the site cohort's genotype MAF)", path)
 		}
 	}
 	for index, ancestry := range config.Ancestries {
@@ -172,6 +177,11 @@ func validateGlobalConfig(config *Config) error {
 	if len(config.CovariateColumns) == 0 {
 		return fmt.Errorf("covariate_columns is required")
 	}
+	for index, threshold := range config.GlobalMaxMAF {
+		if threshold <= 0 || threshold > 0.5 || slices.Contains(config.GlobalMaxMAF[:index], threshold) {
+			return fmt.Errorf("global_max_maf must contain distinct values in (0, 0.5]")
+		}
+	}
 	seen := make(map[string]bool, len(config.CovariateColumns))
 	for _, column := range config.CovariateColumns {
 		if strings.TrimSpace(column) == "" || seen[column] {
@@ -198,6 +208,9 @@ func validatePrepareConfig(config *Config) error {
 	}
 	if config.SharedRate < 0 || config.SharedRate > 1 {
 		return fmt.Errorf("shared_rate must be between 0 and 1")
+	}
+	if config.LocalMaxMAF != nil && (*config.LocalMaxMAF <= 0 || *config.LocalMaxMAF > 0.5) {
+		return fmt.Errorf("local_max_maf must be in (0, 0.5]")
 	}
 	if config.IsCovSingleColumn && strings.TrimSpace(config.CovariateColumn) == "" {
 		return fmt.Errorf("covariate_column is required")

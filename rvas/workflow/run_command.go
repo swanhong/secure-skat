@@ -70,6 +70,9 @@ func generateSharedPRGKeys(directories []string) error {
 		if partyID > 0 && !slices.Equal(config.Ancestries, configs[0].Ancestries) {
 			return fmt.Errorf("keygen: party %d ancestries must match Party 0", partyID)
 		}
+		if partyID > 0 && !slices.Equal(config.GlobalMaxMAF, configs[0].GlobalMaxMAF) {
+			return fmt.Errorf("keygen: party %d global_max_maf must match Party 0", partyID)
+		}
 		configs[partyID] = config
 	}
 

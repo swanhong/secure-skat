@@ -14,7 +14,7 @@ covariate_columns = ["PC1", "PC2", "PC3", "PC4", "PC5", "PC6", "PC7", "PC8", "PC
 ancestry_id_column = "research_id"
 ancestry_column = "ancestry_pred_other"
 masks = ["LoF=HC"]
-max_maf = 0.001
+local_max_maf = 0.05
 samples_per_cohort = 0
 debug_split_num_parties = 2
 shared_rate = 0.7

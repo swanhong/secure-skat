@@ -222,7 +222,7 @@ def select_gene_variants(
         chromosome: str,
         gene_selection: Collection[str] | Literal["all"],
         mask: Mapping[str, str | Collection[str]],
-        max_maf: float | None
+        allowed_keys: Collection[str] | None = None,
 ) -> tuple[GeneVariants, ...]:
     """Select variants for genes in a gene panel.
 
@@ -235,7 +235,7 @@ def select_gene_variants(
         gene_selection: Gene IDs to select. If "all", all genes are selected.
         mask: chosen annotation values to filter on.
             input example: {"LoF": "HC", "consequence": {"missense_variant", "stop_gained"}}
-        max_maf: Maximum minor allele frequency to filter variants. If None, no filtering is applied.
+        allowed_keys: Variant keys passing the local MAF cut. If None, no filtering is applied.
 
     Returns:
         A tuple of GeneVariants objects
@@ -243,9 +243,6 @@ def select_gene_variants(
     for column in mask:
         if column not in annotation_columns:
             raise ValueError(f"mask column not found: {column}")
-
-    if max_maf is not None and "MAF" not in annotation_columns:
-        raise ValueError("MAF not found")
 
     accepted_values_by_column = {
         column: (
@@ -297,14 +294,14 @@ def select_gene_variants(
     for variant in variants:
         if variant.filter_value not in {"PASS", "."}:
             continue
+        if allowed_keys is not None and variant.key not in allowed_keys:
+            continue
 
         for annotation in annotations_by_variant.get(variant.key, ()):
             if any(
                 annotation.values[column] not in accepted_values
                 for column, accepted_values in accepted_values_by_column.items()
             ):
-                continue
-            if max_maf is not None and float(annotation.values["MAF"]) > max_maf:
                 continue
             variants_by_gene[annotation.gene_id].append(variant)
 
@@ -316,20 +313,15 @@ def select_gene_variants(
         for gene in selected_genes
     )
 
-def select_rows(
+def eligible_rows(
     psam_ids: Sequence[str],
     phenotypes: Mapping[str, Mapping[str, float]],
     covariates: Mapping[str, tuple[float, ...]],
     ancestries: Mapping[str, str],
     ancestry: str,
     phenotype_columns: Sequence[str],
-    samples_per_cohort: int | Literal["all"],
-    party: int=0,
-) -> tuple[PhenoCovRows, PhenoCovRows]:
-    print("Selecting rows for cohorts")
-    print("  ancestry:", ancestry)
-    print("  phenotype columns:", ", ".join(phenotype_columns))
-    print("  samples per cohort:", samples_per_cohort)
+) -> list[tuple[str, tuple[float, ...], tuple[float, ...]]]:
+    """(sample, covariates, phenotypes) in PSAM order for the ancestry's analysis samples."""
     # filter samples
     #   - have both have both phenotypes and covariates,
     #   - all values are finite (not nan, inf, -inf, ...)
@@ -369,6 +361,24 @@ def select_rows(
                 phenotype_values,
             )
         )
+    return eligible
+
+
+def select_rows(
+    psam_ids: Sequence[str],
+    phenotypes: Mapping[str, Mapping[str, float]],
+    covariates: Mapping[str, tuple[float, ...]],
+    ancestries: Mapping[str, str],
+    ancestry: str,
+    phenotype_columns: Sequence[str],
+    samples_per_cohort: int | Literal["all"],
+    party: int=0,
+) -> tuple[PhenoCovRows, PhenoCovRows]:
+    print("Selecting rows for cohorts")
+    print("  ancestry:", ancestry)
+    print("  phenotype columns:", ", ".join(phenotype_columns))
+    print("  samples per cohort:", samples_per_cohort)
+    eligible = eligible_rows(psam_ids, phenotypes, covariates, ancestries, ancestry, phenotype_columns)
 
     random.Random().shuffle(eligible)
 

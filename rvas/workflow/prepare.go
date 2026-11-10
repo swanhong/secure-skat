@@ -41,7 +41,7 @@ type prepareRequest struct {
 	PhenotypeColumns  []string          `json:"phenotype_columns"`
 	Ancestries        []string          `json:"ancestries"`
 	Mask              map[string]string `json:"mask"`
-	MaxMAF            *float64          `json:"max_maf"`
+	LocalMaxMAF       *float64          `json:"local_max_maf"`
 
 	SamplesPerCohort int64   `json:"samples_per_cohort"`
 	SharedRate       float64 `json:"shared_rate"`
@@ -79,7 +79,7 @@ func prepareRequestFromConfig(config *Config) prepareRequest {
 		PhenotypeColumns:  config.PhenotypeColumns,
 		Ancestries:        config.Ancestries,
 		Mask:              mask,
-		MaxMAF:            config.MaxMAF,
+		LocalMaxMAF:       config.LocalMaxMAF,
 		SamplesPerCohort:  config.SamplesPerCohort,
 		SharedRate:        config.SharedRate,
 		GeneSelection: prepareGeneSelection{

@@ -3,7 +3,7 @@ import csv
 
 from .model import GenePlan, GeneRef, GeneVariants, VariantRef
 from .pipeline import build_blocks, extract_genotypes
-from .output import write_outputs
+from .output import write_cohort_counts, write_outputs
 
 FIELDS = ("chromosome", "gene_id", "gene_symbol", "order_index", "variant_key", "position")
 
@@ -63,8 +63,20 @@ def read_public_var_list(path):
     return tuple(GeneVariants(group.gene, tuple(values)) for group, values in zip(groups, variants))
 
 
+def write_local_cut_list(path, keys):
+    path.write_text("variant_key\n" + "".join(f"{key}\n" for key in sorted(keys)))
+
+
+def read_local_cut_list(path):
+    lines = path.read_text().splitlines()
+    if not lines or lines[0] != "variant_key":
+        raise ValueError(f"invalid local cut variant list header: {path}")
+    return set(lines[1:])
+
+
 def prepare_site_blocks(*, pgen_prefix, gene_variants, rows_a, rows_b, out_dir,
-                        extractor, party, public_groups, available_variants):
+                        extractor, party, public_groups, available_variants,
+                        cohort_counts, cohort_size):
     groups = gene_variants if party == 1 else public_groups
     # The variant list is written last, after all genotype and phenotype files.
     if (out_dir / "public_variants.tsv").is_file():
@@ -94,5 +106,6 @@ def prepare_site_blocks(*, pgen_prefix, gene_variants, rows_a, rows_b, out_dir,
     )
     blocks = build_blocks(extracted_plans, geno_a, columns_a, geno_b, columns_b)
     write_outputs(out_dir, blocks, rows_a, rows_b, party=party)
+    write_cohort_counts(out_dir, blocks, party, cohort_counts, cohort_size)
     write_public_var_list(out_dir / "public_variants.tsv", groups)
     return out_dir

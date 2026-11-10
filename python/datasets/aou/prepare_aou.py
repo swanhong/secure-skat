@@ -364,7 +364,7 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
 
     # step2: Check that both sites use matching sample selection and variant filters.
     for field in ("chromosomes", "ancestries", "phenotype_columns", "covariate_columns",
-                  "samples_per_cohort", "masks", "max_maf"):
+                  "samples_per_cohort", "masks"):
         if mvp.get(field) != aou.get(field):
             raise ValueError(f"A/B splitting requires matching {field} in both configs")
 
@@ -400,7 +400,7 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
     for chromosome in pgen_prefixes:
         with (source / f"annotation/chr{chromosome}.tsv").open() as stream:
             columns = next(csv.reader(stream, delimiter="\t"))
-        required = set(mvp["mask"]) | ({"MAF"} if mvp.get("max_maf") is not None else set())
+        required = set(mvp["mask"])
         missing = required - set(columns)
         if missing:
             raise ValueError(f"mask columns missing on chromosome {chromosome}: {sorted(missing)}; "
@@ -478,8 +478,8 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
         elif inputs.psam_ids != reference_ids:
             raise ValueError(f"ordered source PSAM IDs differ on chromosome {chromosome}")
 
-        # step9: Apply gene selection, annotation masks, and the MAF threshold for this chromosome.
-        groups = select_gene_groups(request, inputs, chromosome, mask, mvp.get("max_maf"), file_genes)
+        # step9: Apply gene selection and annotation masks; each site applies its local MAF cut in prepare.
+        groups = select_gene_groups(request, inputs, chromosome, mask, None, file_genes)
 
         # step10: Assign each variant one site role, even when it belongs to multiple genes.
         seen, unique_groups = set(), []

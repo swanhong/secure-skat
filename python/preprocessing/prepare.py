@@ -1,5 +1,5 @@
 from collections.abc import Callable, Collection, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import Literal, TextIO
@@ -21,13 +21,17 @@ from .model import (
 )
 from .pipeline import (
     GenotypeExtractor,
+    eligible_rows,
     prepare_blocks,
     select_gene_variants,
     select_rows,
 )
-from .plink import pgen_extract
+from .plink import pgen_allele_counts, pgen_extract
 from .output import write_selected_genes
-from .site import prepare_site_blocks, read_public_var_list, write_public_var_list
+from .site import (
+    prepare_site_blocks, read_local_cut_list, read_public_var_list,
+    write_local_cut_list, write_public_var_list,
+)
 from .selection import (
     select_file_genes,
     select_random_gene_groups,
@@ -64,7 +68,7 @@ class PrepareRequest:
     phenotype_columns: tuple[str, ...]
     ancestries: tuple[str, ...]
     mask: Mapping[str, str | Collection[str]]
-    max_maf: float | None
+    local_max_maf: float | None
 
     samples_per_cohort: int
     shared_rate: float
@@ -90,12 +94,11 @@ def chromosome_path(
 
 def split_input_config(config: Mapping) -> dict:
     """Normalize the input settings shared by TOML configs and PrepareRequest."""
-    fields = ("chromosomes", "ancestries", "phenotype_columns", "max_maf",
+    fields = ("chromosomes", "ancestries", "phenotype_columns",
               "samples_per_cohort", "shared_rate",
               "phenotype_id_column", "covariate_id_column", "covariate_column",
               "covariate_columns", "is_cov_single_column", "ancestry_id_column", "ancestry_column")
     result = {name: config.get(name, [] if name == "covariate_columns" else "") for name in fields}
-    result["max_maf"] = config.get("max_maf")
     result["mask"] = {key: sorted({value} if isinstance(value, str) else value)
                       for key, value in config["mask"].items()}
     selection = config["gene_selection"]
@@ -126,12 +129,33 @@ def validate_split_inputs(phenotype: Path, config: dict) -> dict | None:
     return manifest
 
 
+def debug_split_role(key: str, shared_rate: float) -> str:
+    """Role from the key alone, so both debug-split site processes agree without communicating."""
+    u = int.from_bytes(hashlib.sha256(key.encode()).digest()[:8], "big") / 2**64
+    if u < shared_rate:
+        return "shared"
+    return "public_only" if u < shared_rate + (1 - shared_rate) / 2 else "private"
+
+
+def local_cut_list_path(public_var_list: Path, chromosome: int) -> Path:
+    """Party 1 writes the local-cut list next to its public variant list."""
+    return chromosome_path(str(public_var_list), chromosome).with_name("local_cut_variants.tsv")
+
+
+def local_maf_passing(counts: Mapping[str, int], cohort_size: int, local_max_maf: float | None) -> set[str] | None:
+    """Keys whose cohort MAF is at most local_max_maf; None disables the cut."""
+    if local_max_maf is None:
+        return None
+    return {key for key, count in counts.items()
+            if min(count, 2 * cohort_size - count) / (2 * cohort_size) <= local_max_maf}
+
+
 def select_gene_groups(
     request: GeneSelectionRequest,
     inputs: PrepInputs,
     chromosome: int,
     mask: Mapping[str, str | Collection[str]],
-    max_maf: float | None,
+    allowed_keys: Collection[str] | None,
     file_genes: Collection[GeneRef],
 ) -> tuple[GeneVariants, ...]:
     chromosome_name = str(chromosome)
@@ -145,7 +169,7 @@ def select_gene_groups(
             chromosome=chromosome_name,
             gene_selection="all",
             mask=mask,
-            max_maf=max_maf,
+            allowed_keys=allowed_keys,
         )
         return select_random_gene_groups(
             gene_groups=all_groups,
@@ -173,7 +197,7 @@ def select_gene_groups(
         chromosome=chromosome_name,
         gene_selection=gene_selection,
         mask=mask,
-        max_maf=max_maf,
+        allowed_keys=allowed_keys,
     )
 
 
@@ -199,11 +223,14 @@ def prepared_cache_config(request: PrepareRequest, chromosome: int, ancestry: st
     for name in ("phenotype", "ancestry"):
         config[name] = source(getattr(request, name))
     config["covariate"] = source(Path(str(request.covariate).replace("{anc}", ancestry.lower())))
+    config["cohort_covariate"] = source(Path(str(request.covariate).replace("{anc}", "all")))
     selection = config["gene_selection"]
     selection["path"] = source(selection["path"]) if selection["mode"] == "file" else None
     if request.party:
         config["public_var_list"] = ({"sha256": hashlib.sha256(chromosome_path(str(request.public_var_list), chromosome).read_bytes()).hexdigest()}
                                      if request.public_var_list else None)
+        config["local_cut_list"] = ({"sha256": hashlib.sha256(local_cut_list_path(request.public_var_list, chromosome).read_bytes()).hexdigest()}
+                                    if request.public_var_list else None)
     else:
         del config["party"], config["public_var_list"]
     config["mask"] = {
@@ -213,7 +240,7 @@ def prepared_cache_config(request: PrepareRequest, chromosome: int, ancestry: st
     marker = request.phenotype.resolve().parent / "split.json"
     if marker.exists():
         config["split"] = json.loads(marker.read_text())["split"]
-    config.update(format_version=1, chromosome=chromosome, ancestry_group=ancestry)
+    config.update(format_version=2, chromosome=chromosome, ancestry_group=ancestry)
     return config
 
 
@@ -238,7 +265,7 @@ def prepare_cached_blocks(
         if not config_path.is_file() or config_path.read_text() != config:
             raise ValueError(f"prepared cache config missing or changed: {cached}; use a new run_dir")
         print(f"Using existing prepared cache: {cached}", flush=True)
-        print(f"    ancestry: {ancestry}, chromosome: {chromosome}, MAF: {request.max_maf}, shared_rate: {request.shared_rate}", flush=True)
+        print(f"    ancestry: {ancestry}, chromosome: {chromosome}, local_max_maf: {request.local_max_maf}, shared_rate: {request.shared_rate}", flush=True)
     else:
         print("Creating prepared cache:", cached, flush=True)
         with TemporaryDirectory(prefix=f".chr{chromosome}.", dir=parent) as temporary:
@@ -276,6 +303,11 @@ def prepare_chromosomes(
         public_groups = tuple(group for path in paths for group in read_public_var_list(path))
         if len({group.gene.gene_id for group in public_groups}) != len(public_groups):
             raise ValueError("duplicate gene across public variant lists")
+        # Party 1's locally cut variants are common there, so they must not enter as private variants here.
+        public_cut_keys = set().union(*(
+            read_local_cut_list(path) for path in dict.fromkeys(
+                local_cut_list_path(request.public_var_list, chromosome) for chromosome in request.chromosomes)
+        ))
     if public_groups and {int(group.gene.chromosome) for group in public_groups} != set(request.chromosomes):
         raise ValueError("public variant list chromosomes must match configured chromosomes")
     selected_genes_path = request.run_dir / "selected_genes.tsv"
@@ -292,7 +324,8 @@ def prepare_chromosomes(
         covariate_column=request.covariate_column,
         covariate_columns=request.covariate_columns,
         is_cov_single_column=request.is_cov_single_column,
-        ancestry_groups=request.ancestries,
+        # The site cohort for the local MAF cut and allele counts is the ALL analysis sample.
+        ancestry_groups=tuple(dict.fromkeys((*request.ancestries, "ALL"))),
         ancestry_id_column=request.ancestry_id_column,
         ancestry_column=request.ancestry_column,
     )
@@ -314,6 +347,7 @@ def prepare_chromosomes(
 
     selected_genes = []
     export_groups = []
+    local_cut_keys = set()
     rows_by_ancestry = {}
     print(
         f"Running preprocessing for "
@@ -348,6 +382,13 @@ def prepare_chromosomes(
                 )
                 print(f"Debug sample split: party {request.party}/{request.debug_split_num_parties}, "
                       f"{len(sample_ids)}/{len(reference_psam_ids)} source samples", flush=True)
+            cohort_ids = tuple(row[0] for row in eligible_rows(
+                sample_ids, sample_inputs.phenotypes, sample_inputs.covariates["ALL"],
+                sample_inputs.ancestries, "ALL", request.phenotype_columns,
+            ))
+            if not cohort_ids:
+                raise ValueError("no ALL analysis samples for the local MAF cohort")
+            print(f"Local MAF cohort (ALL analysis samples): {len(cohort_ids)}", flush=True)
 
             for ancestry in request.ancestries:
                 rows_by_ancestry[ancestry] = select_rows(
@@ -365,23 +406,48 @@ def prepare_chromosomes(
                 f"ordered PSAM IDs differ for chromosome "
                 f"{reference_chromosome} and chromosome {chromosome}"
             )
+        if request.debug_split_num_parties:
+            # Both sites read one source; hide B-only variants from A and A-only variants from B.
+            hidden = "private" if request.party == 1 else "public_only"
+            inputs = replace(inputs, variants=tuple(
+                variant for variant in inputs.variants
+                if debug_split_role(variant.key, request.shared_rate) != hidden
+            ))
 
         chromosome_public = tuple(group for group in public_groups if group.gene.chromosome == str(chromosome))
+        candidate_panel = (tuple(group.gene for group in chromosome_public)
+                           if request.party == 2 else inputs.gene_panel)
+        select_candidates = partial(
+            select_gene_variants, gene_panel=candidate_panel, variants=inputs.variants,
+            annotations=inputs.annotations, annotation_columns=inputs.annotation_columns,
+            chromosome=str(chromosome), gene_selection="all", mask=request.mask,
+        )
+        candidates = select_candidates()
+        # Party 2 also counts every public variant, including ones it would cut locally.
+        count_keys = {variant.key for group in (*candidates, *chromosome_public) for variant in group.variants}
+        count_keys &= {variant.key for variant in inputs.variants}
+        cohort_counts = pgen_allele_counts(inputs.pgen_prefix, cohort_ids, tuple(count_keys))
+        allowed_keys = local_maf_passing(cohort_counts, len(cohort_ids), request.local_max_maf)
         if request.party == 2:
-            chromosome_groups = select_gene_variants(
-                gene_panel=tuple(group.gene for group in chromosome_public),
-                variants=inputs.variants, annotations=inputs.annotations,
-                annotation_columns=inputs.annotation_columns, chromosome=str(chromosome),
-                gene_selection="all", mask=request.mask, max_maf=request.max_maf,
-            )
+            if allowed_keys is None:
+                allowed_keys = {variant.key for group in candidates for variant in group.variants}
+            allowed_keys -= public_cut_keys
+            chromosome_groups = select_candidates(allowed_keys=allowed_keys)
         else:
             chromosome_groups = select_gene_groups(
                 request=request.gene_selection,
                 inputs=inputs,
                 chromosome=chromosome,
                 mask=request.mask,
-                max_maf=request.max_maf,
+                allowed_keys=allowed_keys,
                 file_genes=file_genes,
+            )
+        if request.party == 1 and allowed_keys is not None:
+            selected_ids = {group.gene.gene_id for group in chromosome_groups}
+            local_cut_keys.update(
+                variant.key for group in candidates if group.gene.gene_id in selected_ids
+                for variant in group.variants
+                if variant.key in cohort_counts and variant.key not in allowed_keys
             )
         chromosome_genes = tuple(
             group.gene for group in chromosome_groups
@@ -407,6 +473,7 @@ def prepare_chromosomes(
                     gene_variants=chromosome_groups, rows_a=rows_a, rows_b=rows_b,
                     extractor=extractor, party=request.party,
                     public_groups=chromosome_public, available_variants=inputs.variants,
+                    cohort_counts=cohort_counts, cohort_size=len(cohort_ids),
                 )
             if request.prepared_cache_dir is not None:
                 prepare_cached_blocks(request, chromosome, ancestry, build, selection={
@@ -422,6 +489,9 @@ def prepare_chromosomes(
         path = request.run_dir / "public_variants.tsv"
         write_public_var_list(path, export_groups)
         print("Wrote public variant list to", path)
+        path = local_cut_list_path(path, request.chromosomes[0])
+        write_local_cut_list(path, local_cut_keys)
+        print(f"Wrote {len(local_cut_keys)} locally cut variants to", path)
 
     selected_genes = tuple(selected_genes)
     if request.gene_selection.mode != "all":
@@ -465,7 +535,7 @@ def read_prepare_request(
             for ancestry in payload["ancestries"]
         ),
         mask=payload["mask"],
-        max_maf=payload["max_maf"],
+        local_max_maf=payload["local_max_maf"],
         samples_per_cohort=payload["samples_per_cohort"],
         debug_split_num_parties=payload.get("debug_split_num_parties", 0),
         shared_rate=payload["shared_rate"],

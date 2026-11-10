@@ -1,4 +1,5 @@
 import csv
+from collections.abc import Mapping
 from pathlib import Path
 import numpy as np
 from .model import GeneBlock, GeneRef, PhenoCovRows
@@ -58,3 +59,23 @@ def write_outputs(
             for variant in block.public_variants
         )
     )
+
+def write_cohort_counts(
+    out_dir: Path,
+    blocks: tuple[GeneBlock, ...],
+    party: int,
+    counts: Mapping[str, int],
+    cohort_size: int,
+) -> None:
+    """Write the site cohort's ALT counts per block column (one line per gene) for the global MAF filter."""
+    def write(path: Path, columns) -> None:
+        path.write_text("".join(
+            " ".join(str(counts.get(variant.key, 0)) for variant in variants) + "\n"
+            for variants in columns
+        ))
+
+    site = out_dir / ("A" if party == 1 else "B")
+    write(site / "allele_counts.txt", (block.public_variants for block in blocks))
+    if party == 2:
+        write(site / "private_allele_counts.txt", (block.private_variants for block in blocks))
+    (site / "cohort_size.txt").write_text(f"{cohort_size}\n")

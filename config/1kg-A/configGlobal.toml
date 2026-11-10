@@ -1,6 +1,7 @@
 chromosomes = [21, 22]
 phenotype_columns = ["phenotype1", "phenotype2"]
 ancestries = ["EUR", "ALL"]
+global_max_maf = [0.01, 0.001]
 
 ckks = "PN14QP436S45"
 mpc_num_threads = 2
