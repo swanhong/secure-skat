@@ -16,11 +16,13 @@ type prepareGeneSelection struct {
 }
 
 type prepareRequest struct {
-	Party            int    `json:"party"`
-	PublicVarList    string `json:"public_var_list"`
-	RunDir           string `json:"run_dir"`
-	PreparedCacheDir string `json:"prepared_cache_dir"`
-	Chromosomes      []int  `json:"chromosomes"`
+	Mode             string    `json:"mode"`
+	GlobalMaxMAF     []float64 `json:"global_max_maf"`
+	Party            int       `json:"party"`
+	PublicVarList    string    `json:"public_var_list"`
+	RunDir           string    `json:"run_dir"`
+	PreparedCacheDir string    `json:"prepared_cache_dir"`
+	Chromosomes      []int     `json:"chromosomes"`
 
 	Genotype   string `json:"genotype"`
 	GenePanel  string `json:"gene_panel"`
@@ -51,6 +53,8 @@ type prepareRequest struct {
 
 func prepareRequestFromConfig(config *Config) prepareRequest {
 	return prepareRequest{
+		Mode:              "joint",
+		GlobalMaxMAF:      config.GlobalMaxMAF,
 		RunDir:            config.RunDir,
 		PreparedCacheDir:  filepath.Join(config.RunDir, "cache", "prepared"),
 		Chromosomes:       config.Chromosomes,
@@ -83,7 +87,7 @@ func prepareRequestFromConfig(config *Config) prepareRequest {
 	}
 }
 
-func clearGeneratedOutputs(runDir string) error {
+func clearGeneratedOutputs(runDir, mode string) error {
 	root, err := filepath.Abs(runDir)
 	if err != nil {
 		return fmt.Errorf("resolve run directory: %w", err)
@@ -107,14 +111,28 @@ func clearGeneratedOutputs(runDir string) error {
 		return fmt.Errorf("refuse to clear unsafe run directory %s", root)
 	}
 
-	for _, name := range []string{
-		"selected_genes.tsv",
-		"prepared",
-		"secure",
-		"reference",
-		"comparison",
-		"metrics",
-	} {
+	names := []string{"prepared/local", "cache/prepared/local", "local"}
+	if mode != "local" {
+		if mode == "both" {
+			names = []string{"prepared", "cache/prepared", "local"}
+		} else {
+			names = nil
+			for _, parent := range []string{"prepared", "cache/prepared"} {
+				entries, err := os.ReadDir(filepath.Join(root, parent))
+				if err != nil && !os.IsNotExist(err) {
+					return err
+				}
+				for _, entry := range entries {
+					if entry.Name() != "local" {
+						names = append(names, filepath.Join(parent, entry.Name()))
+					}
+				}
+			}
+		}
+		names = append(names, "selected_genes.tsv",
+			"secure", "reference", "comparison", "metrics")
+	}
+	for _, name := range names {
 		if err := os.RemoveAll(filepath.Join(root, name)); err != nil {
 			return fmt.Errorf("remove generated output %s: %w", name, err)
 		}
@@ -127,7 +145,12 @@ func Prepare(config *Config) error {
 }
 
 func prepareSite(config *Config, party int, publicVarList string) error {
+	return prepareSiteMode(config, party, publicVarList, "joint")
+}
+
+func prepareSiteMode(config *Config, party int, publicVarList, mode string) error {
 	request := prepareRequestFromConfig(config)
+	request.Mode = mode
 	request.Party = party
 	request.PublicVarList = publicVarList
 	payload, err := json.Marshal(request)

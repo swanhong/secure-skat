@@ -46,10 +46,11 @@ func runPrepareCommand(args []string) error {
 	clearOutputs := flags.Bool(
 		"clear",
 		false,
-		"remove generated outputs before preprocessing",
+		"remove generated outputs and prepared cache for the selected mode",
 	)
 
-	party := flags.Int("party", 0, "prepare one site: 1=A, 2=B; 0=split A/B")
+	party := flags.Int("party", 0, "prepare one site: 1=A, 2=B; 0=split A/B (joint mode only)")
+	mode := flags.String("mode", "both", "prepared outputs: both, joint, or local")
 	publicVarList := flags.String("public-var-list", "", "public variant list from Party 1 (required for Party 2)")
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse prepare arguments: %w", err)
@@ -63,6 +64,13 @@ func runPrepareCommand(args []string) error {
 
 	if *party < 0 || *party > 2 {
 		return fmt.Errorf("prepare: --party must be 0, 1, or 2")
+	}
+
+	if *mode != "both" && *mode != "joint" && *mode != "local" {
+		return fmt.Errorf("prepare: --mode must be both, joint, or local")
+	}
+	if *mode != "joint" && *party == 0 {
+		return fmt.Errorf("prepare: local outputs require --party 1 or 2; use --mode joint for legacy split A/B")
 	}
 
 	config, err := LoadPrepareConfig(*configDirectory)
@@ -79,10 +87,13 @@ func runPrepareCommand(args []string) error {
 			listPath = *publicVarList
 		}
 	})
-	if (*party == 2) != (listPath != "") {
+	if *mode == "local" {
+		listPath = ""
+	}
+	if *mode != "local" && (*party == 2) != (listPath != "") {
 		return fmt.Errorf("prepare: public_var_list or --public-var-list is required only for Party 2")
 	}
-	if *party == 2 {
+	if *mode != "local" && *party == 2 {
 		for _, chromosome := range config.Chromosomes {
 			path := strings.ReplaceAll(listPath, "{chromosome}", strconv.Itoa(chromosome))
 			if _, err := os.Stat(path); err != nil {
@@ -94,7 +105,7 @@ func runPrepareCommand(args []string) error {
 		return fmt.Errorf("validate config: %w", err)
 	}
 	if *clearOutputs {
-		if err := clearGeneratedOutputs(config.RunDir); err != nil {
+		if err := clearGeneratedOutputs(config.RunDir, *mode); err != nil {
 			return err
 		}
 		fmt.Printf("Cleared generated outputs from %s\n", config.RunDir)
@@ -124,7 +135,7 @@ func runPrepareCommand(args []string) error {
 		fmt.Printf("Preparing Party %d only\n", *party)
 	}
 
-	return prepareSite(config, *party, listPath)
+	return prepareSiteMode(config, *party, listPath, *mode)
 }
 
 func runRunCommand(args []string) error {

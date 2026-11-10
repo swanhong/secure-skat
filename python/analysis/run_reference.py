@@ -66,6 +66,7 @@ def run_chromosome_reference(
     chromosome: int,
     phenotype_names: list[str],
     environment: dict[str, str],
+    local: bool = False,
 ) -> list[dict[str, str]]:
     ancestry, threshold, label = group
     print(
@@ -74,8 +75,9 @@ def run_chromosome_reference(
         flush=True,
     )
 
-    relative = Path("prepared") / ancestry / f"chr{chromosome}"
-    command = [launcher, str(script), str(run_dir_a / relative), str(run_dir_b / relative)]
+    relative = Path("prepared") / ("local" if local else "") / ancestry / f"chr{chromosome}"
+    command = [launcher, str(script), str(run_dir_a / relative)]
+    command += ["--local"] if local else [str(run_dir_b / relative)]
     command += ["--global-max-maf", repr(threshold)]
     completed = subprocess.run(
         command,
@@ -141,7 +143,9 @@ def worker_settings(engine: str, task_count: int) -> tuple[int, int]:
     return workers, blas_threads
 
 
-def run_reference(config_path: Path, engine: str = "python", config_b: Path | None = None) -> None:
+def run_reference(config_path: Path, engine: str = "python", config_b: Path | None = None, *, local: bool = False) -> None:
+    if local and config_b is not None:
+        raise ValueError("local analysis accepts one site config only")
     config = load_party_config(config_path)
 
     run_dir_a = Path(config["run_dir"])
@@ -154,7 +158,7 @@ def run_reference(config_path: Path, engine: str = "python", config_b: Path | No
         run_dir_b = Path(b["run_dir"])
 
     reference_roots = list(dict.fromkeys(
-        directory.resolve() / "reference" for directory in (run_dir_a, run_dir_b)
+        directory.resolve() / ("local" if local else "reference") for directory in (run_dir_a, run_dir_b)
     ))
     reference_root = reference_roots[0]
     for root in reference_roots:
@@ -202,6 +206,7 @@ def run_reference(config_path: Path, engine: str = "python", config_b: Path | No
                 chromosome,
                 config["phenotype_columns"],
                 environment,
+                local,
             ): (group, chromosome)
             for group, chromosome in tasks
         }
@@ -234,7 +239,7 @@ def run_reference(config_path: Path, engine: str = "python", config_b: Path | No
             if root != reference_root:
                 for chromosome in config["chromosomes"]:
                     write_csv(directory / f"chr{chromosome}.csv", task_rows[(group, chromosome)])
-            output_path = directory / "all_r_results.csv"
+            output_path = directory / ("all_local_results.csv" if local else "all_r_results.csv")
             write_csv(output_path, ancestry_rows)
             print(f"Wrote {engine_name} reference results to", output_path)
 
@@ -256,9 +261,12 @@ def main() -> None:
         help="reference engine (default: python)",
     )
     parser.add_argument("--config-b", help="B configuration directory; defaults to the same inputs as --config")
+    parser.add_argument("--mode", choices=("joint", "local"), default="joint",
+                        help="analyze joint prepared inputs or one independent local input")
     args = parser.parse_args()
 
-    run_reference(Path(args.config), args.engine, Path(args.config_b) if args.config_b else None)
+    run_reference(Path(args.config), args.engine, Path(args.config_b) if args.config_b else None,
+                  local=args.mode == "local")
 
 
 if __name__ == "__main__":

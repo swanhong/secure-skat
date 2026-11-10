@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import csv
 import sys
 from pathlib import Path
@@ -87,18 +88,20 @@ def analyze(input_data: PlainInput) -> list[dict[str, str | int | float]]:
 
 
 def main() -> None:
-    args = sys.argv[1:]
-    if "--global-max-maf" not in args:
-        raise SystemExit("--global-max-maf is required")
-    index = args.index("--global-max-maf")
-    threshold = float(args[index + 1])
-    del args[index:index + 2]
-    if len(args) not in (1, 2):
-        raise SystemExit("usage: compute_reference.py <preprocessed-dir> [preprocessed-dir-b] --global-max-maf T")
-
-    input_data = read_plain_input(Path(args[0]), Path(args[1]) if len(args) == 2 else None)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("directory", type=Path)
+    parser.add_argument("directory_b", type=Path, nargs="?")
+    parser.add_argument("--global-max-maf", type=float, required=True)
+    parser.add_argument("--local", action="store_true", help="read a standalone local prepared input")
+    args = parser.parse_args()
+    threshold = args.global_max_maf
     if not 0 < threshold <= 0.5:
-        raise SystemExit("--global-max-maf must be in (0, 0.5]")
+        parser.error("--global-max-maf must be in (0, 0.5]")
+    if args.local:
+        prepared_max = float((args.directory / "max_maf.txt").read_text())
+        if threshold > prepared_max:
+            parser.error("MAF threshold exceeds local prepared maximum; regenerate local inputs")
+    input_data = read_plain_input(args.directory, args.directory_b, local=args.local)
     if threshold < 0.5:
         input_data = global_maf_keep(input_data, threshold)
     rows = analyze(input_data)

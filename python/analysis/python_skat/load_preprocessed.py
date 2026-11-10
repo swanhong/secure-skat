@@ -18,6 +18,7 @@ class PlainInput:
     # Per gene, which public/private columns pass the global MAF filter (None = no filter).
     keep_public: list[np.ndarray] | None = None
     keep_private: list[np.ndarray] | None = None
+    local: bool = False
 
 
 def read_count_lines(path: Path) -> list[np.ndarray]:
@@ -25,17 +26,29 @@ def read_count_lines(path: Path) -> list[np.ndarray]:
 
 
 def global_maf_keep(input_data: PlainInput, threshold: float) -> PlainInput:
-    """Same rule as Go globalMAFKeep on the joint MVP+AoU ALL-cohort counts."""
+    """Apply the same MAF rule to joint or standalone ALL-cohort counts."""
     a, b = input_data.directory_a / "A", input_data.directory_b / "B"
-    cohort_n = int((a / "cohort_size.txt").read_text()) + int((b / "cohort_size.txt").read_text())
+    cohort_n = int((a / "cohort_size.txt").read_text())
+    counts = read_count_lines(a / "allele_counts.txt")
+    private_counts = [np.empty(0) for _ in input_data.genes]
+    if not input_data.local:
+        cohort_n += int((b / "cohort_size.txt").read_text())
+        counts_b = read_count_lines(b / "allele_counts.txt")
+        if len(counts) != len(counts_b) or any(x.shape != y.shape for x, y in zip(counts, counts_b)):
+            raise ValueError("A/B allele count dimensions differ")
+        counts = [x + y for x, y in zip(counts, counts_b)]
+        private_counts = read_count_lines(b / "private_allele_counts.txt")
+    if cohort_n <= 0:
+        raise ValueError("ALL cohort size must be positive")
     low, high = math.floor(threshold * 2 * cohort_n), math.ceil((1 - threshold) * 2 * cohort_n)
-    def keep(counts):
-        return (counts <= low) | (counts >= high)
-    public = [keep(x + y) for x, y in zip(read_count_lines(a / "allele_counts.txt"),
-                                        read_count_lines(b / "allele_counts.txt"))]
-    private = [keep(x) for x in read_count_lines(b / "private_allele_counts.txt")]
+    def keep(values):
+        return (values <= low) | (values >= high)
+    public = [keep(x) for x in counts]
+    private = [keep(x) for x in private_counts]
     if len(public) != len(input_data.genes) or len(private) != len(input_data.genes):
         raise ValueError("allele count files do not match genes.txt")
+    if any(len(values) != size for values, size in zip(public, input_data.public_variant_counts)):
+        raise ValueError("allele count columns do not match block_sizes.txt")
     return replace(input_data, keep_public=public, keep_private=private)
 
 
@@ -43,7 +56,9 @@ def read_text_matrix(path: Path) -> np.ndarray:
     return np.loadtxt(path, ndmin=2)
 
 
-def read_plain_input(directory_a: Path, directory_b: Path | None = None) -> PlainInput:
+def read_plain_input(directory_a: Path, directory_b: Path | None = None, *, local: bool = False) -> PlainInput:
+    if local and directory_b is not None:
+        raise ValueError("local analysis accepts one site only")
     directory_a = directory_a.resolve(strict=True)
     directory_b = directory_a if directory_b is None else directory_b.resolve(strict=True)
     for name in ("genes.txt", "block_sizes.txt", "public_variants.tsv"):
@@ -58,10 +73,13 @@ def read_plain_input(directory_a: Path, directory_b: Path | None = None) -> Plai
         raise ValueError("genes.txt and block_sizes.txt have different lengths")
 
     covariates_a = read_text_matrix(directory_a / "A/cov.txt")
-    covariates_b = read_text_matrix(directory_b / "B/cov.txt")
+    covariates_b = (np.empty((0, covariates_a.shape[1])) if local
+                    else read_text_matrix(directory_b / "B/cov.txt"))
     phenotypes_a = read_text_matrix(directory_a / "A/pheno.txt")
-    phenotypes_b = read_text_matrix(directory_b / "B/pheno.txt")
+    phenotypes_b = (np.empty((0, phenotypes_a.shape[1])) if local
+                    else read_text_matrix(directory_b / "B/pheno.txt"))
     return PlainInput(
+        local=local,
         directory_a=directory_a,
         directory_b=directory_b,
         genes=genes,
@@ -86,6 +104,9 @@ def read_gene_genotype(input_data: PlainInput, gene_index: int) -> np.ndarray:
         input_data.sample_count_a,
         public_count,
     )
+    if input_data.local:
+        return (public_a if input_data.keep_public is None
+                else public_a[:, input_data.keep_public[gene_index]])
     public_b = read_dosages(
         input_data.directory_b / "B/geno" / block,
         input_data.sample_count_b,

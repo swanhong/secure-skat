@@ -23,7 +23,7 @@ Load `scripts/setup/env.sh` in each new terminal.
 - Set `local_max_maf` per site (e.g. MVP `0.05`, AoU `0.02`). Supply ALL covariates even when running only ancestry-specific analyses.
 - Set the helper's `run_dir` in `config/cp0/configPrepare.toml`.
 - Match `configGlobal.toml` across all three parties: chromosomes, phenotypes, ancestries, protocol parameters, and network addresses. Use matching genome builds and gene IDs.
-- Set `global_max_maf = [0.01, 0.001]` for both thresholds, computed over the joint ALL cohort for every ancestry analysis.
+- Set `global_max_maf = [0.01, 0.001]` for both thresholds. Joint analysis uses the combined ALL cohort; independent local analysis uses the site's own ALL cohort. Both apply the same threshold across ancestries.
 
 Use a new `run_dir` when changing preparation settings.
 
@@ -46,7 +46,19 @@ public_var_list = "/local/path/public_variants.tsv"
 go run -mod=vendor secure-rvas.go prepare --config config/aou --party 2
 ```
 
-Prepared inputs: `<run_dir>/prepared/`.
+By default, prepare writes both joint inputs to `<run_dir>/prepared/<ANC>/` and independent local inputs to `<run_dir>/prepared/local/<ANC>/`. Use `--mode joint` or `--mode local` to prepare only one. Local-only preparation does not need the other site's public or local-cut lists. `--clear` removes outputs and prepared caches for the selected mode.
+
+Local preparation retains variants up to `max(global_max_maf)` using the site's ALL cohort. `local_max_maf` applies only to joint preparation. Use a new run directory or regenerate local inputs before increasing the maximum threshold.
+
+Run independent local Burden/SKAT outside Docker/sfkit, using the same command on each site with its own config:
+
+```bash
+python3 python/analysis/run_reference.py --config config/mvp --mode local
+# On AoU:
+python3 python/analysis/run_reference.py --config config/aou --mode local
+```
+
+This uses the existing Python plain analysis, including R::SKAT's Davies library. Results: `<run_dir>/local/<ANC>/maf<threshold>/all_local_results.csv`, with the same columns as the joint reference. No other site's inputs are required.
 
 ## 4. Generate keys
 

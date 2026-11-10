@@ -9,7 +9,7 @@ FIELDS = ("chromosome", "gene_id", "gene_symbol", "order_index", "variant_key", 
 
 
 def validate_key(variant, chromosome):
-    fields = variant.key.split(":")
+    fields = variant.key.split(":", 3)  # symbolic ALTs such as <INS:ME:ALU> contain ":"
     if (len(fields) != 4 or fields[0].removeprefix("chr") != chromosome
             or fields[1] != str(variant.position) or not fields[2] or not fields[3]
             or "," in fields[3]):

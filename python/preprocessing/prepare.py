@@ -3,7 +3,7 @@ from dataclasses import asdict, dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import Literal, TextIO
-import fcntl
+import math
 import hashlib
 import json
 from tempfile import TemporaryDirectory
@@ -77,6 +77,8 @@ class PrepareRequest:
     prepared_cache_dir: Path | None = None
     party: int = 0
     public_var_list: Path | None = None
+    mode: Literal["both", "joint", "local"] = "joint"
+    global_max_maf: tuple[float, ...] = ()
 
 
 def chromosome_path(
@@ -193,7 +195,7 @@ def select_gene_groups(
     )
 
 
-def prepared_cache_config(request: PrepareRequest, chromosome: int, ancestry: str) -> dict:
+def prepared_cache_config(request: PrepareRequest, chromosome: int, ancestry: str, scope: str = "joint") -> dict:
     """Identify prepared inputs without reading the genotype file contents."""
     def source(path: Path) -> dict:
         path = path.resolve()
@@ -218,7 +220,7 @@ def prepared_cache_config(request: PrepareRequest, chromosome: int, ancestry: st
     config["cohort_covariate"] = source(Path(str(request.covariate).replace("{anc}", "all")))
     selection = config["gene_selection"]
     selection["path"] = source(selection["path"]) if selection["mode"] == "file" else None
-    if request.party:
+    if request.party and scope == "joint":
         config["public_var_list"] = ({"sha256": hashlib.sha256(chromosome_path(str(request.public_var_list), chromosome).read_bytes()).hexdigest()}
                                      if request.public_var_list else None)
         config["local_cut_list"] = ({"sha256": hashlib.sha256(local_cut_list_path(request.public_var_list, chromosome).read_bytes()).hexdigest()}
@@ -228,19 +230,29 @@ def prepared_cache_config(request: PrepareRequest, chromosome: int, ancestry: st
     marker = request.phenotype.resolve().parent / "split.json"
     if marker.exists():
         config["split"] = json.loads(marker.read_text())["split"]
-    config.update(format_version=3, chromosome=chromosome, ancestry_group=ancestry)
+    config.pop("mode")
+    if scope == "joint":
+        config.pop("global_max_maf")
+    else:
+        config["local_max_maf"] = max(request.global_max_maf)
+        config["source_party"] = request.party
+    config.update(format_version=4, chromosome=chromosome, ancestry_group=ancestry, scope=scope)
     return config
 
 
 def prepare_cached_blocks(
     request: PrepareRequest, chromosome: int, ancestry: str, build: Callable[..., Path],
-    selection: dict,
+    selection: dict, scope: str = "joint",
 ) -> Path:
     cache_root = request.prepared_cache_dir.resolve()
-    output = request.run_dir / "prepared" / ancestry / f"chr{chromosome}"
+    output_root = request.run_dir / "prepared"
+    if scope == "local":
+        cache_root = cache_root / "local"
+        output_root = output_root / "local"
+    output = output_root / ancestry / f"chr{chromosome}"
     if output.exists() and not output.is_symlink():
         raise ValueError(f"{output} is not a link; use a new run_dir or prepare --clear")
-    cache_config = prepared_cache_config(request, chromosome, ancestry)
+    cache_config = prepared_cache_config(request, chromosome, ancestry, scope)
     cache_config["selection_sha256"] = hashlib.sha256(
         json.dumps(selection, sort_keys=True).encode()
     ).hexdigest()
@@ -268,10 +280,25 @@ def prepare_cached_blocks(
     return output
 
 
+def prepare_local_site(*, out_dir: Path, max_maf: float, **kwargs) -> Path:
+    result = prepare_site_blocks(out_dir=out_dir, **kwargs)
+    (out_dir / "max_maf.txt").write_text(f"{max_maf!r}\n")
+    return result
+
+
 def prepare_chromosomes(
     request: PrepareRequest,
     extractor: GenotypeExtractor | None = None,
 ) -> tuple[GeneRef, ...]:
+    if request.mode not in {"both", "joint", "local"}:
+        raise ValueError("mode must be both, joint, or local")
+    joint = request.mode != "local"
+    local = request.mode != "joint"
+    if local and request.party not in (1, 2):
+        raise ValueError("local preparation requires party 1 or 2")
+    if local and (not request.global_max_maf or any(
+            not math.isfinite(t) or not 0 < t <= 0.5 for t in request.global_max_maf)):
+        raise ValueError("global_max_maf must contain thresholds in (0, 0.5]")
     if request.debug_split_num_parties not in (0, 2):
         raise ValueError("debug_split_num_parties must be 0 or 2")
     if request.debug_split_num_parties and request.party not in (1, 2):
@@ -284,10 +311,10 @@ def prepare_chromosomes(
     if not request.chromosomes:
         raise ValueError("at least one chromosome is required")
 
-    if request.party not in (0, 1, 2) or (request.party == 2) != (request.public_var_list is not None):
+    if request.party not in (0, 1, 2) or (joint and (request.party == 2) != (request.public_var_list is not None)):
         raise ValueError("party must be 0/1/2; public-var-list is required only for Party 2")
     public_groups = ()
-    if request.party == 2:
+    if joint and request.party == 2:
         paths = tuple(dict.fromkeys(chromosome_path(str(request.public_var_list), chromosome)
                                     for chromosome in request.chromosomes))
         public_groups = tuple(group for path in paths for group in read_public_var_list(path))
@@ -326,7 +353,7 @@ def prepare_chromosomes(
         samples_per_cohort = request.samples_per_cohort
 
     file_genes: tuple[GeneRef, ...] = ()
-    if gene_selection.mode == "file" and request.party != 2:
+    if gene_selection.mode == "file" and (local or request.party != 2):
         if gene_selection.path is None:
             raise ValueError(
                 "gene selection path is required in file mode"
@@ -337,6 +364,7 @@ def prepare_chromosomes(
 
     selected_genes = []
     export_groups = []
+    local_genes = []
     local_cut_keys = set()
     rows_by_ancestry = {}
     print(
@@ -411,7 +439,7 @@ def prepare_chromosomes(
 
         chromosome_public = tuple(group for group in public_groups if group.gene.chromosome == str(chromosome))
         candidate_panel = (tuple(group.gene for group in chromosome_public)
-                           if request.party == 2 else inputs.gene_panel)
+                           if joint and request.party == 2 else inputs.gene_panel)
         select_candidates = partial(
             select_gene_variants, gene_panel=candidate_panel, variants=inputs.variants,
             annotations=inputs.annotations,
@@ -419,9 +447,40 @@ def prepare_chromosomes(
         )
         candidates = select_candidates()
         # Party 2 also counts every public variant, including ones it would cut locally.
-        count_keys = {variant.key for group in (*candidates, *chromosome_public) for variant in group.variants}
+        local_candidates = (select_gene_variants(
+            gene_panel=inputs.gene_panel, variants=inputs.variants, annotations=inputs.annotations,
+            chromosome=str(chromosome), gene_selection="all",
+        ) if local else ())
+        count_keys = {variant.key for group in (*candidates, *chromosome_public, *local_candidates)
+                      for variant in group.variants}
         count_keys &= {variant.key for variant in inputs.variants}
         cohort_counts = pgen_allele_counts(inputs.pgen_prefix, cohort_ids, tuple(count_keys))
+        if local:
+            local_groups = select_gene_groups(
+                gene_selection, inputs, chromosome,
+                local_maf_passing(cohort_counts, len(cohort_ids), max(request.global_max_maf)),
+                file_genes,
+            )
+            local_genes.extend(group.gene for group in local_groups)
+            for ancestry, (rows_a, rows_b) in rows_by_ancestry.items():
+                # Store a standalone site in the existing A layout, even for AoU/B.
+                site_rows, empty_rows = (rows_a, rows_b) if request.party == 1 else (rows_b, rows_a)
+                build = partial(
+                    prepare_local_site, max_maf=max(request.global_max_maf), pgen_prefix=inputs.pgen_prefix,
+                    gene_variants=local_groups, rows_a=site_rows, rows_b=empty_rows,
+                    extractor=extractor, party=1, public_groups=(),
+                    available_variants=inputs.variants,
+                    cohort_counts=cohort_counts, cohort_size=len(cohort_ids),
+                )
+                if request.prepared_cache_dir is not None:
+                    prepare_cached_blocks(request, chromosome, ancestry, build, selection={
+                        "samples": site_rows.sample_ids,
+                        "genes": [(g.gene.gene_id, [v.key for v in g.variants]) for g in local_groups],
+                    }, scope="local")
+                else:
+                    build(out_dir=request.run_dir / "prepared" / "local" / ancestry / f"chr{chromosome}")
+        if not joint:
+            continue
         allowed_keys = local_maf_passing(cohort_counts, len(cohort_ids), request.local_max_maf)
         if request.party == 2:
             if allowed_keys is None:
@@ -479,7 +538,7 @@ def prepare_chromosomes(
             else:
                 build(out_dir=request.run_dir / "prepared" / ancestry / f"chr{chromosome}")
 
-    if request.party == 1:
+    if joint and request.party == 1:
         path = request.run_dir / "public_variants.tsv"
         write_public_var_list(path, export_groups)
         print("Wrote public variant list to", path)
@@ -488,13 +547,13 @@ def prepare_chromosomes(
         print(f"Wrote {len(local_cut_keys)} locally cut variants to", path)
 
     selected_genes = tuple(selected_genes)
-    if gene_selection.mode != "all":
+    if joint and gene_selection.mode != "all":
         write_selected_genes(
             path=selected_genes_path,
             genes=selected_genes,
         )
         print("Wrote selected genes to", selected_genes_path)
-    return selected_genes 
+    return selected_genes if joint else tuple(local_genes)
 
 def read_prepare_request(
     stream: TextIO,
@@ -505,6 +564,8 @@ def read_prepare_request(
 
     return PrepareRequest(
         run_dir=Path(payload["run_dir"]),
+        mode=payload.get("mode", "joint"),
+        global_max_maf=tuple(payload.get("global_max_maf", ())),
         party=payload.get("party", 0),
         public_var_list=Path(payload["public_var_list"]) if payload.get("public_var_list") else None,
         prepared_cache_dir=Path(payload["prepared_cache_dir"]) if payload.get("prepared_cache_dir") else None,
