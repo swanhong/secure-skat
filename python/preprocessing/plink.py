@@ -18,8 +18,8 @@ def sample_subset(pgen_prefix: Path, sample_ids: tuple[str, ...]) -> tuple[int, 
     return len(psam_ids), indices
 
 
-def biallelic_variants(pvar, wanted: set[str]) -> tuple[list[int], list[str], list[bool]]:
-    variant_indices, emitted_keys, zero_dosages = [], [], []
+def biallelic_variants(pvar, wanted: set[str]) -> tuple[list[int], list[str]]:
+    variant_indices, emitted_keys = [], []
     for index in range(pvar.get_variant_ct()):
         key = pvar.get_variant_id(index).decode()
         if key not in wanted or pvar.get_allele_ct(index) != 2:
@@ -34,19 +34,16 @@ def biallelic_variants(pvar, wanted: set[str]) -> tuple[list[int], list[str], li
             raise ValueError(f"{key}: counted allele is not the key's ALT")
         variant_indices.append(index)
         emitted_keys.append(key)
-        # Match the old --export-allele suffix rule for symbolic ALT names.
-        zero_dosages.append(key.rsplit(":", 1)[-1] != pvar.get_allele_code(index, 1).decode())
     if len(set(emitted_keys)) != len(emitted_keys):
         raise ValueError("duplicate variant IDs")
-    return variant_indices, emitted_keys, zero_dosages
+    return variant_indices, emitted_keys
 
 
-def read_dosage_batch(reader, variant_indices: list[int], zero_dosages: list[bool], sample_count: int) -> np.ndarray:
+def read_dosage_batch(reader, variant_indices: list[int], sample_count: int) -> np.ndarray:
     """Read variants × samples (PSAM order) dosages; missing calls become 0."""
     batch = np.array(variant_indices, dtype=np.uint32)
     dosages = np.empty((len(batch), sample_count), dtype=np.float32)
     reader.read_dosages_list(batch, dosages)
-    dosages[zero_dosages] = 0
     if not np.isin(dosages, (-9, 0, 1, 2)).all():
         raise ValueError("fractional dosages are unsupported")
     dosages[dosages == -9] = 0
@@ -67,7 +64,7 @@ def pgen_extract(
     restore = np.argsort(order)
 
     with pgenlib.PvarReader(str(pgen_prefix).encode() + b".pvar") as pvar:
-        variant_indices, emitted_keys, zero_dosages = biallelic_variants(pvar, set(variant_keys))
+        variant_indices, emitted_keys = biallelic_variants(pvar, set(variant_keys))
         matrix = np.empty((len(sample_ids), len(emitted_keys)), dtype=np.int8)
         if not emitted_keys or not sample_ids:
             return matrix, tuple(emitted_keys)
@@ -78,7 +75,7 @@ def pgen_extract(
         ) as reader:
             for start in range(0, len(emitted_keys), 256):
                 end = start + 256
-                dosages = read_dosage_batch(reader, variant_indices[start:end], zero_dosages[start:end], len(sample_ids))
+                dosages = read_dosage_batch(reader, variant_indices[start:end], len(sample_ids))
                 matrix[:, start:end] = dosages[:, restore].T
     return matrix, tuple(emitted_keys)
 
@@ -95,13 +92,13 @@ def pgen_allele_counts(
     raw_sample_count, indices = sample_subset(pgen_prefix, sample_ids)
     counts = {}
     with pgenlib.PvarReader(str(pgen_prefix).encode() + b".pvar") as pvar:
-        variant_indices, emitted_keys, zero_dosages = biallelic_variants(pvar, set(variant_keys))
+        variant_indices, emitted_keys = biallelic_variants(pvar, set(variant_keys))
         with pgenlib.PgenReader(
             str(pgen_prefix).encode() + b".pgen", pvar=pvar,
             raw_sample_ct=raw_sample_count, sample_subset=np.sort(indices),
         ) as reader:
             for start in range(0, len(emitted_keys), 256):
                 end = start + 256
-                dosages = read_dosage_batch(reader, variant_indices[start:end], zero_dosages[start:end], len(sample_ids))
+                dosages = read_dosage_batch(reader, variant_indices[start:end], len(sample_ids))
                 counts.update(zip(emitted_keys[start:end], dosages.sum(axis=1).astype(int).tolist()))
     return counts
