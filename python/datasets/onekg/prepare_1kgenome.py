@@ -59,10 +59,6 @@ def prepare_1kgenome(root: Path, args) -> None:
             keep_path=generated / "work" / "phase3.keep",
         )
         pgen_prefixes.append(prefix)
-        frequency = utils.create_allele_frequencies(
-            pgen_prefix=prefix,
-            out_prefix=generated / "genotype" / f"chr{chromosome}",
-        )
         current_ids = read_psam_ids(prefix.with_suffix(".psam"))
         if index == 0:
             psam_ids = current_ids
@@ -79,7 +75,6 @@ def prepare_1kgenome(root: Path, args) -> None:
             gene_panel_path=gene_panel,
             annotation_path=annotation,
             chromosome=str(chromosome),
-            frequency_path=frequency,
         )
 
     chromosome_set = "chr" + "_".join(str(value) for value in chromosomes)

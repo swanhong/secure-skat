@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 )
 
 type prepareGeneSelection struct {
@@ -31,17 +30,16 @@ type prepareRequest struct {
 	Ancestry   string `json:"ancestry"`
 	Plink2Bin  string `json:"plink2_bin"`
 
-	PhenotypeIDColumn string            `json:"phenotype_id_column"`
-	CovariateIDColumn string            `json:"covariate_id_column"`
-	CovariateColumn   string            `json:"covariate_column"`
-	CovariateColumns  []string          `json:"covariate_columns"`
-	IsCovSingleColumn bool              `json:"is_cov_single_column"`
-	AncestryIDColumn  string            `json:"ancestry_id_column"`
-	AncestryColumn    string            `json:"ancestry_column"`
-	PhenotypeColumns  []string          `json:"phenotype_columns"`
-	Ancestries        []string          `json:"ancestries"`
-	Mask              map[string]string `json:"mask"`
-	LocalMaxMAF       *float64          `json:"local_max_maf"`
+	PhenotypeIDColumn string   `json:"phenotype_id_column"`
+	CovariateIDColumn string   `json:"covariate_id_column"`
+	CovariateColumn   string   `json:"covariate_column"`
+	CovariateColumns  []string `json:"covariate_columns"`
+	IsCovSingleColumn bool     `json:"is_cov_single_column"`
+	AncestryIDColumn  string   `json:"ancestry_id_column"`
+	AncestryColumn    string   `json:"ancestry_column"`
+	PhenotypeColumns  []string `json:"phenotype_columns"`
+	Ancestries        []string `json:"ancestries"`
+	LocalMaxMAF       *float64 `json:"local_max_maf"`
 
 	SamplesPerCohort int64   `json:"samples_per_cohort"`
 	SharedRate       float64 `json:"shared_rate"`
@@ -52,12 +50,6 @@ type prepareRequest struct {
 }
 
 func prepareRequestFromConfig(config *Config) prepareRequest {
-	mask := make(map[string]string, len(config.Masks))
-	for _, item := range config.Masks {
-		column, value, _ := strings.Cut(item, "=")
-		mask[strings.TrimSpace(column)] = strings.TrimSpace(value)
-	}
-
 	return prepareRequest{
 		RunDir:            config.RunDir,
 		PreparedCacheDir:  filepath.Join(config.RunDir, "cache", "prepared"),
@@ -78,7 +70,6 @@ func prepareRequestFromConfig(config *Config) prepareRequest {
 		AncestryColumn:    config.AncestryColumn,
 		PhenotypeColumns:  config.PhenotypeColumns,
 		Ancestries:        config.Ancestries,
-		Mask:              mask,
 		LocalMaxMAF:       config.LocalMaxMAF,
 		SamplesPerCohort:  config.SamplesPerCohort,
 		SharedRate:        config.SharedRate,

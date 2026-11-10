@@ -47,7 +47,6 @@ REQUIRED_ANNOTATION_COLUMNS = (
     "gene_id",
     "gene_symbol",
 )
-MISSING_FREQUENCIES = {"", ".", "NA", "NaN", "nan"}
 
 
 def run(command: list[str]) -> None:
@@ -176,16 +175,13 @@ def variant_alleles(variant_key: str) -> tuple[int, str, str]:
 
 def annotation_keys(
     annotation_path: Path,
-    maf_column: str,
 ) -> set[tuple[int, str, str]]:
     with annotation_path.open(newline="") as file:
         reader = csv.DictReader(file, delimiter="\t")
-        columns = set(reader.fieldnames or ())
-        required = {*REQUIRED_ANNOTATION_COLUMNS, maf_column}
-        missing = required - columns
-        if missing:
+        if tuple(reader.fieldnames or ()) != REQUIRED_ANNOTATION_COLUMNS:
             raise ValueError(
-                f"{annotation_path} is missing columns: {sorted(missing)}"
+                f"{annotation_path}: expected the three-column MANE HC annotation schema "
+                f"{REQUIRED_ANNOTATION_COLUMNS}; regenerate with vat_simplify.py"
             )
         return {
             variant_alleles(row["variant_key"])
@@ -222,24 +218,22 @@ def pvar_ids(
         return ids
 
 
-def minor_allele_frequency(value: str) -> float:
-    if value.strip() in MISSING_FREQUENCIES:
-        return 0.0
-    frequency = float(value)
-    if frequency < 0 or frequency > 1:
-        raise ValueError(f"allele frequency must be between 0 and 1: {value}")
-    return min(frequency, 1.0 - frequency)
-
-
 def normalize_annotation(
     source: Path,
     pvar_path: Path,
     annotation_output: Path,
     gene_panel_output: Path,
     chromosome: int,
-    maf_column: str,
 ) -> None:
+    wanted = annotation_keys(source)
     if annotation_output.exists() and gene_panel_output.exists():
+        with annotation_output.open(newline="") as stream:
+            columns = tuple(next(csv.reader(stream, delimiter="\t")))
+        if columns != REQUIRED_ANNOTATION_COLUMNS:
+            raise ValueError(
+                f"{annotation_output} uses the old annotation schema; "
+                "regenerate normalized and split inputs in a new output directory"
+            )
         with gene_panel_output.open(newline="") as file:
             reader = csv.DictReader(file, delimiter="\t")
             has_empty_gene_id = any(
@@ -251,7 +245,6 @@ def normalize_annotation(
             return
         print("regenerating gene panel with empty gene_id:", gene_panel_output)
 
-    wanted = annotation_keys(source, maf_column)
     ids = pvar_ids(pvar_path, wanted)
     annotation_output.parent.mkdir(parents=True, exist_ok=True)
     gene_panel_output.parent.mkdir(parents=True, exist_ok=True)
@@ -263,16 +256,9 @@ def normalize_annotation(
         annotation_output.open("w", newline="") as output_file,
     ):
         reader = csv.DictReader(source_file, delimiter="\t")
-        source_columns = reader.fieldnames or []
-        extra_columns = [
-            column
-            for column in source_columns
-            if column not in REQUIRED_ANNOTATION_COLUMNS and column != "MAF"
-        ]
-        output_columns = [*REQUIRED_ANNOTATION_COLUMNS, *extra_columns, "MAF"]
         writer = csv.DictWriter(
             output_file,
-            fieldnames=output_columns,
+            fieldnames=REQUIRED_ANNOTATION_COLUMNS,
             delimiter="\t",
             lineterminator="\n",
             extrasaction="ignore",
@@ -291,10 +277,6 @@ def normalize_annotation(
 
             row["variant_key"] = variant_id
             row["gene_id"] = gene_id
-            row["MAF"] = format(
-                minor_allele_frequency(row[maf_column]),
-                ".17g",
-            )
             writer.writerow(row)
             written += 1
 
@@ -355,8 +337,6 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
                 config.update(tomllib.load(stream))
         config["chromosomes"] = normalize_chromosomes(config["chromosomes"])
         config["ancestries"] = [value.strip().upper() for value in config["ancestries"]]
-        config["mask"] = dict(tuple(part.strip() for part in item.split("=", 1))
-                              for item in config["masks"])
         if "ALL" in config["ancestries"] and len(config["ancestries"]) > 1 and "{anc}" not in config["covariate"]:
             raise ValueError("splitting ALL with other ancestries requires {anc} in the covariate output path")
         configs.append(config)
@@ -364,7 +344,7 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
 
     # step2: Check that both sites use matching sample selection and variant filters.
     for field in ("chromosomes", "ancestries", "phenotype_columns", "covariate_columns",
-                  "samples_per_cohort", "masks"):
+                  "samples_per_cohort"):
         if mvp.get(field) != aou.get(field):
             raise ValueError(f"A/B splitting requires matching {field} in both configs")
 
@@ -397,15 +377,6 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
         return
     if any(root.exists() and any(root.iterdir()) for root in roots):
         raise ValueError("incomplete or unmarked split; remove both site output directories or use empty paths")
-    for chromosome in pgen_prefixes:
-        with (source / f"annotation/chr{chromosome}.tsv").open() as stream:
-            columns = next(csv.reader(stream, delimiter="\t"))
-        required = set(mvp["mask"])
-        missing = required - set(columns)
-        if missing:
-            raise ValueError(f"mask columns missing on chromosome {chromosome}: {sorted(missing)}; "
-                             "provide these annotation columns or configure masks matching the source")
-
     # step4: Read phenotype, covariate, and ancestry tables from the AoU source.
     samples = load_sample_inputs(
         phenotype_path=source / "phenotype.csv",
@@ -422,12 +393,11 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
         ancestry_column=aou["ancestry_column"],
     )
 
-    # step5: Prepare gene selection and annotation masks from the MVP config.
+    # step5: Prepare gene selection from the MVP config.
     selection = mvp["gene_selection"]
     request = GeneSelectionRequest(selection["mode"], selection.get("per_chromosome", 0),
                                    Path(selection["path"]) if selection.get("path") else None)
     file_genes = read_gene_panel(request.path) if request.mode == "file" else ()
-    mask = mvp["mask"]
     reference_ids = None
     site_ids = []
 
@@ -478,8 +448,8 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
         elif inputs.psam_ids != reference_ids:
             raise ValueError(f"ordered source PSAM IDs differ on chromosome {chromosome}")
 
-        # step9: Apply gene selection and annotation masks; each site applies its local MAF cut in prepare.
-        groups = select_gene_groups(request, inputs, chromosome, mask, None, file_genes)
+        # step9: Apply gene selection; each site applies its local MAF cut in prepare.
+        groups = select_gene_groups(request, inputs, chromosome, None, file_genes)
 
         # step10: Assign each variant one site role, even when it belongs to multiple genes.
         seen, unique_groups = set(), []
@@ -527,9 +497,8 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
             panel.parent.mkdir(parents=True, exist_ok=True)
             write_selected_genes(panel, tuple(group.gene for group in groups))
             write_table(site_path(config, "annotation", chromosome),
-                        ("variant_key", "gene_id", "gene_symbol", *inputs.annotation_columns),
-                        ((row.variant_key, row.gene_id, row.gene_symbol,
-                          *(row.values[column] for column in inputs.annotation_columns))
+                        ("variant_key", "gene_id", "gene_symbol"),
+                        ((row.variant_key, row.gene_id, row.gene_symbol)
                          for row in inputs.annotations if row.variant_key in keys
                          and (row.gene_id, row.variant_key) in pairs))
 
@@ -592,7 +561,6 @@ def prepare_aou(args: argparse.Namespace) -> None:
             annotation_output=output_dir / "annotation" / f"chr{chromosome}.tsv",
             gene_panel_output=output_dir / "gene_panel" / f"chr{chromosome}.tsv",
             chromosome=chromosome,
-            maf_column=args.maf_column,
         )
     if args.config_mvp is not None:
         split_aou_inputs(args, pgen_prefixes)
@@ -614,7 +582,6 @@ def main() -> None:
         "--annotation",
         help="VAT extraction input (overrides configPrepare.toml vat_annotation)",
     )
-    parser.add_argument("--maf-column", default="gnomad_af")
     parser.add_argument("--billing-project")
     parser.add_argument(
         "--plink2-bin",

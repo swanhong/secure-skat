@@ -67,7 +67,6 @@ class PrepareRequest:
     ancestry_column: str
     phenotype_columns: tuple[str, ...]
     ancestries: tuple[str, ...]
-    mask: Mapping[str, str | Collection[str]]
     local_max_maf: float | None
 
     samples_per_cohort: int
@@ -99,8 +98,6 @@ def split_input_config(config: Mapping) -> dict:
               "phenotype_id_column", "covariate_id_column", "covariate_column",
               "covariate_columns", "is_cov_single_column", "ancestry_id_column", "ancestry_column")
     result = {name: config.get(name, [] if name == "covariate_columns" else "") for name in fields}
-    result["mask"] = {key: sorted({value} if isinstance(value, str) else value)
-                      for key, value in config["mask"].items()}
     selection = config["gene_selection"]
     result["gene_selection"] = {"mode": selection["mode"], "per_chromosome": selection.get("per_chromosome", 0),
                                 "path": str(selection.get("path") or "")}
@@ -154,7 +151,6 @@ def select_gene_groups(
     request: GeneSelectionRequest,
     inputs: PrepInputs,
     chromosome: int,
-    mask: Mapping[str, str | Collection[str]],
     allowed_keys: Collection[str] | None,
     file_genes: Collection[GeneRef],
 ) -> tuple[GeneVariants, ...]:
@@ -165,10 +161,8 @@ def select_gene_groups(
             gene_panel=inputs.gene_panel,
             variants=inputs.variants,
             annotations=inputs.annotations,
-            annotation_columns=inputs.annotation_columns,
             chromosome=chromosome_name,
             gene_selection="all",
-            mask=mask,
             allowed_keys=allowed_keys,
         )
         return select_random_gene_groups(
@@ -193,10 +187,8 @@ def select_gene_groups(
         gene_panel=inputs.gene_panel,
         variants=inputs.variants,
         annotations=inputs.annotations,
-        annotation_columns=inputs.annotation_columns,
         chromosome=chromosome_name,
         gene_selection=gene_selection,
-        mask=mask,
         allowed_keys=allowed_keys,
     )
 
@@ -233,14 +225,10 @@ def prepared_cache_config(request: PrepareRequest, chromosome: int, ancestry: st
                                     if request.public_var_list else None)
     else:
         del config["party"], config["public_var_list"]
-    config["mask"] = {
-        column: sorted({values} if isinstance(values, str) else set(values))
-        for column, values in request.mask.items()
-    }
     marker = request.phenotype.resolve().parent / "split.json"
     if marker.exists():
         config["split"] = json.loads(marker.read_text())["split"]
-    config.update(format_version=2, chromosome=chromosome, ancestry_group=ancestry)
+    config.update(format_version=3, chromosome=chromosome, ancestry_group=ancestry)
     return config
 
 
@@ -419,8 +407,8 @@ def prepare_chromosomes(
                            if request.party == 2 else inputs.gene_panel)
         select_candidates = partial(
             select_gene_variants, gene_panel=candidate_panel, variants=inputs.variants,
-            annotations=inputs.annotations, annotation_columns=inputs.annotation_columns,
-            chromosome=str(chromosome), gene_selection="all", mask=request.mask,
+            annotations=inputs.annotations,
+            chromosome=str(chromosome), gene_selection="all",
         )
         candidates = select_candidates()
         # Party 2 also counts every public variant, including ones it would cut locally.
@@ -438,7 +426,6 @@ def prepare_chromosomes(
                 request=request.gene_selection,
                 inputs=inputs,
                 chromosome=chromosome,
-                mask=request.mask,
                 allowed_keys=allowed_keys,
                 file_genes=file_genes,
             )
@@ -534,7 +521,6 @@ def read_prepare_request(
             ancestry.strip().upper()
             for ancestry in payload["ancestries"]
         ),
-        mask=payload["mask"],
         local_max_maf=payload["local_max_maf"],
         samples_per_cohort=payload["samples_per_cohort"],
         debug_split_num_parties=payload.get("debug_split_num_parties", 0),

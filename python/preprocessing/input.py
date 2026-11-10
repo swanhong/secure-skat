@@ -90,37 +90,18 @@ def read_gene_panel(
             )
         return tuple(genes)
 
-def read_annotations(
-    annotation_path: Path,
-) -> tuple[
-    tuple[AnnotationRef, ...],
-    tuple[str, ...],
-]:
+def read_annotations(annotation_path: Path) -> tuple[AnnotationRef, ...]:
     with annotation_path.open(newline="") as file:
-        reader = csv.DictReader(
-            file,
-            delimiter="\t",
-        )
-        if "MAF" not in reader.fieldnames:
-            reader.fieldnames = ["MAF" if column == "maf" else column for column in reader.fieldnames]
-        annotation_columns = tuple(
-            reader.fieldnames[3:]
-        )
-
-        annotations = tuple(
-            AnnotationRef(
-                variant_key=row["variant_key"],
-                gene_id=row["gene_id"],
-                gene_symbol=row["gene_symbol"],
-                values={
-                    column: row[column]
-                    for column in annotation_columns
-                },
+        reader = csv.DictReader(file, delimiter="\t")
+        if tuple(reader.fieldnames or ()) != ("variant_key", "gene_id", "gene_symbol"):
+            raise ValueError(
+                f"{annotation_path}: expected prefiltered variant_key, gene_id, gene_symbol columns; "
+                "regenerate annotations before prepare"
             )
+        return tuple(
+            AnnotationRef(row["variant_key"], row["gene_id"], row["gene_symbol"])
             for row in reader
         )
-
-        return annotations, annotation_columns
 
 def read_phenotype_table(
     table_path: Path,
@@ -297,7 +278,7 @@ def load_inputs(
     pvar_path = Path(f"{pgen_prefix}.pvar")
     psam_path = Path(f"{pgen_prefix}.psam")
 
-    annotations, annotation_columns = read_annotations(
+    annotations = read_annotations(
         annotation_path
     )
 
@@ -307,5 +288,4 @@ def load_inputs(
         gene_panel=read_gene_panel(gene_panel_path),
         variants=read_pvar(pvar_path),
         annotations=annotations,
-        annotation_columns=annotation_columns,
     )

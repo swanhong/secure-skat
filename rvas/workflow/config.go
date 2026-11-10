@@ -71,7 +71,6 @@ type Config struct {
 	PhenotypeColumns  []string  `toml:"phenotype_columns"`
 	Ancestries        []string  `toml:"ancestries"`
 	GlobalMaxMAF      []float64 `toml:"global_max_maf"`
-	Masks             []string  `toml:"masks"`
 	LocalMaxMAF       *float64  `toml:"local_max_maf"`
 
 	SamplesPerCohort int64   `toml:"samples_per_cohort"`
@@ -118,6 +117,9 @@ func loadConfig(directory string, filenames ...string) (*Config, error) {
 		}
 		if filename != prepareConfigFilename && metadata.IsDefined("run_dir") {
 			return nil, fmt.Errorf("%s: run_dir belongs in %s", path, prepareConfigFilename)
+		}
+		if metadata.IsDefined("masks") {
+			return nil, fmt.Errorf("%s: masks was removed; supply prefiltered three-column annotations", path)
 		}
 		if metadata.IsDefined("max_maf") {
 			return nil, fmt.Errorf("%s: max_maf was replaced by local_max_maf (cut by the site cohort's genotype MAF)", path)

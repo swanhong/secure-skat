@@ -218,10 +218,8 @@ def select_gene_variants(
         gene_panel: Sequence[GeneRef],
         variants: Sequence[VariantRef],
         annotations: Sequence[AnnotationRef],
-        annotation_columns: Collection[str],
         chromosome: str,
         gene_selection: Collection[str] | Literal["all"],
-        mask: Mapping[str, str | Collection[str]],
         allowed_keys: Collection[str] | None = None,
 ) -> tuple[GeneVariants, ...]:
     """Select variants for genes in a gene panel.
@@ -230,28 +228,13 @@ def select_gene_variants(
         gene_panel: Genes to consider.
         variants: Variants to consider.
         annotations: Annotations for the variants.
-        annotation_columns: Annotation columns to use for filtering.
         chromosome: Chromosome to filter on.
         gene_selection: Gene IDs to select. If "all", all genes are selected.
-        mask: chosen annotation values to filter on.
-            input example: {"LoF": "HC", "consequence": {"missense_variant", "stop_gained"}}
         allowed_keys: Variant keys passing the local MAF cut. If None, no filtering is applied.
 
     Returns:
         A tuple of GeneVariants objects
     """
-    for column in mask:
-        if column not in annotation_columns:
-            raise ValueError(f"mask column not found: {column}")
-
-    accepted_values_by_column = {
-        column: (
-            {accepted_values}
-            if isinstance(accepted_values, str)
-            else set(accepted_values)
-        ) for column, accepted_values in mask.items()
-    }
-
     # A bare str is a Collection[str], so `in` below would substring-match.
     if isinstance(gene_selection, str) and gene_selection != "all":
         raise TypeError(
@@ -298,11 +281,6 @@ def select_gene_variants(
             continue
 
         for annotation in annotations_by_variant.get(variant.key, ()):
-            if any(
-                annotation.values[column] not in accepted_values
-                for column, accepted_values in accepted_values_by_column.items()
-            ):
-                continue
             variants_by_gene[annotation.gene_id].append(variant)
 
     return tuple(

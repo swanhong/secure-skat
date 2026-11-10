@@ -1,6 +1,7 @@
 import argparse
 import csv
 import gzip
+import json
 import os
 import struct
 import subprocess
@@ -21,12 +22,8 @@ COL_CONTIG = 2
 COL_POSITION = 3
 COL_REF = 4
 COL_ALT = 5
-COL_GVS_AF = 8
 COL_GENE_SYMBOL = 43
-COL_CONSEQUENCE = 46
 COL_GENE_ID = 53
-COL_CANONICAL = 55
-COL_GNOMAD_AF = 56
 COL_MANE_SELECT = 105
 COL_LOF = 109
 
@@ -40,44 +37,7 @@ OUTPUT_COLUMNS = (
     "variant_key",
     "gene_id",
     "gene_symbol",
-    "LoF",
-    "consequence",
-    "gnomad_af",
-    "gvs_af",
 )
-
-TRANSCRIPT_PRIORITY = (
-    ("mane_select_name", COL_MANE_SELECT, "not_empty", None),
-    (
-        "is_canonical_transcript",
-        COL_CANONICAL,
-        "equals_ignore_case",
-        "true",
-    ),
-    ("LoF", COL_LOF, "equals", "HC"),
-)
-
-
-def transcript_priority(fields: list[str]) -> int:
-    for priority, (name, column, condition, expected) in enumerate(
-        TRANSCRIPT_PRIORITY
-    ):
-        value = fields[column].strip()
-        if condition == "not_empty":
-            matches = value not in MISSING_VALUES
-        elif condition == "equals_ignore_case":
-            matches = value.casefold() == expected.casefold()
-        elif condition == "equals":
-            matches = value == expected
-        else:
-            raise ValueError(
-                f"unsupported condition for {name}: {condition}"
-            )
-
-        if matches:
-            return priority
-
-    return len(TRANSCRIPT_PRIORITY)
 
 
 def load_pvar_variants(pvar_path: str):
@@ -128,25 +88,14 @@ def load_pvar_variants(pvar_path: str):
 
 
 def annotation_candidate(fields: list[str], source_order: int):
-    '''
-        remove
-            - lack of len(column)
-            - both LoF & consequence are empty
-            - gene_id is empty
-
-        variant key = f"{contig}:{position}:{ref}:{alt}"
-        gene symbol = fields[COL_GENE_SYMBOL].strip()
-        group_key  = (variant key, gene_id)
-        rank = (transcript priority, VAT source_order)
-        output_row = final row that will be written to the output file
-    '''
+    """Select MANE first; check HC after resolving duplicate transcript rows."""
     if len(fields) < MIN_COLUMNS:
         return None
 
-    lof = fields[COL_LOF].strip()
-    consequence = fields[COL_CONSEQUENCE].strip()
-    if lof in MISSING_VALUES and consequence in MISSING_VALUES:
+    mane = fields[COL_MANE_SELECT].strip()
+    if mane in MISSING_VALUES:
         return None
+    lof = fields[COL_LOF].strip()
 
     gene_id = fields[COL_GENE_ID].strip()
     if gene_id in MISSING_VALUES:
@@ -160,17 +109,13 @@ def annotation_candidate(fields: list[str], source_order: int):
     ])
 
     group_key = (variant_key, gene_id)
-    rank = (transcript_priority(fields), source_order)
     output_row = {
         "variant_key": variant_key,
         "gene_id": gene_id,
         "gene_symbol": fields[COL_GENE_SYMBOL].strip(),
         "LoF": lof,
-        "consequence": consequence,
-        "gnomad_af": fields[COL_GNOMAD_AF].strip(),
-        "gvs_af": fields[COL_GVS_AF].strip(),
     }
-    return group_key, rank, output_row
+    return group_key, source_order, output_row
 
 
 def select_best_rows(
@@ -178,8 +123,10 @@ def select_best_rows(
     chromosome: str,
     wanted_variants: set[str],
     maximum_position: int,
+    summary: dict | None = None,
 ):
     best_rows = {}
+    seen_groups = set()
     chromosome_started = False
     source_order = 0
     matched_rows = 0
@@ -219,6 +166,11 @@ def select_best_rows(
             continue
 
         fields = line.rstrip("\n").split("\t")
+        if len(fields) < MIN_COLUMNS:
+            raise ValueError(f"VAT row {source_order} has fewer than {MIN_COLUMNS} columns")
+        gene_id = fields[COL_GENE_ID].strip()
+        if gene_id not in MISSING_VALUES:
+            seen_groups.add((variant_key, gene_id))
         candidate = annotation_candidate(fields, source_order)
         if candidate is None:
             continue
@@ -230,10 +182,27 @@ def select_best_rows(
             best_rows[group_key] = (rank, output_row)
 
     elapsed = time.time() - started_at
+    counts = {
+        "transcript_policy": "MANE Select only; no fallback",
+        "filter_policy": {"transcript": "MANE Select", "LoF": "HC"},
+        "vat_variant_gene_pairs": len(seen_groups),
+        "excluded_no_mane_select": len(seen_groups) - len(best_rows),
+        "selected_mane_select": len(best_rows),
+        "selected_mane_hc": sum(row["LoF"] == "HC" for _, row in best_rows.values()),
+    }
+    counts["selected_mane_not_hc"] = counts["selected_mane_select"] - counts["selected_mane_hc"]
+    best_rows = {
+        key: (rank, {column: row[column] for column in OUTPUT_COLUMNS})
+        for key, (rank, row) in best_rows.items() if row["LoF"] == "HC"
+    }
+    counts["retained_variant_gene_pairs"] = len(best_rows)
+    if summary is not None:
+        summary.update(counts)
     print(
         f"scanned {source_order:,} {chromosome} VAT rows; "
         f"matched {matched_rows:,} transcript rows and selected "
-        f"{len(best_rows):,} variant-gene rows in {elapsed:,.0f}s",
+        f"{len(best_rows):,} MANE HC variant-gene rows in {elapsed:,.0f}s; "
+        f"excluded without MANE: {counts['excluded_no_mane_select']:,}",
         flush=True,
     )
     return best_rows
@@ -375,7 +344,7 @@ def write_annotations(output_path: str, best_rows) -> int:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="create a simplified AoU VAT annotation file."
+        description="Extract MANE Select HC LoF variants into a three-column annotation TSV."
     )
     parser.add_argument(
         "--chromosome",
@@ -433,20 +402,22 @@ def main():
     print(f"VAT start byte: {start:,}")
 
     lines = stream_vat_lines(args.vat_path, start)
+    summary = {"vat_path": args.vat_path, "pvar": args.pvar, "chromosome": chromosome}
     try:
         best_rows = select_best_rows(
             lines,
             chromosome,
             wanted_variants,
             maximum_position,
+            summary,
         )
     finally:
         lines.close()
 
-    if not best_rows:
-        raise ValueError(f"No annotations found for chromosome {chromosome}")
-
     written = write_annotations(output_path, best_rows)
+    with open(f"{output_path}.summary.json", "w") as stream:
+        json.dump(summary, stream, indent=2)
+        stream.write("\n")
     print(f"Wrote {written:,} annotations to {output_path}")
 
 if __name__ == "__main__":

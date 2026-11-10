@@ -1,6 +1,10 @@
 # Local 1000 Genomes test
 
 Test secure Burden/SKAT against a plaintext reference using public 1000 Genomes data and synthetic annotations/phenotypes.
+Synthetic HC selection uses seed 42: one row is selected from each complete block of 100 variant–gene annotations; the final incomplete block is discarded. These are random test labels, not LOFTEE/MANE annotations. The generator preserves the legacy random draws and writes only the previously HC-labeled rows as `variant_key`, `gene_id`, `gene_symbol`. Preparation no longer applies an annotation mask or reads annotation frequencies.
+
+Old six-column annotations are rejected. Preserve old outputs separately and regenerate the gene panel/annotation files and prepared caches before using this version. Genotype downloads do not need to be repeated.
+
 The fixture uses the chromosomes and analyses in `configGlobal.toml` and keeps
 A/B samples disjoint with `debug_split_num_parties = 2` in both preparation configs.
 

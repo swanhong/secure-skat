@@ -31,7 +31,6 @@ class AnnotationRef:
     variant_key: str
     gene_id: str
     gene_symbol: str
-    values: Mapping[str, str]
 
 
 @dataclass(frozen=True)
@@ -71,7 +70,6 @@ class PrepInputs:
     gene_panel: tuple[GeneRef, ...]
     variants: tuple[VariantRef, ...]
     annotations: tuple[AnnotationRef, ...]
-    annotation_columns: tuple[str, ...]
 
 @dataclass(frozen=True)
 class SampleInputs:
