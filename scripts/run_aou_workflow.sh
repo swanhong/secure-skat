@@ -18,24 +18,24 @@ log_dir="${LOG_DIR:-output/aou$config_suffix-logs}"
 
 case "$input_mode" in
   split)
-    echo "[0/8] Split AoU source into MVP/A and AoU/B inputs"
+    echo "[0/10] Split AoU source into MVP/A and AoU/B inputs"
     python3 -m python.datasets.aou.prepare_aou --config "$config_b" --config-mvp "$config_a"
     ;;
   sites) ;;
   *) echo "INPUT_MODE must be split or sites" >&2; exit 1 ;;
 esac
 
-echo "[1/8] Prepare A and its public variant lists"
+echo "[1/10] Prepare A and its public variant lists"
 go run -mod=vendor secure-rvas.go prepare --config "$config_a" --party 1
 
-echo "[2/8] Prepare B using A's public variant lists"
+echo "[2/10] Prepare B using A's public variant lists"
 go run -mod=vendor secure-rvas.go prepare --config "$config_b" --party 2
 
-echo "[3/8] Generate shared PRG keys"
+echo "[3/10] Generate shared PRG keys"
 go run -mod=vendor secure-rvas.go keygen \
   --config-party0 "$config_0" --config-party1 "$config_a" --config-party2 "$config_b"
 
-echo "[4/8] Run secure Burden/SKAT; logs: $log_dir"
+echo "[4/10] Run secure Burden/SKAT; logs: $log_dir"
 mkdir -p "$log_dir"
 go run -mod=vendor secure-rvas.go party --config "$config_0" --party 0 > "$log_dir/party0.log" 2>&1 &
 pid_0=$!
@@ -47,16 +47,22 @@ wait "$pid_0"
 wait "$pid_a"
 wait "$pid_b"
 
-echo "[5/8] Run ancestry-specific $reference_engine reference"
+echo "[5/10] Run ancestry-specific $reference_engine reference"
 python3 python/analysis/run_reference.py --config "$config_a" --config-b "$config_b" --engine "$reference_engine"
 
-echo "[6/8] Compare secure and reference results"
+echo "[6/10] Run independent local analysis for MVP/A"
+python3 python/analysis/run_reference.py --config "$config_a" --mode local --engine python
+
+echo "[7/10] Run independent local analysis for AoU/B"
+python3 python/analysis/run_reference.py --config "$config_b" --mode local --engine python
+
+echo "[8/10] Compare secure and reference results"
 python3 python/analysis/compare_secure_to_reference.py --config "$config_a" --config-b "$config_b"
 
-echo "[7/8] Generate scatter and Manhattan plots"
+echo "[9/10] Generate scatter and Manhattan plots"
 python3 python/analysis/plot_secure_vs_reference.py --config "$config_a" --config-b "$config_b"
 
-echo "[8/8] Summarize metrics"
+echo "[10/10] Summarize metrics"
 "${PYTHON_BIN:-python}" python/analysis/summarize_metrics.py --config "$config_a" --config-b "$config_b"
 
 echo "Secure RVAS MVP/AoU workflow completed"
