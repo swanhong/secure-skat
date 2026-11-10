@@ -40,10 +40,10 @@ echo "[5/8] Run ancestry-specific $reference_engine reference"
 python3 python/analysis/run_reference.py --config "$config_a" --config-b "$config_b" --engine "$reference_engine"
 
 echo "[6/8] Compare secure and reference results"
-python3 python/analysis/compare_secure_to_reference.py --config "$config_a"
+python3 python/analysis/compare_secure_to_reference.py --config "$config_a" --config-b "$config_b"
 
 echo "[7/8] Generate scatter and Manhattan plots"
-python3 python/analysis/plot_secure_vs_reference.py --config "$config_a"
+python3 python/analysis/plot_secure_vs_reference.py --config "$config_a" --config-b "$config_b"
 
 echo "[8/8] Summarize metrics"
 "${PYTHON_BIN:-python}" python/analysis/summarize_metrics.py --config "$config_a" --config-b "$config_b"

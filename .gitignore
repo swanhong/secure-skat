@@ -25,3 +25,4 @@ workbench/
 temp/
 go.sum
 sfgwas
+/run_log/

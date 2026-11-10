@@ -151,11 +151,13 @@ def run_reference(config_path: Path, engine: str = "r", config_b: Path | None = 
                 raise ValueError(f"A and B {name} must match")
         run_dir_b = Path(b["run_dir"])
 
-    reference_root = run_dir_a / "reference"
-    reference_root.mkdir(parents=True, exist_ok=True)
-
-    success_path = reference_root / "_SUCCESS"
-    success_path.unlink(missing_ok=True)
+    reference_roots = list(dict.fromkeys(
+        directory.resolve() / "reference" for directory in (run_dir_a, run_dir_b)
+    ))
+    reference_root = reference_roots[0]
+    for root in reference_roots:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "_SUCCESS").unlink(missing_ok=True)
 
     engine_name, launcher, script_name = ENGINES[engine]
     script = Path(__file__).resolve().parent / script_name
@@ -224,12 +226,19 @@ def run_reference(config_path: Path, engine: str = "r", config_b: Path | None = 
             task_rows[(ancestry, chromosome)]
         )
 
-    for ancestry, ancestry_rows in rows_by_ancestry.items():
-        output_path = reference_root / ancestry / "all_r_results.csv"
-        write_csv(output_path, ancestry_rows)
-        print(f"Wrote {engine_name} reference results to", output_path)
+    for root in reference_roots:
+        for ancestry, ancestry_rows in rows_by_ancestry.items():
+            directory = root / ancestry
+            directory.mkdir(parents=True, exist_ok=True)
+            if root != reference_root:
+                for chromosome in config["chromosomes"]:
+                    write_csv(directory / f"chr{chromosome}.csv", task_rows[(ancestry, chromosome)])
+            output_path = directory / "all_r_results.csv"
+            write_csv(output_path, ancestry_rows)
+            print(f"Wrote {engine_name} reference results to", output_path)
 
-    success_path.touch()
+    for root in reference_roots:
+        (root / "_SUCCESS").touch()
 
 
 def main() -> None:

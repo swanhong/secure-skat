@@ -388,22 +388,36 @@ def plot_ancestry(run_dir: Path, ancestry: str, gene_symbols: dict[str, str]) ->
     print(f"Wrote {written} plots to {plots_dir}")
 
 
-def plot_secure_vs_reference(config_path: Path) -> None:
-    config = load_party_config(config_path)
-    gene_symbols = read_gene_symbols(config_path, config["chromosomes"])
-    run_dir = Path(config["run_dir"])
-    success_path = run_dir / "comparison" / "_PLOTS_SUCCESS"
-    success_path.unlink(missing_ok=True)
-    for ancestry in config["ancestries"]:
-        plot_ancestry(run_dir, ancestry, gene_symbols)
-    success_path.touch()
+def plot_secure_vs_reference(
+    config_path: Path, party_id: int = 1, config_b: Path | None = None,
+) -> None:
+    if config_b is not None and party_id != 1:
+        raise ValueError("--config-b requires --party-id 1")
+    sites = [(config_path, party_id)]
+    if config_b is not None:
+        sites.append((config_b, 2))
+    seen = set()
+    for directory, party in sites:
+        config = load_party_config(directory, party)
+        run_dir = Path(config["run_dir"]).resolve()
+        if run_dir in seen:
+            continue
+        seen.add(run_dir)
+        gene_symbols = read_gene_symbols(directory, config["chromosomes"])
+        success_path = run_dir / "comparison" / "_PLOTS_SUCCESS"
+        success_path.unlink(missing_ok=True)
+        for ancestry in config["ancestries"]:
+            plot_ancestry(run_dir, ancestry, gene_symbols)
+        success_path.touch()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config/1kg", help="configuration directory")
+    parser.add_argument("--party-id", type=int, choices=(1, 2), default=1)
+    parser.add_argument("--config-b", type=Path, help="also plot results in B's run directory")
     args = parser.parse_args()
-    plot_secure_vs_reference(Path(args.config))
+    plot_secure_vs_reference(Path(args.config), args.party_id, args.config_b)
 
 
 if __name__ == "__main__":

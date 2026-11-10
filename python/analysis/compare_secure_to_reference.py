@@ -298,20 +298,28 @@ def compare_ancestry(
         print_r_squared_by_pheno_and_chr(comparison_rows)
 
 
-def compare_secure_to_reference(config_path: Path, party_id: int = 1) -> None:
-    config = load_party_config(config_path, party_id)
-
-    run_dir = Path(config["run_dir"])
-    comparison_root = run_dir / "comparison"
-    comparison_root.mkdir(parents=True, exist_ok=True)
-
-    success_path = comparison_root / "_SUCCESS"
-    success_path.unlink(missing_ok=True)
-
-    for ancestry in config["ancestries"]:
-        compare_ancestry(run_dir, ancestry, config.get("print_logs", party_id == 1))
-
-    success_path.touch()
+def compare_secure_to_reference(
+    config_path: Path, party_id: int = 1, config_b: Path | None = None,
+) -> None:
+    if config_b is not None and party_id != 1:
+        raise ValueError("--config-b requires --party-id 1")
+    sites = [(config_path, party_id)]
+    if config_b is not None:
+        sites.append((config_b, 2))
+    seen = set()
+    for directory, party in sites:
+        config = load_party_config(directory, party)
+        run_dir = Path(config["run_dir"]).resolve()
+        if run_dir in seen:
+            continue
+        seen.add(run_dir)
+        comparison_root = run_dir / "comparison"
+        comparison_root.mkdir(parents=True, exist_ok=True)
+        success_path = comparison_root / "_SUCCESS"
+        success_path.unlink(missing_ok=True)
+        for ancestry in config["ancestries"]:
+            compare_ancestry(run_dir, ancestry, config.get("print_logs", party == 1))
+        success_path.touch()
 
 
 def main() -> None:
@@ -322,9 +330,10 @@ def main() -> None:
         help="configuration directory",
     )
     parser.add_argument("--party-id", type=int, choices=(1, 2), default=1)
+    parser.add_argument("--config-b", type=Path, help="also compare results in B's run directory")
     args = parser.parse_args()
 
-    compare_secure_to_reference(Path(args.config), args.party_id)
+    compare_secure_to_reference(Path(args.config), args.party_id, args.config_b)
 
 
 if __name__ == "__main__":
