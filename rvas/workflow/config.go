@@ -109,7 +109,7 @@ type GeneSelection struct {
 }
 
 func loadConfig(directory string, filenames ...string) (*Config, error) {
-	config := &Config{SharedRate: 0.6, IsCovSingleColumn: true}
+	config := &Config{SharedRate: 1.0, IsCovSingleColumn: true}
 	for _, filename := range filenames {
 		path := filepath.Join(directory, filename)
 		metadata, err := toml.DecodeFile(path, config)

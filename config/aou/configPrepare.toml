@@ -22,7 +22,6 @@ ancestry_id_column = "research_id"
 ancestry_column = "ancestry_pred_other"
 local_max_maf = 0.02
 samples_per_cohort = 0
-shared_rate = 0.6
 plink2_bin = "/home/dataproc/plink2"
 
 [gene_selection]

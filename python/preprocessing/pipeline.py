@@ -179,7 +179,7 @@ def build_blocks(
 
 def assign_roles(
         gene_variants: Sequence[GeneVariants],
-        shared_rate: float=0.6,
+        shared_rate: float=1.0,
 ) -> tuple[GenePlan, ...]:
     rng = random.Random()
     plans = []
@@ -410,7 +410,7 @@ def prepare_blocks(
         rows_a: PhenoCovRows,
         rows_b: PhenoCovRows,
         out_dir: Path,
-        shared_rate: float=0.6,
+        shared_rate: float=1.0,
         extractor: GenotypeExtractor = pgen_extract,
 ) -> Path:
     if (out_dir / "pos.txt").is_file():

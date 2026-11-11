@@ -18,6 +18,10 @@ log_dir="${LOG_DIR:-output/aou$config_suffix-logs}"
 
 case "$input_mode" in
   split)
+    if [[ "${config_a%/}" != *-test || "${config_b%/}" != *-test ]]; then
+      echo "Split mode requires -test configs; use INPUT_MODE=sites for real MVP/AoU inputs." >&2
+      exit 1
+    fi
     echo "[0/10] Import workspace joint covariates and split AoU into A/B test inputs"
     python3 -m python.datasets.aou.prepare_aou --config "$config_b" --config-mvp "$config_a"
     ;;

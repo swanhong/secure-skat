@@ -339,7 +339,7 @@ def site_path(config: dict, field: str, chromosome=0, ancestry="") -> Path:
 def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -> None:
     configs = []
     for directory in (args.config_mvp, args.config):
-        config = {"shared_rate": 0.6, "is_cov_single_column": True,
+        config = {"shared_rate": 1.0, "is_cov_single_column": True,
                   "samples_per_cohort": 0}
         for name in ("configGlobal.toml", "configPrepare.toml"):
             with (directory / name).open("rb") as stream:
