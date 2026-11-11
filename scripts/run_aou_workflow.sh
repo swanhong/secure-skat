@@ -18,18 +18,21 @@ log_dir="${LOG_DIR:-output/aou$config_suffix-logs}"
 
 case "$input_mode" in
   split)
-    echo "[0/10] Split AoU source into MVP/A and AoU/B inputs"
+    echo "[0/10] Import workspace joint covariates and split AoU into A/B test inputs"
     python3 -m python.datasets.aou.prepare_aou --config "$config_b" --config-mvp "$config_a"
     ;;
-  sites) ;;
+  sites)
+    echo "[0/10] Prepare AoU source inputs with workspace joint covariates"
+    python3 -m python.datasets.aou.prepare_aou --config "$config_b"
+    ;;
   *) echo "INPUT_MODE must be split or sites" >&2; exit 1 ;;
 esac
 
 echo "[1/10] Prepare A and its public variant lists"
-go run -mod=vendor secure-rvas.go prepare --config "$config_a" --party 1
+go run -mod=vendor secure-rvas.go prepare --config "$config_a" --party 1 --mode both
 
 echo "[2/10] Prepare B using A's public variant lists"
-go run -mod=vendor secure-rvas.go prepare --config "$config_b" --party 2
+go run -mod=vendor secure-rvas.go prepare --config "$config_b" --party 2 --mode both
 
 echo "[3/10] Generate shared PRG keys"
 go run -mod=vendor secure-rvas.go keygen \
