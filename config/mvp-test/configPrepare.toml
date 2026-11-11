@@ -19,10 +19,10 @@ covariate_columns = [
 ancestry_id_column = "IID"
 ancestry_column = "ancestry"
 local_max_maf = 0.05
-samples_per_cohort = 100
+samples_per_cohort = 0
 shared_rate = 0.6
 plink2_bin = "plink2"
 
 [gene_selection]
 mode = "random"
-per_chromosome = 50
+per_chromosome = 1000
