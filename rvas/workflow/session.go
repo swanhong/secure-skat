@@ -26,12 +26,36 @@ type session struct {
 }
 
 func exchangePublicParameters(
-	network *mpc.Network,
+	network interface {
+		SendInt(int, int)
+		ReceiveInt(int) int
+		SendIntVector([]uint64, int)
+		ReceiveIntVector(int, int) []uint64
+	},
 	partyID int,
 	localSampleCount int,
 	localCohortSize int,
+	localCovariateCount int,
 	chromosomes []ChromosomeInput,
-) (nA, nB, cohortN int) {
+) (nA, nB, cohortN, covariateCount int, err error) {
+	var countA, countB int
+	if partyID == auxiliaryPartyID {
+		countA = network.ReceiveInt(cohortAPartyID)
+		countB = network.ReceiveInt(cohortBPartyID)
+		// Send both counts before validating so every party can stop on mismatch.
+		for _, peer := range []int{cohortAPartyID, cohortBPartyID} {
+			network.SendInt(countA, peer)
+			network.SendInt(countB, peer)
+		}
+	} else {
+		network.SendInt(localCovariateCount, auxiliaryPartyID)
+		countA = network.ReceiveInt(auxiliaryPartyID)
+		countB = network.ReceiveInt(auxiliaryPartyID)
+	}
+	if countA <= 0 || countB <= 0 || countA != countB {
+		return 0, 0, 0, 0, fmt.Errorf("covariate count mismatch or invalid count: party 1=%d, party 2=%d", countA, countB)
+	}
+
 	switch partyID {
 	case auxiliaryPartyID:
 		nA = network.ReceiveInt(cohortAPartyID)
@@ -79,7 +103,7 @@ func exchangePublicParameters(
 		cohortN = localCohortSize + network.ReceiveInt(auxiliaryPartyID)
 	}
 
-	return nA, nB, cohortN
+	return nA, nB, cohortN, countA, nil
 }
 
 func openSession(
@@ -114,14 +138,18 @@ func openSession(
 		0,
 		parallelNetworks,
 	)
-	nA, nB, cohortN := exchangePublicParameters(
+	nA, nB, cohortN, covariateCount, err := exchangePublicParameters(
 		networks[0],
 		partyID,
 		input.SampleCount,
 		input.CohortSize,
+		len(config.CovariateColumns),
 		input.Chromosomes,
 	)
 	done()
+	if err != nil {
+		return nil, err
+	}
 
 	for index, chromosome := range input.Chromosomes {
 		if chromosome.CryptoParams.Slots != 0 {
@@ -129,7 +157,7 @@ func openSession(
 		}
 		dataParams := protocol.DataParams{
 			Genes:          chromosome.Genes,
-			C:              len(config.CovariateColumns) + 1,
+			C:              covariateCount + 1,
 			PhenotypeCount: len(config.PhenotypeColumns),
 		}
 		cryptoParams, err := protocol.BuildCryptoParams(
@@ -158,7 +186,7 @@ func openSession(
 			NB:             nB,
 			N:              nA + nB,
 			CohortN:        cohortN,
-			C:              len(config.CovariateColumns) + 1,
+			C:              covariateCount + 1,
 			PhenotypeCount: len(config.PhenotypeColumns),
 		}
 	}

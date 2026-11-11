@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import filecmp
 import json
 import os
 import shlex
@@ -41,7 +42,16 @@ DEFAULT_ANCESTRY = (
     "gs://vwb-aou-datasets-controlled/v9/wgs/short_read/"
     "snpindel/aux/ancestry/ancestry_preds.tsv"
 )
-DEFAULT_COVARIATE_ROOT = "gs://gwas-data-wgs-wb-jaunty-blueberry-8679/v9_intermediate_results/pca_aou"
+JOINT_COVARIATE_ROOT = Path("~/workspace/gwas-data-wgs/results/joint")
+SOURCE_COLUMNS = {
+    "GENDER_REGULAR": "GENDER",
+    "OTHER_GENDER": "GENDER_OTHER",
+    "age_at_profile": "AGE",
+    "age_sq": "AGESQ",
+    "affiliation": "BIOBANK",
+}
+
+
 REQUIRED_ANNOTATION_COLUMNS = (
     "variant_key",
     "gene_id",
@@ -516,11 +526,88 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
             sort_keys=True, indent=2) + "\n")
 
 
+def split_fields(line: str) -> list[str]:
+    # Some joint exports have comma-separated PCs followed by five space-separated
+    # covariates in the last CSV field. Preserve empty CSV cells as missing values.
+    cells = next(csv.reader([line.rstrip("\r\n").replace("\t", ",")]))
+    return [value for cell in cells for value in (cell.split() or [""])]
+
+
+def normalize_covariates(
+    source: Path, destination: Path, columns: list[str], id_column: str = "IID",
+) -> None:
+    if source.resolve() == destination.resolve():
+        raise ValueError("covariate source and normalized output must be different files")
+    output_columns = [id_column, *columns]
+    source_columns = [id_column.lstrip("#"), *(SOURCE_COLUMNS.get(col, col) for col in columns)]
+    if len(set(output_columns)) != len(output_columns):
+        raise ValueError("covariate output columns must be distinct")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with source.open(newline="") as stream, TemporaryDirectory(dir=destination.parent) as temporary:
+        header = [name.lstrip("#") for name in split_fields(next(stream, ""))]
+        if len(set(header)) != len(header):
+            raise ValueError(f"{source}: duplicate column names")
+        missing = [name for name in source_columns if name not in header]
+        if missing:
+            raise ValueError(f"{source}: missing covariate columns: {', '.join(missing)}")
+        indices = [header.index(name) for name in source_columns]
+        seen = set()
+        staged = Path(temporary) / destination.name
+        with staged.open("w", newline="") as output:
+            writer = csv.writer(output, delimiter="\t", lineterminator="\n")
+            writer.writerow(output_columns)
+            for line_number, line in enumerate(stream, start=2):
+                if not line.strip():
+                    continue
+                fields = split_fields(line)
+                if len(fields) != len(header):
+                    raise ValueError(f"{source}:{line_number}: expected {len(header)} fields, got {len(fields)}")
+                row = [fields[index] for index in indices]
+                if not row[0] or row[0] in seen:
+                    raise ValueError(f"{source}:{line_number}: missing or duplicate sample ID")
+                seen.add(row[0])
+                for name, value in zip(columns, row[1:]):
+                    if value not in {"", "NA", "NaN", "nan", "."}:
+                        try:
+                            float(value)
+                        except ValueError:
+                            raise ValueError(f"{source}:{line_number}: nonnumeric covariate {name}") from None
+                writer.writerow(row)
+        if not seen:
+            raise ValueError(f"{source}: no covariate rows")
+        # Preserve timestamps on identical reruns so prepared caches stay valid.
+        if destination.is_file() and filecmp.cmp(staged, destination, shallow=False):
+            print("unchanged:", destination)
+        else:
+            staged.replace(destination)
+            print(f"normalized: {source} -> {destination} ({len(columns)} covariates)")
+
+
+def prepare_joint_covariates(args: argparse.Namespace) -> None:
+    paths = []
+    for ancestry in args.covariate_ancestries:
+        source = JOINT_COVARIATE_ROOT.expanduser() / ancestry.lower() / "covariates.csv"
+        if not source.is_file():
+            raise FileNotFoundError(f"joint covariates for {ancestry} not found: {source}")
+        destination = Path(os.path.expandvars(
+            args.covariate_output.replace("{anc}", ancestry.lower())
+        )).expanduser()
+        if source.resolve() == destination.resolve():
+            raise ValueError("covariate source and normalized output must be different files")
+        paths.append((source, destination))
+    for source, destination in paths:
+        normalize_covariates(source, destination, args.covariate_columns, args.covariate_id_column)
+
+
 def prepare_aou(args: argparse.Namespace) -> None:
     output_dir = args.output_dir
     project = args.billing_project or billing_project()
     plink2_bin = os.path.expandvars(args.plink2_bin)
     pgen_prefixes = {}
+
+    # Validate/normalize covariates before potentially lengthy genotype downloads.
+    prepare_joint_covariates(args)
 
     for chromosome in args.chromosome:
         prefix = localize_genotype(
@@ -542,18 +629,6 @@ def prepare_aou(args: argparse.Namespace) -> None:
         output_dir / "ancestry_preds.tsv",
         project,
     )
-    covariate_dir = output_dir / "covariate"
-    old_all = covariate_dir / "ALL_pca.eigenvec"
-    all_covariates = covariate_dir / "all_pca.eigenvec"
-    if old_all.exists() and (not all_covariates.exists() or old_all.samefile(all_covariates)):
-        old_all.rename(all_covariates)
-    copy_input(f"{DEFAULT_COVARIATE_ROOT}/ALL_pca.eigenvec", all_covariates, project)
-    copy_gcs_files(
-        tuple(f"{DEFAULT_COVARIATE_ROOT}/{ancestry}_pca.eigenvec" for ancestry in ("afr", "amr", "eur")),
-        covariate_dir,
-        project,
-    )
-
     for chromosome in args.chromosome:
         annotation_source = Path(
             os.path.expandvars(
@@ -601,6 +676,18 @@ def main() -> None:
     args.chromosome = normalize_chromosomes(config["chromosomes"])
     if args.annotation is None:
         args.annotation = config.get("vat_annotation", "~/fed_prep_out/chr{chromosome}_annotation.tsv")
+    if args.config_mvp is not None:
+        parser.error("joint covariate import is for site preparation, not --config-mvp sample splitting")
+    if config.get("is_cov_single_column", True):
+        parser.error("joint covariates require is_cov_single_column = false")
+    args.covariate_output = config["covariate"]
+    args.covariate_columns = config["covariate_columns"]
+    args.covariate_id_column = config["covariate_id_column"]
+    args.covariate_ancestries = tuple(dict.fromkeys(
+        [anc.strip().upper() for anc in config["ancestries"]] + ["ALL"]
+    ))
+    if len(args.covariate_ancestries) > 1 and "{anc}" not in args.covariate_output:
+        parser.error("multiple ancestries require {anc} in the covariate output path")
 
     args.output_dir = args.output_dir.expanduser()
     args.plink2_bin = str(Path(args.plink2_bin).expanduser())

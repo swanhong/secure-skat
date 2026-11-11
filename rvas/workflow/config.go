@@ -177,9 +177,6 @@ func validateGlobalConfig(config *Config) error {
 	if len(config.Chromosomes) == 0 || len(config.Ancestries) == 0 || len(config.PhenotypeColumns) == 0 {
 		return fmt.Errorf("chromosomes, ancestries, and phenotype_columns are required")
 	}
-	if len(config.CovariateColumns) == 0 {
-		return fmt.Errorf("covariate_columns is required")
-	}
 	if len(config.GlobalMaxMAF) == 0 {
 		return fmt.Errorf("global_max_maf must contain at least one threshold")
 	}
@@ -187,13 +184,6 @@ func validateGlobalConfig(config *Config) error {
 		if math.IsNaN(threshold) || threshold <= 0 || threshold > 0.5 || slices.Contains(config.GlobalMaxMAF[:index], threshold) {
 			return fmt.Errorf("global_max_maf must contain distinct values in (0, 0.5]")
 		}
-	}
-	seen := make(map[string]bool, len(config.CovariateColumns))
-	for _, column := range config.CovariateColumns {
-		if strings.TrimSpace(column) == "" || seen[column] {
-			return fmt.Errorf("covariate_columns must contain distinct nonblank names")
-		}
-		seen[column] = true
 	}
 	if config.MpcNumThreads < 1 || config.DataBits < 1 ||
 		config.FractionalBits < 1 || config.FractionalBits > config.DataBits || config.Probes < 1 {
@@ -205,8 +195,25 @@ func validateGlobalConfig(config *Config) error {
 	return nil
 }
 
+func validateCovariateColumns(config *Config) error {
+	if len(config.CovariateColumns) == 0 {
+		return fmt.Errorf("covariate_columns is required")
+	}
+	seen := make(map[string]bool, len(config.CovariateColumns))
+	for _, column := range config.CovariateColumns {
+		if strings.TrimSpace(column) == "" || seen[column] {
+			return fmt.Errorf("covariate_columns must contain distinct nonblank names")
+		}
+		seen[column] = true
+	}
+	return nil
+}
+
 func validatePrepareConfig(config *Config) error {
 	if err := validateGlobalConfig(config); err != nil {
+		return err
+	}
+	if err := validateCovariateColumns(config); err != nil {
 		return err
 	}
 	if config.DebugSplitNumParties != 0 && config.DebugSplitNumParties != 2 {
@@ -255,6 +262,9 @@ func validatePartyConfig(config *Config, partyID int) error {
 	}
 	if partyID != cohortAPartyID && partyID != cohortBPartyID {
 		return fmt.Errorf("unknown party %d", partyID)
+	}
+	if err := validateCovariateColumns(config); err != nil {
+		return err
 	}
 	if err := requireStrings(
 		"genotype_dir", config.GenotypeDirectory,

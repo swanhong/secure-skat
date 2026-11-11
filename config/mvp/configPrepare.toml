@@ -1,16 +1,21 @@
-run_dir = "output/mvp"
+run_dir = "/mnt/bcftools-data/secure-skat/output/mvp_all/"
 
-genotype = "data/mvp/generated/genotype/chr{chromosome}"
-gene_panel = "data/mvp/generated/gene_panel/chr{chromosome}.tsv"
-annotation = "data/mvp/generated/annotation/chr{chromosome}.tsv"
-phenotype = "data/mvp/generated/phenotype.csv"
-covariate = "data/mvp/generated/covariate/{anc}_pca.eigenvec"
-ancestry = "data/mvp/generated/ancestry_preds.tsv"
+genotype = "/mnt/bcftools-data/aou_mvp/exome_plink_files/chr{chromosome}.regions"
+gene_panel = "/mnt/bcftools-data/aou_mvp/gene_panel_files/chr{chromosome}.gene_panel.txt"
+annotation = "/mnt/bcftools-data/aou_mvp/annotations/outfiles_with_corrected_freqs/chr{chromosome}.annotations.maf.txt"
+phenotype = "/mnt/bcftools-data/aou_mvp/mvp_pheno_covar_gia/joint_analysis/phenos.tsv"
+covariate = "/mnt/bcftools-data/aou_mvp/mvp_pheno_covar_gia/joint_analysis/covar_with_pcs.tsv"
+ancestry = "/mnt/bcftools-data/aou_mvp/mvp_pheno_covar_gia/ancestries.tsv"
 
 phenotype_id_column = "IID"
 covariate_id_column = "IID"
 is_cov_single_column = false
-covariate_columns = ["PC1", "PC2", "PC3", "PC4", "PC5", "PC6", "PC7", "PC8", "PC9", "PC10"]
+covariate_columns = [
+    "PC1", "PC2", "PC3", "PC4", "PC5",
+    "PC6", "PC7", "PC8", "PC9", "PC10",
+    "GENDER_REGULAR", "OTHER_GENDER",
+    "age_at_lab_date", "age_at_lab_date_sq", "biobank",
+]
 ancestry_id_column = "IID"
 ancestry_column = "ancestry"
 local_max_maf = 0.05
