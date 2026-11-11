@@ -156,43 +156,23 @@ def select_gene_groups(
     allowed_keys: Collection[str] | None,
     file_genes: Collection[GeneRef],
 ) -> tuple[GeneVariants, ...]:
-    chromosome_name = str(chromosome)
-
-    if request.mode == "random":
-        all_groups = select_gene_variants(
-            gene_panel=inputs.gene_panel,
-            variants=inputs.variants,
-            annotations=inputs.annotations,
-            chromosome=chromosome_name,
-            gene_selection="all",
-            allowed_keys=allowed_keys,
-        )
-        return select_random_gene_groups(
-            gene_groups=all_groups,
-            gene_count=request.per_chromosome,
-        )
-
+    gene_selection = "all"
     if request.mode == "file":
-        genes = select_file_genes(
-            inputs=inputs,
-            chromosome=chromosome_name,
-            selected_genes=file_genes,
-        )
+        genes = select_file_genes(inputs, str(chromosome), file_genes)
         gene_selection = tuple(gene.gene_id for gene in genes)
-    elif request.mode == "all":
-        gene_selection = "all"
-    else:
-        raise ValueError(
-            f"unsupported gene selection mode: {request.mode}"
-        )
-    return select_gene_variants(
+    elif request.mode not in {"all", "random"}:
+        raise ValueError(f"unsupported gene selection mode: {request.mode}")
+    groups = select_gene_variants(
         gene_panel=inputs.gene_panel,
         variants=inputs.variants,
         annotations=inputs.annotations,
-        chromosome=chromosome_name,
+        chromosome=str(chromosome),
         gene_selection=gene_selection,
         allowed_keys=allowed_keys,
     )
+    if request.mode == "random":
+        return select_random_gene_groups(groups, request.per_chromosome)
+    return groups
 
 
 def prepared_cache_config(request: PrepareRequest, chromosome: int, ancestry: str, scope: str = "joint") -> dict:
@@ -265,7 +245,7 @@ def prepare_cached_blocks(
         if not config_path.is_file() or config_path.read_text() != config:
             raise ValueError(f"prepared cache config missing or changed: {cached}; use a new run_dir")
         print(f"Using existing prepared cache: {cached}", flush=True)
-        print(f"    ancestry: {ancestry}, chromosome: {chromosome}, local_max_maf: {request.local_max_maf}, shared_rate: {request.shared_rate}", flush=True)
+        print(f"    ancestry: {ancestry}, chromosome: {chromosome}, local_max_maf: {cache_config['local_max_maf']}, shared_rate: {request.shared_rate}", flush=True)
     else:
         print("Creating prepared cache:", cached, flush=True)
         with TemporaryDirectory(prefix=f".chr{chromosome}.", dir=parent) as temporary:
@@ -347,10 +327,7 @@ def prepare_chromosomes(
         ancestry_column=request.ancestry_column,
     )
 
-    if request.samples_per_cohort == 0:
-        samples_per_cohort: int | Literal["all"] = "all"
-    else:
-        samples_per_cohort = request.samples_per_cohort
+    samples_per_cohort = request.samples_per_cohort or "all"
 
     file_genes: tuple[GeneRef, ...] = ()
     if gene_selection.mode == "file" and (local or request.party != 2):
@@ -450,7 +427,7 @@ def prepare_chromosomes(
         local_candidates = (select_gene_variants(
             gene_panel=inputs.gene_panel, variants=inputs.variants, annotations=inputs.annotations,
             chromosome=str(chromosome), gene_selection="all",
-        ) if local else ())
+        ) if local and joint and request.party == 2 else candidates)
         count_keys = {variant.key for group in (*candidates, *chromosome_public, *local_candidates)
                       for variant in group.variants}
         count_keys &= {variant.key for variant in inputs.variants}
@@ -502,32 +479,22 @@ def prepare_chromosomes(
                 for variant in group.variants
                 if variant.key in cohort_counts and variant.key not in allowed_keys
             )
-        chromosome_genes = tuple(
-            group.gene for group in chromosome_groups
-        )
-        selected_genes.extend(chromosome_genes)
+        selected_genes.extend(group.gene for group in chromosome_groups)
         if request.party == 1:
             export_groups.extend(chromosome_groups)
 
         for ancestry in request.ancestries:
             rows_a, rows_b = rows_by_ancestry[ancestry]
-            build = partial(
-                prepare_blocks,
-                pgen_prefix=inputs.pgen_prefix,
-                gene_variants=chromosome_groups,
-                rows_a=rows_a,
-                rows_b=rows_b,
-                shared_rate=request.shared_rate,
-                extractor=extractor,
-            )
+            common = dict(pgen_prefix=inputs.pgen_prefix, gene_variants=chromosome_groups,
+                          rows_a=rows_a, rows_b=rows_b, extractor=extractor)
             if request.party:
                 build = partial(
-                    prepare_site_blocks, pgen_prefix=inputs.pgen_prefix,
-                    gene_variants=chromosome_groups, rows_a=rows_a, rows_b=rows_b,
-                    extractor=extractor, party=request.party,
+                    prepare_site_blocks, **common, party=request.party,
                     public_groups=chromosome_public, available_variants=inputs.variants,
                     cohort_counts=cohort_counts, cohort_size=len(cohort_ids),
                 )
+            else:
+                build = partial(prepare_blocks, **common, shared_rate=request.shared_rate)
             if request.prepared_cache_dir is not None:
                 prepare_cached_blocks(request, chromosome, ancestry, build, selection={
                     "samples_a": rows_a.sample_ids,

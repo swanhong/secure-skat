@@ -177,9 +177,7 @@ def select_best_rows(
 
         matched_rows += 1
         group_key, rank, output_row = candidate
-        current = best_rows.get(group_key)
-        if current is None or rank < current[0]:
-            best_rows[group_key] = (rank, output_row)
+        best_rows.setdefault(group_key, (rank, output_row))
 
     elapsed = time.time() - started_at
     counts = {

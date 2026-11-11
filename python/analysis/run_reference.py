@@ -152,9 +152,12 @@ def run_reference(config_path: Path, engine: str = "python", config_b: Path | No
     run_dir_b = run_dir_a
     if config_b is not None:
         b = load_party_config(config_b, party_id=2)
-        for name in ("chromosomes", "ancestries", "phenotype_columns", "covariate_columns", "global_max_maf"):
+        for name in ("chromosomes", "ancestries", "phenotype_columns", "global_max_maf"):
             if config[name] != b[name]:
                 raise ValueError(f"A and B {name} must match")
+        # Prepared columns are positional; source names can differ between sites.
+        if len(config["covariate_columns"]) != len(b["covariate_columns"]):
+            raise ValueError("A and B covariate counts must match")
         run_dir_b = Path(b["run_dir"])
 
     reference_roots = list(dict.fromkeys(

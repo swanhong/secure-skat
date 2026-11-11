@@ -67,7 +67,7 @@ func TestTraceSeedDerivation(t *testing.T) {
 }
 
 func TestCovariateColumnValidation(t *testing.T) {
-	config, err := LoadPartyConfig(filepath.Join("..", "..", "config", "cp0"), 0)
+	config, err := LoadPartyConfig(filepath.Join("..", "..", "config", "mvp"), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,14 +84,30 @@ func TestCovariateColumnValidation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			candidate := *config
 			candidate.CovariateColumns = test.columns
-			err := validatePartyConfig(&candidate, auxiliaryPartyID)
+			err := validatePartyConfig(&candidate, cohortAPartyID)
 			if (err == nil) != test.valid {
 				t.Fatalf("valid=%v, got %v", test.valid, err)
+			}
+			if prepareErr := validatePrepareConfig(&candidate); (prepareErr == nil) != test.valid {
+				t.Fatalf("prepare valid=%v, got %v", test.valid, prepareErr)
 			}
 			if err != nil && !strings.Contains(err.Error(), "covariate_columns") {
 				t.Fatalf("unexpected validation error: %v", err)
 			}
 		})
+	}
+}
+
+func TestHelperWithoutCovariateColumns(t *testing.T) {
+	config, err := LoadPartyConfig(filepath.Join("..", "..", "config", "cp0"), auxiliaryPartyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.CovariateColumns) != 0 {
+		t.Fatal("cp0 must not configure covariate columns")
+	}
+	if err := validatePartyConfig(config, auxiliaryPartyID); err != nil {
+		t.Fatal(err)
 	}
 }
 

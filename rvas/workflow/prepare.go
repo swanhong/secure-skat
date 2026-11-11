@@ -141,11 +141,7 @@ func clearGeneratedOutputs(runDir, mode string) error {
 }
 
 func Prepare(config *Config) error {
-	return prepareSite(config, 0, "")
-}
-
-func prepareSite(config *Config, party int, publicVarList string) error {
-	return prepareSiteMode(config, party, publicVarList, "joint")
+	return prepareSiteMode(config, 0, "", "joint")
 }
 
 func prepareSiteMode(config *Config, party int, publicVarList, mode string) error {

@@ -177,10 +177,12 @@ def key_pvar(pgen_prefix: Path, plink2_bin: str) -> None:
 
 
 def variant_alleles(variant_key: str) -> tuple[int, str, str]:
-    fields = variant_key.split(":")
-    if len(fields) < 3:
+    fields = variant_key.split(":", 3)
+    if len(fields) == 4:
+        fields = fields[1:]
+    if len(fields) != 3:
         raise ValueError(f"invalid annotation variant key: {variant_key}")
-    return int(fields[-3]), fields[-2], fields[-1]
+    return int(fields[0]), fields[1], fields[2]
 
 
 def annotation_keys(
@@ -335,7 +337,6 @@ def site_path(config: dict, field: str, chromosome=0, ancestry="") -> Path:
 
 
 def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -> None:
-    # step1: Read MVP/A and AoU/B configs and normalize ancestry names.
     configs = []
     for directory in (args.config_mvp, args.config):
         config = {"shared_rate": 0.6, "is_cov_single_column": True,
@@ -351,13 +352,11 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
     mvp, aou = configs
     cohort_ancestries = tuple(dict.fromkeys((*mvp["ancestries"], "ALL")))
 
-    # step2: Check that both sites use matching sample selection and variant filters.
     for field in ("chromosomes", "ancestries", "phenotype_columns", "covariate_columns",
                   "samples_per_cohort"):
         if mvp.get(field) != aou.get(field):
             raise ValueError(f"A/B splitting requires matching {field} in both configs")
 
-    # step3: Separate source and site output paths and prevent overwriting existing files.
     roots = [site_path(config, "phenotype").resolve().parent for config in configs]
     source = args.output_dir.resolve()
     for index, (config, root) in enumerate(zip(configs, roots)):
@@ -369,7 +368,7 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
                 raise ValueError(f"split {field} must be below {root}")
 
     source_files = [source / "phenotype.csv", source / "ancestry_preds.tsv"]
-    source_files += [source / f"covariate/{ancestry.lower()}_pca.eigenvec" for ancestry in cohort_ancestries]
+    source_files += [Path(args.covariate_output.replace("{anc}", ancestry.lower())).expanduser() for ancestry in cohort_ancestries]
     for chromosome, prefix in pgen_prefixes.items():
         source_files += [Path(f"{prefix}.{extension}") for extension in ("pgen", "pvar", "psam")]
         source_files += [source / f"{folder}/chr{chromosome}.tsv" for folder in ("annotation", "gene_panel")]
@@ -386,10 +385,9 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
         return
     if any(root.exists() and any(root.iterdir()) for root in roots):
         raise ValueError("incomplete or unmarked split; remove both site output directories or use empty paths")
-    # step4: Read phenotype, covariate, and ancestry tables from the AoU source.
     samples = load_sample_inputs(
         phenotype_path=source / "phenotype.csv",
-        covariate_path=source / "covariate/{anc}_pca.eigenvec",
+        covariate_path=Path(args.covariate_output).expanduser(),
         ancestry_path=source / "ancestry_preds.tsv",
         phenotype_id_column=aou["phenotype_id_column"],
         phenotype_columns=tuple(aou["phenotype_columns"]),
@@ -402,7 +400,6 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
         ancestry_column=aou["ancestry_column"],
     )
 
-    # step5: Prepare gene selection from the MVP config.
     selection = mvp["gene_selection"]
     request = GeneSelectionRequest(selection["mode"], selection.get("per_chromosome", 0),
                                    Path(selection["path"]) if selection.get("path") else None)
@@ -410,12 +407,10 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
     reference_ids = None
     site_ids = []
 
-    # step6: Read source sample IDs, variants, genes, and annotations for each chromosome.
     for chromosome, prefix in pgen_prefixes.items():
         inputs = load_inputs(prefix, source / f"gene_panel/chr{chromosome}.tsv",
                              source / f"annotation/chr{chromosome}.tsv")
         if reference_ids is None:
-            # step7: Split samples into disjoint A/B groups by ancestry once, using the first chromosome.
             reference_ids = inputs.psam_ids
             if len(set(reference_ids)) != len(reference_ids):
                 raise ValueError("duplicate source sample IDs")
@@ -434,7 +429,6 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
                                        limit, party=index + 1)
                     rows_by_site[index][ancestry] = rows[index]
 
-            # step8: Write selected sample tables using each site's paths and column names.
             for config, rows in zip(configs, rows_by_site):
                 members = [(ancestry, group, i) for ancestry, group in rows.items()
                            for i in range(len(group.sample_ids))]
@@ -463,10 +457,9 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
         elif inputs.psam_ids != reference_ids:
             raise ValueError(f"ordered source PSAM IDs differ on chromosome {chromosome}")
 
-        # step9: Apply gene selection; each site applies its local MAF cut in prepare.
         groups = select_gene_groups(request, inputs, chromosome, None, file_genes)
 
-        # step10: Assign each variant one site role, even when it belongs to multiple genes.
+        # A variant shared by multiple genes must have the same site role.
         seen, unique_groups = set(), []
         for group in groups:
             unique = tuple(variant for variant in group.variants if variant.key not in seen)
@@ -479,7 +472,6 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
             raise ValueError(f"selected genes need MVP public variants on chromosome {chromosome}")
         pairs = {(group.gene.gene_id, variant.key) for group in groups for variant in group.variants}
 
-        # step11: Select shared/public_only variants for A and shared/private variants for B.
         for index, config in enumerate(configs):
             allowed = {"shared", "public_only"} if index == 0 else {"shared", "private"}
             keys = {variant.key for variant in inputs.variants if roles.get(variant.key) in allowed}
@@ -488,7 +480,6 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
             output = site_path(config, "genotype", chromosome)
             output.parent.mkdir(parents=True, exist_ok=True)
 
-            # step12: Pass sample and variant lists to PLINK and write site inputs in PGEN format.
             with TemporaryDirectory() as temporary:
                 keep, extract = Path(temporary) / "keep.tsv", Path(temporary) / "variants.txt"
                 with Path(f"{prefix}.psam").open() as stream:
@@ -507,7 +498,6 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
                      "--make-pgen", "--out", str(output)])
                 Path(f"{output}.log").unlink(missing_ok=True)
 
-            # step13: Write the selected gene panel and annotations retained at this site.
             panel = site_path(config, "gene_panel", chromosome)
             panel.parent.mkdir(parents=True, exist_ok=True)
             write_selected_genes(panel, tuple(group.gene for group in groups))
@@ -517,7 +507,7 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
                          for row in inputs.annotations if row.variant_key in keys
                          and (row.gene_id, row.variant_key) in pairs))
 
-    # step14: Record completion after writing both sites and all chromosomes.
+    # Mark complete only after both sites and all chromosomes are written.
     for root, config in zip(roots, configs):
         outputs = {str(path.resolve()): [path.stat().st_size, path.stat().st_mtime_ns]
                    for path in root.rglob("*") if path.is_file()}
@@ -526,16 +516,15 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
             sort_keys=True, indent=2) + "\n")
 
 
-def split_fields(line: str) -> list[str]:
-    # Some joint exports have comma-separated PCs followed by five space-separated
-    # covariates in the last CSV field. Preserve empty CSV cells as missing values.
-    cells = next(csv.reader([line.rstrip("\r\n").replace("\t", ",")]))
-    return [value for cell in cells for value in (cell.split() or [""])]
-
-
-def normalize_covariates(
+def convert_joint_covariates_to_tsv(
     source: Path, destination: Path, columns: list[str], id_column: str = "IID",
 ) -> None:
+    def split_fields(line: str) -> list[str]:
+        # Some joint exports have comma-separated PCs followed by five space-separated
+        # covariates in the last CSV field. Preserve empty CSV cells as missing values.
+        cells = next(csv.reader([line.rstrip("\r\n").replace("\t", ",")]))
+        return [value for cell in cells for value in (cell.split() or [""])]
+
     if source.resolve() == destination.resolve():
         raise ValueError("covariate source and normalized output must be different files")
     output_columns = [id_column, *columns]
@@ -597,7 +586,7 @@ def prepare_joint_covariates(args: argparse.Namespace) -> None:
             raise ValueError("covariate source and normalized output must be different files")
         paths.append((source, destination))
     for source, destination in paths:
-        normalize_covariates(source, destination, args.covariate_columns, args.covariate_id_column)
+        convert_joint_covariates_to_tsv(source, destination, args.covariate_columns, args.covariate_id_column)
 
 
 def prepare_aou(args: argparse.Namespace) -> None:
@@ -676,11 +665,10 @@ def main() -> None:
     args.chromosome = normalize_chromosomes(config["chromosomes"])
     if args.annotation is None:
         args.annotation = config.get("vat_annotation", "~/fed_prep_out/chr{chromosome}_annotation.tsv")
-    if args.config_mvp is not None:
-        parser.error("joint covariate import is for site preparation, not --config-mvp sample splitting")
     if config.get("is_cov_single_column", True):
         parser.error("joint covariates require is_cov_single_column = false")
-    args.covariate_output = config["covariate"]
+    args.covariate_output = (str(args.output_dir / "covariate/{anc}_joint.tsv")
+                             if args.config_mvp else config["covariate"])
     args.covariate_columns = config["covariate_columns"]
     args.covariate_id_column = config["covariate_id_column"]
     args.covariate_ancestries = tuple(dict.fromkeys(
