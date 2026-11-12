@@ -37,26 +37,30 @@ func globalMAFKeep(
 	threshold float64,
 ) mpc_core.RVec {
 	count := ShareSum(mpcObj, cohortCounts, 1, total)[0]
-	rtype := mpcObj.GetRType()
-	fracBits := mpcObj.GetFracBits()
-	alleles := float64(2 * dataParams.CohortN)
-
-	// Counts are integers, so half-integer bounds avoid ties: count <= floor(t*2N) or count >= ceil((1-t)*2N).
-	altMinor := mpcObj.LessThanPublic(
-		count,
-		rtype.FromFloat64(math.Floor(threshold*alleles)+0.5, fracBits),
-		mpcObj.GetBooleanShareFlag(),
-	)
-	altMajor := mpcObj.NotLessThanPublic(
-		count,
-		rtype.FromFloat64(math.Ceil((1-threshold)*alleles)-0.5, fracBits),
-		mpcObj.GetBooleanShareFlag(),
-	)
-	altMinor.Add(altMajor)
-	return altMinor
+	return GlobalMAFKeep(mpcObj, count, dataParams.CohortN, threshold, mpcObj.GetFracBits())
 }
 
-// GlobalMAFKeepPlain is the plaintext rule of globalMAFKeep, for B-private variants
+// GlobalMAFKeep accepts encoded count shares: scale=0 for integer counts, or
+// the fixed-point fractional bits used by ShareSum. Requires 0 < threshold < 0.5;
+// the result is integer 0/1.
+func GlobalMAFKeep(mpcObj *mpc.MPC, count mpc_core.RVec, cohortN int, threshold float64, scale int) mpc_core.RVec {
+	if len(count) == 0 {
+		return count
+	}
+	rtype := mpcObj.GetRType()
+	// Double integer counts to express the half-integer boundaries even at scale=0.
+	doubled := count.Copy()
+	doubled.MulScalar(rtype.FromInt(2))
+	alleles := float64(2 * cohortN)
+	low := mpcObj.LessThanPublic(doubled,
+		rtype.FromFloat64(2*math.Floor(threshold*alleles)+1, scale), mpcObj.GetBooleanShareFlag())
+	high := mpcObj.NotLessThanPublic(doubled,
+		rtype.FromFloat64(2*math.Ceil((1-threshold)*alleles)-1, scale), mpcObj.GetBooleanShareFlag())
+	low.Add(high)
+	return low
+}
+
+// GlobalMAFKeepPlain is the plaintext rule of GlobalMAFKeep, for B-private variants
 // whose joint count is AoU's count alone.
 func GlobalMAFKeepPlain(count float64, cohortN int, threshold float64) bool {
 	alleles := float64(2 * cohortN)

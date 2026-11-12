@@ -28,7 +28,13 @@ func (e engine) ge(a core.RVec, threshold int) core.RVec {
 	scaled.MulScalar(e.obj.GetRType().FromInt(2))
 	return e.obj.NotLessThanPublic(scaled, e.obj.GetRType().FromInt(2*threshold-1), e.obj.GetBooleanShareFlag())
 }
-func (e engine) sum(a core.RVec) core.RElem { return protocol.SumShares(e.obj.GetRType(), a) }
+func (e engine) sum(a core.RVec) core.RElem {
+	sum := e.obj.GetRType().Zero()
+	for _, value := range a {
+		sum = sum.Add(value)
+	}
+	return sum
+}
 
 type layout struct {
 	Genes   []string
@@ -125,7 +131,15 @@ func compute(obj *mpc.MPC, p *prepared, site string, d dimensions, mafs []float6
 	flip := e.ge(jointAC, d.NA+d.NB+1)
 	for m, maf := range mafs {
 		st := &states[m]
-		keep := protocol.GlobalMAFKeep(obj, cohort, d.CohortN, maf, 0)
+		var keep core.RVec
+		if maf < 0.5 {
+			keep = protocol.GlobalMAFKeep(obj, cohort, d.CohortN, maf, 0)
+		} else {
+			keep = e.zeros(n)
+			if pid == obj.GetHubPid() {
+				keep.AddScalar(obj.GetRType().One())
+			}
+		}
 		st.kRef = e.mul(keep, flip)
 		st.kAlt = keep.Copy()
 		st.kAlt.Sub(st.kRef)

@@ -31,6 +31,21 @@ func ShareSum(
 	}
 	local := mpc_core.FloatToRMat(rtype, localRows, mpcObj.GetFracBits())
 
+	return shareSumFields(mpcObj, local)
+}
+
+// ShareSumInt adds the sites' inputs as exact, unscaled integer shares.
+func ShareSumInt(mpcObj *mpc.MPC, values []int) mpc_core.RVec {
+	if len(values) == 0 || mpcObj.GetPid() == auxiliaryPartyID {
+		return mpc_core.InitRVec(mpcObj.GetRType().Zero(), len(values))
+	}
+	return shareSumFields(mpcObj, mpc_core.RMat{mpc_core.IntToRVec(mpcObj.GetRType(), values)})[0]
+}
+
+func shareSumFields(mpcObj *mpc.MPC, local mpc_core.RMat) mpc_core.RMat {
+	rtype, pid := mpcObj.GetRType(), mpcObj.GetPid()
+	rows, columns := local.Dims()
+
 	pad := mpcObj.Network.Rand.RandMat(rtype, rows, columns)
 	masked := local.Copy()
 	masked.Sub(pad)
