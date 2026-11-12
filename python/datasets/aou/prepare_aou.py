@@ -374,6 +374,16 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
         source_files += [source / f"{folder}/chr{chromosome}.tsv" for folder in ("annotation", "gene_panel")]
     if mvp["gene_selection"].get("path"):
         source_files.append(Path(mvp["gene_selection"]["path"]))
+    protected = [source, Path.cwd().resolve(), Path.home().resolve(),
+                 args.config.resolve(), args.config_mvp.resolve(),
+                 JOINT_COVARIATE_ROOT.expanduser().resolve(),
+                 *(path.resolve() for path in source_files)]
+    originals = [args.phenotype, args.ancestry, *(
+        args.annotation.format(chromosome=chromosome) for chromosome in pgen_prefixes)]
+    protected.extend(Path(os.path.expandvars(path)).expanduser().resolve()
+                     for path in originals if not path.startswith("gs://"))
+    if any(path.is_relative_to(root) for root in roots for path in protected):
+        raise ValueError("split output directories must not contain source inputs or configuration directories")
     split = {"configs": [split_input_config(config) for config in configs],
              "sources": {str(path.resolve()): [path.stat().st_size, path.stat().st_mtime_ns]
                          for path in source_files}}
@@ -383,8 +393,14 @@ def split_aou_inputs(args: argparse.Namespace, pgen_prefixes: dict[int, Path]) -
             raise ValueError("split source or settings changed; regenerate both site inputs in empty directories")
         print(f"exists: split inputs in {roots[0]} and {roots[1]}")
         return
-    if any(root.exists() and any(root.iterdir()) for root in roots):
-        raise ValueError("incomplete or unmarked split; remove both site output directories or use empty paths")
+    for config in configs:
+        path = site_path(config, "phenotype")
+        if path.is_symlink() or path.parent.is_symlink():
+            raise ValueError("refuse to clear a symlinked split output directory or phenotype")
+    for root in roots:
+        if root.exists():
+            print(f"Removing incomplete split output: {root}", flush=True)
+            shutil.rmtree(root)
     samples = load_sample_inputs(
         phenotype_path=source / "phenotype.csv",
         covariate_path=Path(args.covariate_output).expanduser(),
