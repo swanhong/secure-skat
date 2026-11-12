@@ -29,12 +29,11 @@ def select_random_gene_groups(
     candidates = tuple(
         group for group in gene_groups if group.variants
     )
-
+    if not candidates:
+        raise ValueError("no genes with variants available for random selection")
     if gene_count > len(candidates):
-        raise ValueError(
-            f"random count {gene_count} exceeds available genes "
-            f"with variants {len(candidates)}"
-        )
+        print(f"Requested {gene_count} genes; only {len(candidates)} have variants. Using all available genes.")
+        return candidates
 
     selected_ids = {
         group.gene.gene_id
