@@ -83,8 +83,8 @@ func Main(args []string) error {
 	if config.RunDir == "" || config.SharedKeysPath == "" || len(config.Ancestries) == 0 || len(config.Chromosomes) == 0 || len(config.GlobalMaxMAF) == 0 {
 		return fmt.Errorf("run_dir, shared_keys_path, ancestries, chromosomes and global_max_maf are required")
 	}
-	if config.DataBits < 64 || config.DataBits > 120 || config.FractionalBits < 1 || config.FractionalBits > 40 || config.DataBits-config.FractionalBits < 24 {
-		return fmt.Errorf("joint-stat requires data_bits 64..120, fractional_bits 1..40 and >=24 integer bits")
+	if config.DataBits < 60 || config.DataBits > 120 || config.FractionalBits < 1 || config.FractionalBits > 40 || config.DataBits-config.FractionalBits < 24 {
+		return fmt.Errorf("joint-stat requires data_bits 60..120, fractional_bits 1..40 and >=24 integer bits")
 	}
 	if config.LocalNumThreads > 0 {
 		runtime.GOMAXPROCS(config.LocalNumThreads)

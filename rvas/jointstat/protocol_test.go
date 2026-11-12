@@ -432,6 +432,10 @@ func testWorkflow(t *testing.T, onlyPrivate, ties bool, batchCells int, multiple
 			}
 		}
 		configs[pid] = &workflow.Config{RunDir: dir, SharedKeysPath: filepath.Join(root, "keys"), Ancestries: ancestries, Chromosomes: chromosomes, GlobalMaxMAF: []float64{0.01, 0.1, 0.5}, GenotypeDirectory: filepath.Join(dir, "prepared", "{ancestry}", "chr{chromosome}", side, "geno"), BindingIP: "127.0.0.1", Servers: servers, DataBits: 70, FractionalBits: 40}
+		if multiple {
+			// Shipped 1KG uses 60/30; AoU/MVP fixtures above use 70/40.
+			configs[pid].DataBits, configs[pid].FractionalBits = 60, 30
+		}
 	}
 	errors := make([]error, 3)
 	var wg sync.WaitGroup

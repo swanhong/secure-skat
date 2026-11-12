@@ -88,6 +88,20 @@ ancestry; public layout is checked for every chromosome. Fresh domain-separated
 PRG streams are derived once per ancestry session and never reset between its
 chromosomes. Full AoU/MVP runtime and peak memory still require a server pilot.
 
+## Plot from one TSV
+
+```sh
+python3 python/analysis/plot_joint_stats.py <run_dir>/resource_stats/resource_stats.tsv
+```
+
+Only that TSV is read; no other site's files, metadata, configs or genotype inputs
+are needed. Each ancestry/MAF stratum gets a three-panel PNG and vector PDF under
+`resource_stats/plots/`, summing chromosomes. Use `--chromosomes 21 22` to select a
+subset, or `--out-dir PATH` to change the destination. For synthetic 1KG data,
+use `--label-a "1KG A" --label-b "1KG B" --title-prefix "1KG synthetic test"`.
+Panel A shows only released carrier thresholds, B uses the released cMAC bins,
+and C stacks disjoint overlap counts. Empty eligible gene sets are shown explicitly.
+
 ## Release boundary and validation
 
 Raw genotype/callability and private variant identities remain local. Gene and

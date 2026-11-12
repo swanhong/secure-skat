@@ -98,3 +98,30 @@ Alternatively, run every step automatically (logs: `output/1kg-logs/`):
 ```bash
 ./scripts/run_1kg_workflow.sh
 ```
+
+To also compute the aggregate tables for figure panels A/B/C **after** the main
+workflow finishes:
+
+```bash
+./scripts/run_1kg_all_workflow.sh
+```
+
+This reuses the workflow above, then launches all three joint-stat parties.
+Both sites write `<run_dir>/resource_stats/resource_stats.tsv`; timing stays in
+`resource_stats/metrics_partyN.tsv`, separate from main analysis metrics. Logs
+are in `$LOG_DIR/joint-stat/` (default `output/1kg-logs/joint-stat/`). The new figure
+panels are not rendered automatically; the TSV is the input for local plotting.
+These are synthetic annotation tests, not biological HC pLoF results.
+
+The wrapper inherits `CONFIG_A`, `CONFIG_B`, `CONFIG_0`, `LOG_DIR`, and
+`REFERENCE_ENGINE`. Its arguments are forwarded to all joint-stat parties, e.g.
+`--batch-cells 1048576`. To run only statistics on already prepared inputs with
+callability files and existing shared keys:
+
+```bash
+JOINT_STAT_ONLY=1 ./scripts/run_1kg_all_workflow.sh
+```
+
+Old caches without joint-stat inputs require a fresh `run_dir`; the wrapper does
+not delete or migrate existing results. See [joint-stat](../../../rvas/jointstat/README.md)
+for panel definitions and output columns.

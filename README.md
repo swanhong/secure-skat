@@ -21,14 +21,16 @@ Load `scripts/setup/env.sh` in each new terminal.
 - In `config/{mvp,aou}/configPrepare.toml`, set `run_dir` and genotype, gene panel, annotation, phenotype, covariate, and ancestry paths. Use `samples_per_cohort = 0` for all eligible samples.
 - Supply annotation TSVs containing `variant_key`, `gene_id`, and `gene_symbol`, filtered to **MANE Select + HC LoF**. Column order is flexible; extra columns are ignored and do not filter rows. Exclude variants without MANE Select. For AoU, use `python/datasets/aou/vat_simplify.py`.
 - Set `local_max_maf` per site (e.g. MVP `0.05`, AoU `0.02`). Supply ALL covariates even when running only ancestry-specific analyses.
-- Set the helper's `run_dir` in `config/cp0/configPrepare.toml`.
+- Set the helper's `run_dir` in `config/cp0/configPrepare.toml`; it does not need `covariate_columns`. At startup, Party 0 receives the covariate counts from Parties 1 and 2, and all parties stop if they differ. Keep the selected covariates in matching semantic order on the two data holders; this exchange checks counts, not column meanings. Run the updated executable on all three parties.
 - Match `configGlobal.toml` across all three parties: chromosomes, phenotypes, ancestries, protocol parameters, and network addresses. Use matching genome builds and gene IDs.
 - Set `global_max_maf = [0.01, 0.001]` for both thresholds. Joint analysis uses the combined ALL cohort; independent local analysis uses the site's own ALL cohort. Both apply the same threshold across ancestries.
 
 Use a new `run_dir` when changing preparation settings.
 
 Full analysis uses `config/{mvp,aou,cp0}`: chr1–22, five phenotypes, AFR/EUR/AMR/ALL, and all eligible samples and genes.
-Local tests use `config/{mvp-test,aou-test,cp0-test}`: chr21–22, two phenotypes, EUR/AFR, up to 100 samples per ancestry per site, and 50 genes per chromosome.
+Local tests use `config/{mvp-test,aou-test,cp0-test}`: chr21–22, two phenotypes, EUR/AFR, up to 100 samples per ancestry per site, and 50 genes per chromosome. Both split sites use the same 15 AoU covariates, including the original BIOBANK values, from the workspace joint files. Regenerate older 10-PC split inputs and prepared outputs in fresh directories before running this configuration.
+
+`shared_rate` defaults to `1.0` and controls only synthetic variant splitting. The MVP/AoU `-test` configs explicitly use `0.6` (approximately 60% shared, 20% A-only, 20% B-only). Real site preparation does not use this rate: it retains the site's eligible inputs subject to QC, MAF, and gene selection, and determines overlap from the actual variant lists. Use `INPUT_MODE=sites` for real MVP/AoU runs; the workflow script permits split mode only with `-test` config paths.
 
 ## 3. Prepare MVP, then AoU
 
@@ -41,6 +43,14 @@ Copy `<MVP run_dir>/public_variants.tsv` and `local_cut_variants.tsv` into the s
 ```toml
 public_var_list = "/local/path/public_variants.tsv"
 ```
+
+Prepare AoU source inputs before running the site preparation:
+
+```bash
+python3 -m python.datasets.aou.prepare_aou --config config/aou
+```
+
+AoU preparation reads covariates only from `~/workspace/gwas-data-wgs/results/joint/{anc}/covariates.csv` for `afr`, `amr`, `eur`, and `all`, including ALL when only ancestry-specific analyses are selected. Missing local files stop preparation; there is no covariate download or fallback. The importer accepts comma/tab-separated files and joint exports with a space-separated tail, and writes the TSVs configured by `covariate`. It maps `#IID` to `IID`, `AGE` to `age_at_profile`, `GENDER` to `GENDER_REGULAR`, `GENDER_OTHER` to `OTHER_GENDER`, `AGESQ` to `age_sq`, and `BIOBANK` to `affiliation`, preserving the source values. Samples are subsequently joined by IID and emitted in genotype sample order. No intercept is stored in these 15 covariates; the analysis adds it.
 
 ```bash
 go run -mod=vendor secure-rvas.go prepare --config config/aou --party 2
