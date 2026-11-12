@@ -24,6 +24,7 @@ def write_outputs(
     rows_a: PhenoCovRows,
     rows_b: PhenoCovRows,
     party: int = 0,
+    joint_stat: bool = False,
 ) -> None:
     if out_dir.exists() and any(out_dir.iterdir()):
         raise ValueError(f"out_dir is not empty: {out_dir}")
@@ -39,15 +40,23 @@ def write_outputs(
         b_private_dir.mkdir(parents=True, exist_ok=True)
     for index, block in enumerate(blocks):
         if party != 2:
-            np.asarray(block.public_a, dtype=np.int8).tofile(a_geno_dir / f"block.{index}.bin")
+            np.asarray(block.public_a, dtype=np.int8).clip(0).tofile(a_geno_dir / f"block.{index}.bin")
         if party != 1:
-            np.asarray(block.public_b, dtype=np.int8).tofile(b_geno_dir / f"block.{index}.bin")
-            np.asarray(block.private_b, dtype=np.int8).tofile(b_private_dir / f"block.{index}.bin")
+            np.asarray(block.public_b, dtype=np.int8).clip(0).tofile(b_geno_dir / f"block.{index}.bin")
+            np.asarray(block.private_b, dtype=np.int8).clip(0).tofile(b_private_dir / f"block.{index}.bin")
     for name, rows in (("A", rows_a), ("B", rows_b)):
         if (party == 1 and name == "B") or (party == 2 and name == "A"):
             continue
         np.savetxt(out_dir / name / "cov.txt", rows.covariates, fmt="%.17g", delimiter="\t")
         np.savetxt(out_dir / name / "pheno.txt", rows.phenotypes, fmt="%.17g", delimiter="\t")
+        if joint_stat and party != 0:
+            stat_dir = out_dir / name / "joint_stat"
+            stat_dir.mkdir()
+            for index, block in enumerate(blocks):
+                public = block.public_a if name == "A" else block.public_b
+                np.packbits((public >= 0).reshape(-1), bitorder="little").tofile(stat_dir / f"public.{index}.calls")
+                if name == "B":
+                    np.packbits((block.private_b >= 0).reshape(-1), bitorder="little").tofile(stat_dir / f"private.{index}.calls")
     (out_dir / "genes.txt").write_text("".join(f"{block.gene.gene_id}\n" for block in blocks))
     (out_dir / "block_sizes.txt").write_text(
         "".join(f"{len(block.public_variants)}\n" for block in blocks)
@@ -67,7 +76,7 @@ def write_cohort_counts(
     counts: Mapping[str, int],
     cohort_size: int,
 ) -> None:
-    """Write the site cohort's ALT counts per block column (one line per gene) for the global MAF filter."""
+    """Write cohort ALT counts for the global MAF filter and private variant keys, one line per gene."""
     def write(path: Path, columns) -> None:
         path.write_text("".join(
             " ".join(str(counts.get(variant.key, 0)) for variant in variants) + "\n"
@@ -78,4 +87,7 @@ def write_cohort_counts(
     write(site / "allele_counts.txt", (block.public_variants for block in blocks))
     if party == 2:
         write(site / "private_allele_counts.txt", (block.private_variants for block in blocks))
+        (site / "private_variants.txt").write_text("".join(
+            " ".join(variant.key for variant in block.private_variants) + "\n" for block in blocks
+        ))
     (site / "cohort_size.txt").write_text(f"{cohort_size}\n")

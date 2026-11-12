@@ -76,7 +76,7 @@ def read_local_cut_list(path):
 
 def prepare_site_blocks(*, pgen_prefix, gene_variants, rows_a, rows_b, out_dir,
                         extractor, party, public_groups, available_variants,
-                        cohort_counts, cohort_size):
+                        cohort_counts, cohort_size, joint_stat=True):
     groups = gene_variants if party == 1 else public_groups
     # The variant list is written last, after all genotype and phenotype files.
     if (out_dir / "public_variants.tsv").is_file():
@@ -105,7 +105,7 @@ def prepare_site_blocks(*, pgen_prefix, gene_variants, rows_a, rows_b, out_dir,
         pgen_prefix, rows_a, rows_b, plans, extractor, filter_unavailable=False,
     )
     blocks = build_blocks(extracted_plans, geno_a, columns_a, geno_b, columns_b)
-    write_outputs(out_dir, blocks, rows_a, rows_b, party=party)
+    write_outputs(out_dir, blocks, rows_a, rows_b, party=party, joint_stat=joint_stat)
     write_cohort_counts(out_dir, blocks, party, cohort_counts, cohort_size)
     write_public_var_list(out_dir / "public_variants.tsv", groups)
     return out_dir

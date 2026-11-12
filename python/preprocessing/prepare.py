@@ -216,7 +216,7 @@ def prepared_cache_config(request: PrepareRequest, chromosome: int, ancestry: st
     else:
         config["local_max_maf"] = max(request.global_max_maf)
         config["source_party"] = request.party
-    config.update(format_version=5, chromosome=chromosome, ancestry_group=ancestry, scope=scope)
+    config.update(format_version=6, chromosome=chromosome, ancestry_group=ancestry, scope=scope)
     return config
 
 
@@ -261,7 +261,7 @@ def prepare_cached_blocks(
 
 
 def prepare_local_site(*, out_dir: Path, max_maf: float, **kwargs) -> Path:
-    result = prepare_site_blocks(out_dir=out_dir, **kwargs)
+    result = prepare_site_blocks(out_dir=out_dir, joint_stat=False, **kwargs)
     (out_dir / "max_maf.txt").write_text(f"{max_maf!r}\n")
     return result
 

@@ -157,7 +157,7 @@ def build_blocks(
             public_a = geno_a[:, public_columns_a].copy()
         private_columns_b = [key_column_b[variant.key] for variant in private]
 
-        public_b = np.zeros((geno_b.shape[0], len(public)), dtype=np.int8)
+        public_b = np.full((geno_b.shape[0], len(public)), -9, dtype=np.int8)
 
         for block_column, (variant, role) in enumerate(public):
             if role == "shared":

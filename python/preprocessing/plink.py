@@ -40,13 +40,12 @@ def biallelic_variants(pvar, wanted: set[str]) -> tuple[list[int], list[str]]:
 
 
 def read_dosage_batch(reader, variant_indices: list[int], sample_count: int) -> np.ndarray:
-    """Read variants × samples (PSAM order) dosages; missing calls become 0."""
+    """Read variants × samples (PSAM order) dosages; missing calls stay -9."""
     batch = np.array(variant_indices, dtype=np.uint32)
     dosages = np.empty((len(batch), sample_count), dtype=np.float32)
     reader.read_dosages_list(batch, dosages)
     if not np.isin(dosages, (-9, 0, 1, 2)).all():
         raise ValueError("fractional dosages are unsupported")
-    dosages[dosages == -9] = 0
     return dosages
 
 
@@ -55,7 +54,7 @@ def pgen_extract(
     sample_ids: tuple[str, ...],
     variant_keys: tuple[str, ...],
 ) -> tuple[np.ndarray, tuple[str, ...]]:
-    """Read biallelic ALT dosages in PSAM order, then restore requested rows."""
+    """Read biallelic ALT dosages, retaining -9, then restore requested row order."""
     if not variant_keys:
         return np.zeros((len(sample_ids), 0), dtype=np.int8), ()
 
@@ -100,5 +99,5 @@ def pgen_allele_counts(
             for start in range(0, len(emitted_keys), 256):
                 end = start + 256
                 dosages = read_dosage_batch(reader, variant_indices[start:end], len(sample_ids))
-                counts.update(zip(emitted_keys[start:end], dosages.sum(axis=1).astype(int).tolist()))
+                counts.update(zip(emitted_keys[start:end], dosages.clip(min=0).sum(axis=1).astype(int).tolist()))
     return counts
