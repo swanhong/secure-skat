@@ -10,7 +10,7 @@ Linux x86-64: requires Go, Python 3.11+ in a conda/venv environment, and R.
 ```bash
 bash scripts/setup/install.sh
 source scripts/setup/env.sh
-go mod vendor
+go mod download all && go mod vendor
 ```
 
 On macOS, install PLINK 2 and R::SKAT separately, then run `python3 -m pip install -r requirements.txt`.

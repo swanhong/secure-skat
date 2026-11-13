@@ -11,6 +11,10 @@ fi
 
 python3 -c 'import sys; sys.exit("Python 3.11+ is required." if sys.version_info < (3, 11) else 0)'
 
+echo "Preparing Go dependencies"
+go mod download all
+go mod vendor
+
 if [[ -x "$PLINK2" ]]; then
   echo "PLINK 2 already exists at $PLINK2"
 else
