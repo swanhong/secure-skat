@@ -216,7 +216,7 @@ def prepared_cache_config(request: PrepareRequest, chromosome: int, ancestry: st
     else:
         config["local_max_maf"] = max(request.global_max_maf)
         config["source_party"] = request.party
-    config.update(format_version=7, chromosome=chromosome, ancestry_group=ancestry, scope=scope)
+    config.update(format_version=8, chromosome=chromosome, ancestry_group=ancestry, scope=scope)
     return config
 
 

@@ -91,7 +91,7 @@ def extract_genotypes(
             if rows.sample_ids and (
                 set(emitted) != set(requested) or len(emitted) != len(requested)
             ):
-                raise ValueError("site extraction dropped or duplicated requested variants; check biallelic input")
+                raise ValueError("site extraction dropped or duplicated requested variants; check PVAR IDs and alleles")
 
     key_column_a = {
         key: column for column, key in enumerate(emitted_a)
