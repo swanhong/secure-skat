@@ -9,6 +9,7 @@ from .model import (
     VariantRef,
     PrepInputs,
     SampleInputs,
+    canonical_variant_key,
 )
 
 MISSING_VALUES = {"", "NA", "NaN", "nan", ".", None}
@@ -37,7 +38,7 @@ def read_pvar(
 
         return tuple(
             VariantRef(
-                key=row[id_column],
+                key=canonical_variant_key(row[id_column]),
                 position=int(row[position_column]),
                 filter_value=(
                     "PASS" if filter_column is None else row[filter_column]
@@ -98,7 +99,7 @@ def read_annotations(annotation_path: Path) -> tuple[AnnotationRef, ...]:
                 f"{annotation_path}: annotation requires variant_key, gene_id, gene_symbol columns"
             )
         return tuple(
-            AnnotationRef(row["variant_key"], row["gene_id"], row["gene_symbol"])
+            AnnotationRef(canonical_variant_key(row["variant_key"]), row["gene_id"], row["gene_symbol"])
             for row in reader
         )
 

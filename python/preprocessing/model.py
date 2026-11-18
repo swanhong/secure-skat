@@ -11,6 +11,15 @@ VariantRole = Literal[
 ]
 
 
+def canonical_variant_key(key: str) -> str:
+    """Use chr-prefixed allele-specific IDs; leave position, REF and ALT unchanged."""
+    fields = key.split(":", 3)
+    if len(fields) != 4:
+        return key
+    fields[0] = "chr" + fields[0].removeprefix("chr")
+    return ":".join(fields)
+
+
 @dataclass(frozen=True)
 class GeneRef:
     gene_id: str

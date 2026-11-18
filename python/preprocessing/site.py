@@ -1,7 +1,7 @@
 """Single-site preparation using an ordered, allele-specific public variant list."""
 import csv
 
-from .model import GenePlan, GeneRef, GeneVariants, VariantRef
+from .model import GenePlan, GeneRef, GeneVariants, VariantRef, canonical_variant_key
 from .pipeline import build_blocks, extract_genotypes
 from .output import write_cohort_counts, write_outputs
 
@@ -52,7 +52,7 @@ def read_public_var_list(path):
                 variants.append([])
                 seen_variants = set()
             if row["variant_key"]:
-                variant = VariantRef(row["variant_key"], int(row["position"]), "PASS")
+                variant = VariantRef(canonical_variant_key(row["variant_key"]), int(row["position"]), "PASS")
                 validate_key(variant, gene.chromosome)
                 if variant.key in seen_variants:
                     raise ValueError(f"duplicate public variant in gene {gene.gene_id}")
@@ -71,7 +71,7 @@ def read_local_cut_list(path):
     lines = path.read_text().splitlines()
     if not lines or lines[0] != "variant_key":
         raise ValueError(f"invalid local cut variant list header: {path}")
-    return set(lines[1:])
+    return {canonical_variant_key(key) for key in lines[1:]}
 
 
 def prepare_site_blocks(*, pgen_prefix, gene_variants, rows_a, rows_b, out_dir,

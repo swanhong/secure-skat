@@ -216,7 +216,7 @@ def prepared_cache_config(request: PrepareRequest, chromosome: int, ancestry: st
     else:
         config["local_max_maf"] = max(request.global_max_maf)
         config["source_party"] = request.party
-    config.update(format_version=6, chromosome=chromosome, ancestry_group=ancestry, scope=scope)
+    config.update(format_version=7, chromosome=chromosome, ancestry_group=ancestry, scope=scope)
     return config
 
 
@@ -464,6 +464,15 @@ def prepare_chromosomes(
                 allowed_keys = {variant.key for group in candidates for variant in group.variants}
             allowed_keys -= public_cut_keys
             chromosome_groups = select_candidates(allowed_keys=allowed_keys)
+            public_keys = {variant.key for group in chromosome_public for variant in group.variants}
+            public_cols = sum(len(group.variants) for group in chromosome_public)
+            shared = sum(variant.key in count_keys for group in chromosome_public for variant in group.variants)
+            private = sum(variant.key not in public_keys for group in chromosome_groups for variant in group.variants)
+            print(
+                f"chr{chromosome}: public_cols={public_cols} shared={shared} "
+                f"public_only={public_cols - shared} private={private} (gene-variant columns)",
+                flush=True,
+            )
         else:
             chromosome_groups = select_gene_groups(
                 request=gene_selection,

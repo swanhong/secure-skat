@@ -4,6 +4,7 @@ import numpy as np
 import pgenlib
 
 from .input import read_psam
+from .model import canonical_variant_key
 
 
 def sample_subset(pgen_prefix: Path, sample_ids: tuple[str, ...]) -> tuple[int, np.ndarray]:
@@ -19,9 +20,10 @@ def sample_subset(pgen_prefix: Path, sample_ids: tuple[str, ...]) -> tuple[int, 
 
 
 def biallelic_variants(pvar, wanted: set[str]) -> tuple[list[int], list[str]]:
+    wanted = {canonical_variant_key(key) for key in wanted}
     variant_indices, emitted_keys = [], []
     for index in range(pvar.get_variant_ct()):
-        key = pvar.get_variant_id(index).decode()
+        key = canonical_variant_key(pvar.get_variant_id(index).decode())
         if key not in wanted or pvar.get_allele_ct(index) != 2:
             continue
         fields = key.split(":", 3)
@@ -35,7 +37,7 @@ def biallelic_variants(pvar, wanted: set[str]) -> tuple[list[int], list[str]]:
         variant_indices.append(index)
         emitted_keys.append(key)
     if len(set(emitted_keys)) != len(emitted_keys):
-        raise ValueError("duplicate variant IDs")
+        raise ValueError("duplicate requested PVAR IDs after chromosome-prefix normalization")
     return variant_indices, emitted_keys
 
 
