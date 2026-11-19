@@ -41,9 +41,7 @@ type privateTraceShares struct {
 }
 
 func prepareLocalPrivateTraceTerms(
-	gp *mat.Dense,
-	gv *mat.Dense,
-	x *mat.Dense,
+	genotypes Genotypes,
 	privateSignedWeight []float64,
 	correctionProbe *mat.Dense,
 	invN float64,
@@ -79,12 +77,10 @@ func prepareLocalPrivateTraceTerms(
 		privateWeightSquared[variant] = weight * weight
 	}
 	xGv := new(mat.Dense)
-	xGv.Mul(x.T(), gv)
-	xGv.Scale(invN, xGv)
+	xGv.Scale(invN, genotypes.GvX.T())
 
 	gvGtG := new(mat.Dense)
-	gvGtG.Mul(gv.T(), gv)
-	gvGtG.Scale(invN, gvGtG)
+	gvGtG.Scale(invN, genotypes.GvGv)
 	h := scaleDenseRows(gvGtG, privateWeightSquared)
 
 	hSquared := new(mat.Dense)
@@ -118,13 +114,12 @@ func prepareLocalPrivateTraceTerms(
 	}
 
 	// If there is no public data, then return private trace terms only
-	if gp == nil {
+	if genotypes.GpGv == nil {
 		return privateValues
 	}
 
 	gpGv := new(mat.Dense)
-	gpGv.Mul(gp.T(), gv)
-	gpGv.Scale(invN, gpGv)
+	gpGv.Scale(invN, genotypes.GpGv)
 
 	gpGvH := new(mat.Dense)
 	gpGvH.Mul(gpGv, h)
@@ -161,9 +156,7 @@ func PreparePrivateTraceTerms(
 	mpcObj *mpc.MPC,
 	dataParams DataParams,
 	batch GeneBatch,
-	gp []*mat.Dense,
-	gv []*mat.Dense,
-	x *mat.Dense,
+	genotypes []Genotypes,
 	gvLocal []gvLocalGene,
 	correctionProbe []*mat.Dense,
 ) []privateTraceShares {
@@ -196,15 +189,13 @@ func PreparePrivateTraceTerms(
 	// B: Compute the local private trace terms.
 	if mpcObj.GetPid() == cohortBPartyID {
 		for position, geneIndex := range batch.GeneIndices {
-			if gv[geneIndex] == nil {
+			if genotypes[geneIndex].GvGv == nil {
 				continue
 			}
 
 			localValues[position] =
 				prepareLocalPrivateTraceTerms(
-					gp[geneIndex],
-					gv[geneIndex],
-					x,
+					genotypes[geneIndex],
 					gvLocal[position].signedWeight,
 					correctionProbe[position],
 					1/float64(dataParams.N),
@@ -1126,9 +1117,7 @@ func ComputeGeneBatchKernelStatistics(
 	dataParams DataParams,
 	cryptoParams CryptoParams,
 	batch GeneBatch,
-	gp []*mat.Dense,
-	gv []*mat.Dense,
-	x *mat.Dense,
+	genotypes []Genotypes,
 	localGtx []*mat.Dense,
 	localGtG []*mat.Dense,
 	gvLocal []gvLocalGene,
@@ -1143,7 +1132,7 @@ func ComputeGeneBatchKernelStatistics(
 		Compute the phenotype-independent kernel statistics for one gene batch.
 
 		Inputs in global gene:
-		    gp, gv, weight, signedWeight
+		    genotypes, weight, signedWeight
 
 		Inputs in batch:
 		    localGtx, localGtG, gvLocal, gvGene
@@ -1206,7 +1195,7 @@ func ComputeGeneBatchKernelStatistics(
 
 	// 3. Compute normalized moments and reuse the first GtG action for gtgWeight.
 	geneBatchInvS1, geneBatchS2, geneBatchS3, gtgWeight := ComputeKernelTraces(
-		mpcObj, heParams, dataParams, cryptoParams, batch, gp, gv, x, gvLocal,
+		mpcObj, heParams, dataParams, cryptoParams, batch, genotypes, gvLocal,
 		localGtG, pooledGtx, diagGtG, omega, weight, signedWeight, seed, observe,
 	)
 
@@ -1226,9 +1215,7 @@ func ComputeKernelTraces(
 	dataParams DataParams,
 	cryptoParams CryptoParams,
 	batch GeneBatch,
-	gp []*mat.Dense,
-	gv []*mat.Dense,
-	x *mat.Dense,
+	genotypes []Genotypes,
 	gvLocal []gvLocalGene,
 	localGtG []*mat.Dense,
 	pooledGtx []mpc_core.RMat,
@@ -1243,7 +1230,7 @@ func ComputeKernelTraces(
 		Compute the three kernel traces and the public GtG burden action.
 
 		Inputs in global gene order:
-		    gp, gv, weight, signedWeight
+		    genotypes, weight, signedWeight
 
 		Inputs in batch order:
 		    gvLocal, localGtG, pooledGtx, diagGtG
@@ -1271,7 +1258,7 @@ func ComputeKernelTraces(
 
 	// 2. Prepare the fixed-public-shape private trace terms.
 	privateTerms := PreparePrivateTraceTerms(
-		mpcObj, dataParams, batch, gp, gv, x, gvLocal, correctionProbe,
+		mpcObj, dataParams, batch, genotypes, gvLocal, correctionProbe,
 	)
 
 	// 3. Compute theta and weightSquared for each gene.

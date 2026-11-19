@@ -178,92 +178,96 @@ func readGenes(genePath, countPath string) ([]protocol.Gene, error) {
 	return genes, nil
 }
 
-func decodeInt8(data []byte) []float64 {
-	values := make([]float64, len(data))
-	for index, value := range data {
-		values[index] = float64(int8(value))
-	}
-	return values
-}
+// genotypeBlockRows bounds how many samples' genotypes are decoded to float64 at once.
+const genotypeBlockRows = 4096
 
-func readInt8Matrix(
-	path string,
-	rows, columns int,
-) (*mat.Dense, error) {
-	if columns == 0 {
-		return nil, nil
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	return mat.NewDense(
-		rows,
-		columns,
-		decodeInt8(data),
-	), nil
-}
-
-func readPrivateInt8Matrix(
-	path string,
-	rows int,
-) (*mat.Dense, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	if len(data) == 0 {
-		return nil, nil
-	}
-
-	values := decodeInt8(data)
-	return mat.NewDense(
-		rows,
-		len(values)/rows,
-		values,
-	), nil
-}
-
+// readGeneBatch returns each batch gene's genotype products with X, Y and itself,
+// reading one gene at a time and decoding its rows in blocks. keepPrivate returns
+// which of a gene's private variants to keep; dropped ones become zero columns.
 func readGeneBatch(
 	genotypeDirectory, privateGenotypeDirectory string,
 	genes []protocol.Gene,
 	batch protocol.GeneBatch,
-	rows int,
-) (public, private []*mat.Dense, err error) {
+	x, y *mat.Dense,
+	keepPrivate func(geneIndex, columns int) ([]bool, error),
+) ([]protocol.Genotypes, error) {
 	if genotypeDirectory == "" {
-		return nil, nil, nil
+		return nil, nil
 	}
-
-	if privateGenotypeDirectory != "" {
-		private = make([]*mat.Dense, len(genes))
-	}
-	public = make([]*mat.Dense, len(genes))
+	rows, xColumns := x.Dims()
+	_, yColumns := y.Dims()
+	genotypes := make([]protocol.Genotypes, len(genes))
 
 	for _, geneIndex := range batch.GeneIndices {
-		gene := genes[geneIndex]
 		block := fmt.Sprintf("block.%d.bin", geneIndex)
-
-		public[geneIndex], err = readInt8Matrix(
-			filepath.Join(genotypeDirectory, block),
-			rows,
-			gene.VariantCount,
-		)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		if privateGenotypeDirectory != "" {
-			private[geneIndex], err = readPrivateInt8Matrix(
-				filepath.Join(privateGenotypeDirectory, block),
-				rows,
-			)
-			if err != nil {
-				return nil, nil, err
+		p := genes[geneIndex].VariantCount
+		var public, private []byte
+		var err error
+		if p > 0 {
+			if public, err = os.ReadFile(filepath.Join(genotypeDirectory, block)); err != nil {
+				return nil, err
 			}
 		}
+		if privateGenotypeDirectory != "" {
+			if private, err = os.ReadFile(filepath.Join(privateGenotypeDirectory, block)); err != nil {
+				return nil, err
+			}
+		}
+		if len(public) != rows*p || len(private)%rows != 0 {
+			return nil, fmt.Errorf("%s: genotype file sizes do not match %d samples", block, rows)
+		}
+		q := len(private) / rows
+		var keep []bool
+		if q > 0 {
+			if keep, err = keepPrivate(geneIndex, q); err != nil {
+				return nil, err
+			}
+		}
+		m := p + q
+		if m == 0 {
+			continue
+		}
+
+		gtg, gtx, gty := mat.NewDense(m, m, nil), mat.NewDense(m, xColumns, nil), mat.NewDense(m, yColumns, nil)
+		buffer := mat.NewDense(min(genotypeBlockRows, rows), m, nil)
+		var product mat.Dense
+		accumulate := func(sum *mat.Dense, left, right mat.Matrix) {
+			product.Reset()
+			product.Mul(left.T(), right)
+			sum.Add(sum, &product)
+		}
+		for start := 0; start < rows; start += genotypeBlockRows {
+			end := min(start+genotypeBlockRows, rows)
+			g := buffer.Slice(0, end-start, 0, m).(*mat.Dense)
+			for row := start; row < end; row++ {
+				values := g.RawRowView(row - start)
+				for j := 0; j < p; j++ {
+					values[j] = float64(int8(public[row*p+j]))
+				}
+				for j := 0; j < q; j++ {
+					if keep[j] {
+						values[p+j] = float64(int8(private[row*q+j]))
+					}
+				}
+			}
+			accumulate(gtg, g, g)
+			accumulate(gtx, g, x.Slice(start, end, 0, xColumns))
+			accumulate(gty, g, y.Slice(start, end, 0, yColumns))
+		}
+
+		sub := func(a *mat.Dense, i, k, j, l int) *mat.Dense { return a.Slice(i, k, j, l).(*mat.Dense) }
+		gene := &genotypes[geneIndex]
+		if p > 0 {
+			gene.GpX, gene.GpY, gene.GpGp = sub(gtx, 0, p, 0, xColumns), sub(gty, 0, p, 0, yColumns), sub(gtg, 0, p, 0, p)
+		}
+		if q > 0 {
+			gene.GvX, gene.GvY, gene.GvGv = sub(gtx, p, m, 0, xColumns), sub(gty, p, m, 0, yColumns), sub(gtg, p, m, p, m)
+		}
+		if p > 0 && q > 0 {
+			gene.GpGv = sub(gtg, 0, p, p, m)
+		}
 	}
-	return public, private, nil
+	return genotypes, nil
 }
 
 func readPublicDosageSums(

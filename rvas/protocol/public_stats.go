@@ -38,19 +38,17 @@ func ComputeGtX(
 	dataParams DataParams,
 	cryptoParams CryptoParams,
 	batch GeneBatch,
-	gp []*mat.Dense,
-	x *mat.Dense,
+	genotypes []Genotypes,
 ) ([]*mat.Dense, securecrypto.PlainVector) {
 	gtx := make([]*mat.Dense, len(batch.GeneIndices))
 	for position, geneIndex := range batch.GeneIndices {
 		if dataParams.Genes[geneIndex].VariantCount == 0 {
 			continue
 		}
-		gtx[position] = new(mat.Dense)
-		gtx[position].Mul(gp[geneIndex].T(), x)
+		gtx[position] = genotypes[geneIndex].GpX
 	}
 
-	_, covariateCount := x.Dims()
+	covariateCount := dataParams.C
 	gtxEncoded := make(securecrypto.PlainVector, covariateCount)
 	for covariate := 0; covariate < covariateCount; covariate++ {
 		columnByGene := make([][]float64, len(batch.GeneIndices))
@@ -73,8 +71,8 @@ func ComputeScore(
 	dataParams DataParams,
 	cryptoParams CryptoParams,
 	batch GeneBatch,
-	gp []*mat.Dense,
-	y0 mat.Vector,
+	genotypes []Genotypes,
+	phenotype int,
 	gtxEncoded securecrypto.PlainVector,
 	packedBeta securecrypto.CipherVector,
 ) securecrypto.CipherVector {
@@ -93,7 +91,7 @@ func ComputeScore(
 		variantCount := dataParams.Genes[geneIndex].VariantCount
 		gty[position] = make([]float64, variantCount)
 		for variant := 0; variant < variantCount; variant++ {
-			gty[position][variant] = mat.Dot(gp[geneIndex].ColView(variant), y0)
+			gty[position][variant] = genotypes[geneIndex].GpY.At(variant, phenotype)
 		}
 	}
 
@@ -233,8 +231,8 @@ func ComputeGpQL(
 	dataParams DataParams,
 	cryptoParams CryptoParams,
 	batch GeneBatch,
-	gp []*mat.Dense,
-	y0 mat.Vector,
+	genotypes []Genotypes,
+	phenotype int,
 	gtxEncoded securecrypto.PlainVector,
 	packedBeta securecrypto.CipherVector,
 	packedWeight securecrypto.CipherVector,
@@ -246,8 +244,8 @@ func ComputeGpQL(
 		dataParams,
 		cryptoParams,
 		batch,
-		gp,
-		y0,
+		genotypes,
+		phenotype,
 		gtxEncoded,
 		packedBeta,
 	)

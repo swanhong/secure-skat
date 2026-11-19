@@ -9,7 +9,7 @@ import (
 func ComputeLocalGtG(
 	dataParams DataParams,
 	batch GeneBatch,
-	gp []*mat.Dense,
+	genotypes []Genotypes,
 ) []*mat.Dense {
 	/*
 		For each gene g:
@@ -22,8 +22,7 @@ func ComputeLocalGtG(
 			continue
 		}
 		localGtG[position] = new(mat.Dense)
-		localGtG[position].Mul(gp[geneIndex].T(), gp[geneIndex])
-		localGtG[position].Scale(invN, localGtG[position])
+		localGtG[position].Scale(invN, genotypes[geneIndex].GpGp)
 	}
 	return localGtG
 }

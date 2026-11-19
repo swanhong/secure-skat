@@ -37,6 +37,7 @@ var stageDefinitions = map[string]stageDefinition{
 	"compute_weights":          {parent: "chromosome_total", measurementKind: "leaf"},
 	"packed_statistics":        {parent: "chromosome_total", measurementKind: "inclusive"},
 	"beta_packing":             {parent: "packed_statistics", measurementKind: "leaf"},
+	"genotype_products":        {parent: "packed_statistics", measurementKind: "leaf"},
 	"batch_preparation":        {parent: "packed_statistics", measurementKind: "leaf"},
 	"public_ql":                {parent: "packed_statistics", measurementKind: "leaf"},
 	"private_ql":               {parent: "packed_statistics", measurementKind: "leaf"},
@@ -343,6 +344,7 @@ func (recorder *metricRecorder) timeTree(total time.Duration) string {
 		fmt.Fprintf(&tree, "  │  ├─ weights              %v\n", format(stageDuration("compute_weights", chromosome)))
 		fmt.Fprintf(&tree, "  │  ├─ packed statistics    %v\n", format(stageDuration("packed_statistics", chromosome)))
 		fmt.Fprintf(&tree, "  │  │  ├─ beta packing       %v\n", format(stageDuration("beta_packing", chromosome)))
+		fmt.Fprintf(&tree, "  │  │  ├─ genotype products  %v\n", format(stageDuration("genotype_products", chromosome)))
 		fmt.Fprintf(&tree, "  │  │  ├─ batch preparation  %v\n", format(stageDuration("batch_preparation", chromosome)))
 		fmt.Fprintf(&tree, "  │  │  ├─ public Q/L         %v\n", format(stageDuration("public_ql", chromosome)))
 		fmt.Fprintf(&tree, "  │  │  ├─ private Q/L        %v\n", format(stageDuration("private_ql", chromosome)))

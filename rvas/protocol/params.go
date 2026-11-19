@@ -1,10 +1,22 @@
 package protocol
 
-import "fmt"
+import (
+	"fmt"
+
+	"gonum.org/v1/gonum/mat"
+)
 
 type Gene struct {
 	GeneID       string
 	VariantCount int
+}
+
+// Genotypes holds one gene's cohort-local products of its public (Gp) and
+// B-private (Gv) genotypes; the protocol uses genotypes only through these, so no
+// n-row genotype matrix is kept. Fields are nil when the gene lacks those variants.
+type Genotypes struct {
+	GpX, GpY, GpGp       *mat.Dense // Gpᵀ X, Gpᵀ Y, Gpᵀ Gp
+	GvX, GvY, GvGv, GpGv *mat.Dense // Gvᵀ X, Gvᵀ Y, Gvᵀ Gv, Gpᵀ Gv
 }
 
 type DataParams struct {

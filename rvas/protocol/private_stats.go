@@ -66,20 +66,18 @@ func privateSignedWeights(counts []float64, totalSampleCount int) []float64 {
 }
 
 func computeLocalGvGeneTerms(
-	privateGenotypes *mat.Dense,
-	publicGenotypes *mat.Dense,
-	x *mat.Dense,
+	genotypes Genotypes,
 	totalSampleCount int,
 	publicVariantCount int,
 ) (gvLocalGene, gvGeneValues) {
-	if privateGenotypes == nil {
+	if genotypes.GvGv == nil {
 		return gvLocalGene{}, gvGeneValues{}
 	}
 
-	_, privateVariantCount := privateGenotypes.Dims()
+	privateVariantCount, _ := genotypes.GvX.Dims()
 	counts := make([]float64, privateVariantCount)
 	for variant := range counts {
-		counts[variant] = mat.Sum(privateGenotypes.ColView(variant))
+		counts[variant] = genotypes.GvX.At(variant, 0) // X column 0 is the intercept
 	}
 	signedWeight := privateSignedWeights(counts, totalSampleCount)
 	invN := 1 / float64(totalSampleCount)
@@ -89,9 +87,7 @@ func computeLocalGvGeneTerms(
 		normalizedWeight[variant] = weight * invSqrtN
 	}
 
-	gtx := new(mat.Dense)
-	gtx.Mul(privateGenotypes.T(), x)
-	wGtx := scaleDenseRows(gtx, normalizedWeight)
+	wGtx := scaleDenseRows(genotypes.GvX, normalizedWeight)
 
 	wGtxSquare := new(mat.Dense)
 	wGtxSquare.Mul(wGtx.T(), wGtx)
@@ -105,15 +101,13 @@ func computeLocalGvGeneTerms(
 	burdenCross := make([]float64, publicVariantCount)
 	if publicVariantCount > 0 {
 		cross = new(mat.Dense)
-		cross.Mul(publicGenotypes.T(), privateGenotypes)
-		cross.Scale(invN, cross)
+		cross.Scale(invN, genotypes.GpGv)
 		cross = scaleDenseColumns(cross, signedWeight)
 		burdenCross = denseRowSums(cross)
 	}
 
 	gvGtG := new(mat.Dense)
-	gvGtG.Mul(privateGenotypes.T(), privateGenotypes)
-	gvGtG.Scale(invN, gvGtG)
+	gvGtG.Scale(invN, genotypes.GvGv)
 	wGvGtG := scaleDenseColumns(gvGtG, signedWeight)
 	wGvGtG = scaleDenseRows(wGvGtG, signedWeight)
 
@@ -135,9 +129,7 @@ func PrepareGvGeneTerms(
 	mpcObj *mpc.MPC,
 	dataParams DataParams,
 	batch GeneBatch,
-	gv []*mat.Dense,
-	gp []*mat.Dense,
-	x *mat.Dense,
+	genotypes []Genotypes,
 ) (gvLocal []gvLocalGene, gvGene []gvGeneShares) {
 	geneCount := len(batch.GeneIndices)
 	gvLocal = make([]gvLocalGene, geneCount)
@@ -146,9 +138,7 @@ func PrepareGvGeneTerms(
 	if mpcObj.GetPid() == cohortBPartyID {
 		for position, geneIndex := range batch.GeneIndices {
 			gvLocal[position], localGene[position] = computeLocalGvGeneTerms(
-				gv[geneIndex],
-				gp[geneIndex],
-				x,
+				genotypes[geneIndex],
 				dataParams.N,
 				dataParams.Genes[geneIndex].VariantCount,
 			)
@@ -166,8 +156,8 @@ func ComputeGvPhenoTerms(
 	mpcObj *mpc.MPC,
 	dataParams DataParams,
 	batch GeneBatch,
-	gv []*mat.Dense,
-	y0 mat.Vector,
+	genotypes []Genotypes,
+	phenotype int,
 	gvLocal []gvLocalGene,
 ) gvPhenoShares {
 	/*
@@ -185,15 +175,15 @@ func ComputeGvPhenoTerms(
 
 	if mpcObj.GetPid() == cohortBPartyID {
 		for position, geneIndex := range batch.GeneIndices {
-			privateGenotypes := gv[geneIndex]
-			if privateGenotypes == nil {
+			gvY := genotypes[geneIndex].GvY
+			if gvY == nil {
 				continue
 			}
 
-			_, privateVariantCount := privateGenotypes.Dims()
+			privateVariantCount, _ := gvY.Dims()
 			wGty := make([]float64, privateVariantCount)
 			for variant := range wGty {
-				gty := mat.Dot(privateGenotypes.ColView(variant), y0)
+				gty := gvY.At(variant, phenotype)
 				wGty[variant] =
 					gvLocal[position].signedWeight[variant] * gty * invSqrtN
 			}
@@ -285,8 +275,8 @@ func ComputeGvQL(
 	mpcObj *mpc.MPC,
 	dataParams DataParams,
 	batch GeneBatch,
-	gv []*mat.Dense,
-	y0 mat.Vector,
+	genotypes []Genotypes,
+	phenotype int,
 	gvLocal []gvLocalGene,
 	gvGene []gvGeneShares,
 	beta mpc_core.RVec,
@@ -298,7 +288,7 @@ func ComputeGvQL(
 		(gvQ[t], gvL[t]) = AssembleGvQL(gvPheno[t], gvGene, beta[:,t])
 	*/
 	gvPheno := ComputeGvPhenoTerms(
-		mpcObj, dataParams, batch, gv, y0, gvLocal,
+		mpcObj, dataParams, batch, genotypes, phenotype, gvLocal,
 	)
 	return AssembleGvQL(mpcObj, gvPheno, gvGene, beta)
 }

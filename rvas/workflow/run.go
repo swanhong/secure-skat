@@ -94,39 +94,23 @@ func runChromosome(
 	)
 	done()
 
-	loadGenotypes := func(
-		batch protocol.GeneBatch,
-	) ([]*mat.Dense, []*mat.Dense, error) {
-		public, private, err := readGeneBatch(
-			chromosome.GenotypeDirectory,
-			chromosome.PrivateGenotypeDirectory,
-			chromosome.Genes,
-			batch,
-			input.SampleCount,
-		)
-		if err != nil || !filtered || private == nil {
-			return public, private, err
+	// B-private variants are filtered locally: a zero column equals a zero weight,
+	// and the column count (hence what B reveals) is unchanged.
+	keepPrivate := func(geneIndex, columns int) ([]bool, error) {
+		keep := make([]bool, columns)
+		counts := chromosome.PrivateCohortCounts[geneIndex]
+		if filtered && len(counts) != columns {
+			return nil, fmt.Errorf("gene %s: %d private allele counts for %d private variants",
+				chromosome.Genes[geneIndex].GeneID, len(counts), columns)
 		}
-		// B-private variants are filtered locally: a zero column equals a zero weight,
-		// and the column count (hence what B reveals) is unchanged.
-		for _, geneIndex := range batch.GeneIndices {
-			genotypes := private[geneIndex]
-			if genotypes == nil {
-				continue
-			}
-			rows, columns := genotypes.Dims()
-			counts := chromosome.PrivateCohortCounts[geneIndex]
-			if len(counts) != columns {
-				return nil, nil, fmt.Errorf("gene %s: %d private allele counts for %d private variants",
-					chromosome.Genes[geneIndex].GeneID, len(counts), columns)
-			}
-			for column, count := range counts {
-				if !protocol.GlobalMAFKeepPlain(count, dataParams.CohortN, globalMaxMAF) {
-					genotypes.SetCol(column, make([]float64, rows))
-				}
-			}
+		for column := range keep {
+			keep[column] = !filtered || protocol.GlobalMAFKeepPlain(counts[column], dataParams.CohortN, globalMaxMAF)
 		}
-		return public, private, nil
+		return keep, nil
+	}
+	loadGenotypes := func(batch protocol.GeneBatch) ([]protocol.Genotypes, error) {
+		return readGeneBatch(chromosome.GenotypeDirectory, chromosome.PrivateGenotypeDirectory,
+			chromosome.Genes, batch, input.X, input.Y, keepPrivate)
 	}
 
 	done = secureSession.metrics.start(
@@ -141,8 +125,6 @@ func runChromosome(
 			dataParams,
 			chromosome.CryptoParams,
 			loadGenotypes,
-			input.X,
-			input.Y,
 			model.beta,
 			model.omega,
 			weight,

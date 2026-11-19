@@ -25,9 +25,7 @@ func ComputePackedStatistics(
 	heParams *securecrypto.CryptoParams,
 	dataParams DataParams,
 	cryptoParams CryptoParams,
-	loadGenotypes func(GeneBatch) (gp, gv []*mat.Dense, err error),
-	x *mat.Dense,
-	y0 *mat.Dense,
+	loadGenotypes func(GeneBatch) ([]Genotypes, error),
 	beta mpc_core.RMat,
 	omega mpc_core.RMat,
 	weight []mpc_core.RVec,
@@ -104,36 +102,31 @@ func ComputePackedStatistics(
 
 			for batchIndex := lane; batchIndex < len(batches); batchIndex += workerCount {
 				batch := batches[batchIndex]
-				gp, gv, loadErr := loadGenotypes(batch)
+				doneBatch := observeBatch(batch.W, len(batch.GeneIndices))
+
+				done := observe("genotype_products")
+				genotypes, loadErr := loadGenotypes(batch)
+				done()
 				if loadErr != nil {
 					batchErrors[batchIndex] = loadErr
 					return
 				}
 
-				doneBatch := observeBatch(batch.W, len(batch.GeneIndices))
-
 				// 2. Prepare phenotype-independent values.
-				done := observe("batch_preparation")
+				done = observe("batch_preparation")
 				terms := PrepareGeneBatch(
 					mpcObj,
 					heParams,
 					dataParams,
 					cryptoParams,
 					batch,
-					gp,
-					gv,
-					x,
+					genotypes,
 					signedWeight,
 				)
 				done()
 
 				// 3. Compute phenotype-dependent public/private Q and L.
 				for phenotype := 0; phenotype < phenotypeCount; phenotype++ {
-					var yColumn mat.Vector
-					if mpcObj.GetPid() != auxiliaryPartyID {
-						yColumn = y0.ColView(phenotype)
-					}
-
 					done = observe("public_ql")
 					batchGpQ, batchGpL := ComputeGpQL(
 						mpcObj,
@@ -141,8 +134,8 @@ func ComputePackedStatistics(
 						dataParams,
 						cryptoParams,
 						batch,
-						gp,
-						yColumn,
+						genotypes,
+						phenotype,
 						terms.gtxEncoded,
 						packedBeta[phenotype],
 						terms.packedWeight,
@@ -155,8 +148,8 @@ func ComputePackedStatistics(
 						mpcObj,
 						dataParams,
 						batch,
-						gv,
-						yColumn,
+						genotypes,
+						phenotype,
 						terms.gvLocal,
 						terms.gvGene,
 						betaByPhenotype[phenotype],
@@ -179,9 +172,7 @@ func ComputePackedStatistics(
 						dataParams,
 						cryptoParams,
 						batch,
-						gp,
-						gv,
-						x,
+						genotypes,
 						terms.localGtx,
 						terms.localGtG,
 						terms.gvLocal,
@@ -223,9 +214,7 @@ func PrepareGeneBatch(
 	dataParams DataParams,
 	cryptoParams CryptoParams,
 	batch GeneBatch,
-	gp []*mat.Dense,
-	gv []*mat.Dense,
-	x *mat.Dense,
+	genotypes []Genotypes,
 	signedWeight []mpc_core.RVec,
 ) geneBatchTerms {
 	/*
@@ -260,9 +249,9 @@ func PrepareGeneBatch(
 	// 2. Compute cohort-local public-variant terms.
 	if mpcObj.GetPid() != auxiliaryPartyID {
 		terms.localGtx, terms.gtxEncoded = ComputeGtX(
-			heParams, dataParams, cryptoParams, batch, gp, x,
+			heParams, dataParams, cryptoParams, batch, genotypes,
 		)
-		terms.localGtG = ComputeLocalGtG(dataParams, batch, gp)
+		terms.localGtG = ComputeLocalGtG(dataParams, batch, genotypes)
 	}
 
 	// 3. Pack the shared public-variant weights.
@@ -277,7 +266,7 @@ func PrepareGeneBatch(
 
 	// 4. Prepare the private-variant terms.
 	terms.gvLocal, terms.gvGene = PrepareGvGeneTerms(
-		mpcObj, dataParams, batch, gv, gp, x,
+		mpcObj, dataParams, batch, genotypes,
 	)
 
 	return terms
